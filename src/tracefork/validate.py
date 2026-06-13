@@ -108,6 +108,11 @@ class ValidationRunner:
             tape = _record_clean_tape()
             mutated_resp = FaultInjector.inject(tape, fault_step, self._fault_class)
 
+            # Scope note: this is a positive-vs-inert control — the faulted step gets a
+            # flip-capable tail, every other step an inert one. It proves the engine ranks
+            # a genuinely outcome-flipping step first (test_blame.py injects the flip at the
+            # *final* step to show it isn't hardwired to step 0), not that it discriminates
+            # among multiple competing causes on a long tape. See README → Validation scope.
             def perturb_factory(step_idx: int, _mutated=mutated_resp, _fault=fault_step):
                 if step_idx == _fault:
                     # Inject the fault; the tail flips when it sees the marker.

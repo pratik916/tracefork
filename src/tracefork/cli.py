@@ -1,7 +1,8 @@
 """tracefork CLI — entry point for all commands.
 
-Plans A–F add commands here as they're built. Run with:
     tracefork <command> [args]
+
+Commands: replay, verify, fork, report, serve, blame, validate.
 """
 from __future__ import annotations
 
@@ -150,7 +151,7 @@ def serve(
     from tracefork.server import app as fastapi_app, init_store
 
     init_store(str(store))
-    typer.echo(f"  tracefork serve → http://localhost:{port}")
+    typer.echo(f"  tracefork serve → http://127.0.0.1:{port}")
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
 
@@ -175,6 +176,9 @@ def blame(
     The offline, $0 proof that blame correctly fingers known faults is
     `tracefork validate`.
     """
+    if not run_id or not all(c.isalnum() or c in "-_" for c in run_id):
+        raise typer.BadParameter("run_id must be alphanumeric (with '-' or '_')")
+
     import importlib
     import json
     import os
@@ -268,6 +272,14 @@ def validate(
     output.write_text(_json.dumps(report_data, indent=2))
     typer.echo(f"\n  Report saved to {output}\n")
 
+    control_threshold = 0.30
+    if max_ctrl >= control_threshold:
+        typer.echo(
+            f"  [FAIL] negative control max flip {max_ctrl:.2f} ≥ {control_threshold:.2f} "
+            "— blame is firing on no-op perturbations; the precision number is not trustworthy."
+        )
+        raise typer.Exit(1)
+
     if check:
         committed = Path("experiments/validation_report_committed.json")
         if not committed.exists():
@@ -279,6 +291,11 @@ def validate(
             old_prec = old.get("top1_precision_by_class", {}).get(fc, 0.0)
             if new_prec < old_prec - 0.15:
                 regressions.append(f"{fc}: {old_prec:.2f} → {new_prec:.2f}")
+        old_ctrl = old.get("negative_control_max_flip", 0.0)
+        if max_ctrl > old_ctrl + 0.15:
+            regressions.append(
+                f"negative_control_max_flip: {old_ctrl:.2f} → {max_ctrl:.2f}"
+            )
         if regressions:
             typer.echo("  REGRESSION detected:")
             for r_str in regressions:

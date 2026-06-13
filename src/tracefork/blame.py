@@ -28,6 +28,7 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from .constants import PRICING_TABLE, SONNET
 from .fork import BranchSpec, ForkEngine
 from .tape import Tape
 
@@ -103,12 +104,72 @@ class BlameEstimate:
 
 # ── BudgetGovernor ──────────────────────────────────────────────────────────
 
+class BudgetExceededError(RuntimeError):
+    """Raised when a blame run's estimated cost exceeds the caller's budget."""
+
+
+def _detect_model(tape: Tape) -> str:
+    """Best-effort model id from the first recorded request (defaults to Sonnet)."""
+    for req, _ in tape.exchanges:
+        try:
+            m = json.loads(req).get("model")
+        except Exception:
+            m = None
+        if m:
+            return m
+    return SONNET
+
+
+def _avg_tokens(tape: Tape) -> tuple[float, float]:
+    """Average (input, output) tokens per exchange — from recorded ``usage`` when
+    present, else a ~4-bytes-per-token estimate from the raw bytes."""
+    if not tape.exchanges:
+        return (0.0, 0.0)
+    ins: list[float] = []
+    outs: list[float] = []
+    for req, resp in tape.exchanges:
+        usage: dict = {}
+        try:
+            d = json.loads(resp)
+            if isinstance(d, dict):
+                usage = d.get("usage") or {}
+        except Exception:
+            usage = {}
+        ins.append(usage.get("input_tokens") or max(1, len(req) // 4))
+        outs.append(usage.get("output_tokens") or max(1, len(resp) // 4))
+    n = len(tape.exchanges)
+    return (sum(ins) / n, sum(outs) / n)
+
+
 class BudgetGovernor:
     @staticmethod
-    def estimate(tape: Tape, *, k: int, cost_per_fork_usd: float = 0.01) -> BlameEstimate:
+    def estimate(
+        tape: Tape,
+        *,
+        k: int,
+        model: str | None = None,
+        cost_per_fork_usd: float | None = None,
+    ) -> BlameEstimate:
+        """Estimate the dollar cost of a blame run.
+
+        Only the counterfactual *tail* hits the API — the replayed prefix and the
+        mutated step itself cost $0. Forking step ``i`` records ``n-1-i`` tail
+        calls, so total billed calls = ``sum_i (n-1-i) * k``. Each call is priced
+        with the model's real per-token rates (``constants.PRICING_TABLE``) against
+        the tape's recorded token usage. Pass ``cost_per_fork_usd`` to override with
+        a flat per-fork figure instead.
+        """
         n_candidates = len(tape.exchanges)
         n_forks = n_candidates * k
-        est_usd = n_forks * cost_per_fork_usd
+        if cost_per_fork_usd is not None:
+            est_usd = n_forks * cost_per_fork_usd
+        else:
+            billed_calls = sum(n_candidates - 1 - i for i in range(n_candidates)) * k
+            in_rate, out_rate = PRICING_TABLE.get(
+                model or _detect_model(tape), PRICING_TABLE[SONNET]
+            )
+            avg_in, avg_out = _avg_tokens(tape)
+            est_usd = billed_calls * (avg_in * in_rate + avg_out * out_rate)
         return BlameEstimate(n_candidates=n_candidates, n_forks=n_forks, est_usd=est_usd)
 
 
@@ -158,6 +219,14 @@ class BlameEngine:
         tail_transport)`, where `tail_transport` serves the counterfactual tail
         (a scripted fake offline, or `None` to use the real API).
         """
+        est = BudgetGovernor.estimate(tape, k=k)
+        if est.est_usd > budget_usd:
+            raise BudgetExceededError(
+                f"estimated blame cost ${est.est_usd:.2f} exceeds budget "
+                f"${budget_usd:.2f} ({est.n_forks} forks at k={k}); raise the budget "
+                f"or lower k"
+            )
+
         parent_outcome: bool | None = None
         if tape.exchanges:
             parent_outcome = oracle.grade(_outcome_text(tape.exchanges[-1][1]))
@@ -205,4 +274,5 @@ class BlameEngine:
         results.sort(key=lambda r: r.flip_rate, reverse=True)
         return BlameReport(
             results=results, k=k, total_forks=total_forks, parent_outcome=parent_outcome,
+            est_cost_usd=est.est_usd,
         )

@@ -4,9 +4,11 @@ Record mode: forward to the inner transport, buffer the full response body
 (works for both streaming SSE and non-streaming JSON — httpx buffers both
 identically via .read()/.aread()), append to the tape, return the response.
 
-Replay mode: for each request, sha256-assert it matches the tape record,
+Replay mode: for each request, sha256-assert its *body* matches the tape record,
 then serve the recorded bytes back. A replay transport has no inner transport;
-any unrecorded request is a hard error.
+any unrecorded request is a hard error. The matched surface is the request body;
+request headers (e.g. ``anthropic-beta`` / ``anthropic-version``) are out of scope
+for the bit-exactness claim — see the README's determinism-boundary note.
 """
 from __future__ import annotations
 

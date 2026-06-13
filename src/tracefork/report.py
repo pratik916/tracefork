@@ -9,8 +9,26 @@ import json
 from pathlib import Path
 
 
-_TEMPLATE_PATH = Path(__file__).parent.parent.parent / "web" / "report.html"
 _INJECT_MARKER = "</head>"
+
+
+def _template_path() -> Path:
+    """Locate ``web/report.html`` in both an installed wheel and a source checkout.
+
+    A built wheel force-includes the file at ``tracefork/web/report.html`` (next to
+    this module); an editable/source checkout keeps it at the repo root. Resolved at
+    call time so importing this module never depends on the file's location.
+    """
+    here = Path(__file__).parent
+    for cand in (
+        here / "web" / "report.html",                 # installed wheel (force-included)
+        here.parent.parent / "web" / "report.html",   # repo root (src/tracefork -> repo)
+    ):
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(
+        "web/report.html not found (looked in the package and the repo root)"
+    )
 
 
 def _tape_to_data(tape, blame: dict | None = None) -> dict:
@@ -101,7 +119,7 @@ def generate_report(
 
     The tape data is injected before </head> so the UI loads it synchronously.
     """
-    html = _TEMPLATE_PATH.read_text()
+    html = _template_path().read_text()
     data = _tape_to_data(tape, blame)
     inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)

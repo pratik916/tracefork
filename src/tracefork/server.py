@@ -5,16 +5,12 @@ and /api/branch/{branch_id}. Single-threaded (uvicorn --workers 1).
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .store import TapeStore
-from .report import _tape_to_data
+from .report import _tape_to_data, _template_path
 
-
-_HTML_PATH = Path(__file__).parent.parent.parent / "web" / "report.html"
 
 # No CORS middleware: the UI is served same-origin by this app and uvicorn
 # binds to 127.0.0.1 (see the `serve` CLI command), so cross-origin access is
@@ -37,7 +33,7 @@ def init_store(db_path: str = "store.db") -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui() -> HTMLResponse:
-    html = _HTML_PATH.read_text()
+    html = _template_path().read_text()
     # Empty server URL → the UI fetches same-origin (works on any --port).
     inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
     html = html.replace("</head>", inject + "</head>", 1)

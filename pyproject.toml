@@ -27,6 +27,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracefork_spike", "src/tracefork"]
 
+# Ship the single-file web UI inside the package so `report` and `serve` work from
+# an installed wheel, not only from an editable/source checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"web/report.html" = "tracefork/web/report.html"
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]

@@ -58,7 +58,8 @@ The product lives in `src/tracefork/`:
   JSON+base64 in memory, persistable to SQLite, with a hash-chain `digest()` fingerprint.
   (`to_bytes`/`from_bytes` are JSON, **not pickle** — no arbitrary-code-execution risk.)
 - `recorder.py` — `Recorder` context manager wraps a real `anthropic.Anthropic` at its
-  `_client._transport` seam. Patches `uuid.uuid4` globally; **does not** patch
+  `_client._transport` seam (via `client.copy(http_client=...)`, so base_url / auth_token /
+  default headers are preserved). Patches `uuid.uuid4` globally; **does not** patch
   `datetime.datetime` (immutable C type in 3.12+, and a subclass breaks the SDK's pydantic
   schema builder) — agents needing deterministic clocks read `NondetSource` directly.
 - `fork.py` — `ForkTransport` runs three phases: prefix-replay ($0, request asserted to
@@ -68,10 +69,14 @@ The product lives in `src/tracefork/`:
 - `store.py` — `TapeStore`, SQLite persistence for tapes + the branch DAG.
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
-  `BudgetGovernor` estimates cost before spend.
+  `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and
+  `rank()` raises `BudgetExceededError` if the estimate exceeds `budget_usd`.
 - `faults.py` / `validate.py` — 5 fault classes (valid JSON, marker **inside** a content
   field) + the self-validation runner; a synthetic agent echoes each response forward so an
   injected fault propagates to a fault-aware tail. `run_all_fault_classes()` scores top-1.
+  **Scope (don't overstate):** the fixture is a positive-vs-inert control on a short tape —
+  it proves the engine is genuinely causal (not a fixed-slot artifact), not that it
+  discriminates among competing causes on long tapes. See README → Validation scope.
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
   three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).

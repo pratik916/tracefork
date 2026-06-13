@@ -65,8 +65,10 @@ class Recorder:
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
         orig_inner = self._orig_client._client._transport  # type: ignore[attr-defined]
         transport = TraceforkTransport("record", self._tape, orig_inner)
-        self._wrapped_client = anthropic.Anthropic(
-            api_key=self._orig_client.api_key,
+        # `.copy()` preserves the original client's base_url, auth_token, default
+        # headers/query and timeout — only the transport and retries are swapped, so
+        # a proxied or custom-base_url client still records faithfully.
+        self._wrapped_client = self._orig_client.copy(
             http_client=httpx.Client(transport=transport),
             max_retries=0,
         )
@@ -116,8 +118,9 @@ class AsyncRecorder:
 
         orig_inner = self._orig_client._client._transport  # type: ignore[attr-defined]
         transport = AsyncTraceforkTransport("record", self._tape, orig_inner)
-        self._wrapped_client = anthropic.AsyncAnthropic(
-            api_key=self._orig_client.api_key,
+        # `.copy()` preserves base_url, auth_token, default headers/query and timeout
+        # (see the sync Recorder) — only the transport and retries are swapped.
+        self._wrapped_client = self._orig_client.copy(
             http_client=httpx.AsyncClient(transport=transport),
             max_retries=0,
         )
