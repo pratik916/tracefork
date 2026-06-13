@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 
 from .store import TapeStore
 from .report import _tape_to_data
@@ -17,14 +16,10 @@ from .report import _tape_to_data
 
 _HTML_PATH = Path(__file__).parent.parent.parent / "web" / "report.html"
 
+# No CORS middleware: the UI is served same-origin by this app and uvicorn
+# binds to 127.0.0.1 (see the `serve` CLI command), so cross-origin access is
+# neither needed nor desirable.
 app = FastAPI(title="tracefork", docs_url=None, redoc_url=None)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
 
 _store: TapeStore | None = None
 

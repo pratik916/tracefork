@@ -123,7 +123,7 @@ function renderTimeline(data) {
     return `<div class="exchange-item" data-i="${i}" onclick="selectExchange(${i})">
       ${badgeHtml}
       <div class="step">exchange ${i}</div>
-      <div class="role ${roleClass}">${ex.role || 'unknown'}</div>
+      <div class="role ${roleClass}">${escape(ex.role || 'unknown')}</div>
       <div class="preview">${escape(ex.preview || '')}</div>
     </div>`;
   }).join('');

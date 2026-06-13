@@ -75,6 +75,22 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
     }
 
 
+def _safe_json(data: dict) -> str:
+    """Serialize `data` and escape HTML-significant chars so recorded agent I/O
+    (which can contain ``</script>``) cannot break out of the inline <script>.
+
+    Replacing ``< > &`` with their ``\\uXXXX`` forms yields valid JSON string
+    escapes, so the loader's parse still works. The JS line separators
+    U+2028/U+2029 are already emitted as ``\\u`` escapes by ``ensure_ascii=True``.
+    """
+    return (
+        json.dumps(data, indent=2)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def generate_report(
     tape,
     output_path: Path,
@@ -87,7 +103,7 @@ def generate_report(
     """
     html = _TEMPLATE_PATH.read_text()
     data = _tape_to_data(tape, blame)
-    inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {json.dumps(data, indent=2)};\n</script>\n"
+    inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

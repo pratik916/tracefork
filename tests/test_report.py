@@ -72,6 +72,37 @@ def test_report_has_valid_exchange_structure():
         assert ex["preview"] == "Hello world"
 
 
+def test_report_escapes_script_breakout():
+    """A tape whose content contains </script> must not break out of the inline script."""
+    evil = make_text_response("</script><img src=x onerror=alert(1)>")
+    fake = ScriptedFakeLLM([evil])
+    tape = Tape(agent_name="evil")
+    transport = TraceforkTransport("record", tape, fake)
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=transport),
+        max_retries=0,
+    )
+    client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=100,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        content = out.read_text()
+        # The injected data block must not contain a raw closing script tag.
+        marker = "window.__TRACEFORK_DATA__ = "
+        start = content.find(marker)
+        end = content.find(";\n", start)
+        injected = content[start:end]
+        assert "</script" not in injected
+        assert "\\u003c/script" in injected
+        # And the escaped payload still parses back to the original text.
+        data = _extract_data(content)
+        assert data["exchanges"][0]["preview"] == "</script><img src=x onerror=alert(1)>"
+
+
 def test_report_includes_blame_when_provided():
     tape = _make_tape()
     blame = {0: {"flip_rate": 0.8, "ci_lo": 0.6, "ci_hi": 0.95}}
