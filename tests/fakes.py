@@ -5,66 +5,20 @@ Never create fake Anthropic JSON outside this file.
 """
 from __future__ import annotations
 
-import json
-
 import httpx
 
-from tracefork.tape import sha256_hex
+# Wire-format builders live in the package so production code (blame engine,
+# CLI, validation suite) never imports from the test tree. Re-exported here
+# because the test fakes are their primary consumer.
+from tracefork.wire import make_text_response, make_tool_use_response
 
-
-def make_text_response(
-    text: str,
-    *,
-    model: str = "claude-sonnet-4-6",
-    input_tokens: int = 100,
-    output_tokens: int = 20,
-    request: httpx.Request | None = None,
-) -> bytes:
-    """Return Anthropic wire-format JSON bytes for a final text response."""
-    rid = "msg_" + sha256_hex((text + model).encode())[:20]
-    return json.dumps({
-        "id": rid,
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
-    }).encode()
-
-
-def make_tool_use_response(
-    tool_name: str,
-    tool_input: dict,
-    *,
-    model: str = "claude-sonnet-4-6",
-    preamble: str = "",
-    input_tokens: int = 100,
-    output_tokens: int = 30,
-) -> bytes:
-    """Return Anthropic wire-format JSON bytes for a tool_use response."""
-    content: list[dict] = []
-    if preamble:
-        content.append({"type": "text", "text": preamble})
-    toolu_id = "toolu_" + sha256_hex((tool_name + json.dumps(tool_input)).encode())[:18]
-    content.append({
-        "type": "tool_use",
-        "id": toolu_id,
-        "name": tool_name,
-        "input": tool_input,
-    })
-    rid = "msg_" + sha256_hex((tool_name + model).encode())[:20]
-    return json.dumps({
-        "id": rid,
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": content,
-        "stop_reason": "tool_use",
-        "stop_sequence": None,
-        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
-    }).encode()
+__all__ = [
+    "make_text_response",
+    "make_tool_use_response",
+    "ScriptedFakeLLM",
+    "AsyncScriptedFakeLLM",
+    "FaultAwareFakeLLM",
+]
 
 
 class ScriptedFakeLLM(httpx.BaseTransport):

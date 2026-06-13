@@ -157,20 +157,37 @@ def serve(
 @app.command()
 def blame(
     run_id: str = typer.Argument(..., help="run_id to analyze"),
+    agent: str = typer.Option(..., "--agent", "-a",
+                              help="Import path of the agent fn (pkg.mod:fn) that produced this run; "
+                                   "it is re-run for each fork and must be deterministic up to the fork point"),
     k: int = typer.Option(10, "--k", help="Forks per candidate step"),
     budget: float = typer.Option(5.0, "--budget", help="USD spend cap"),
+    perturbation: str = typer.Option("[tracefork] this step did not complete as recorded",
+                                      "--perturbation", help="Text injected as the counterfactual response"),
     success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
     failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
     store: Path = typer.Option(Path("store.db"), "--store", help="Path to store.db"),
 ) -> None:
-    """Run causal blame analysis on a recorded run."""
+    """Run causal blame analysis on a recorded run.
+
+    For each exchange, the agent is re-run with that step's response perturbed
+    and the counterfactual tail recorded against the real API (budget-capped).
+    The offline, $0 proof that blame correctly fingers known faults is
+    `tracefork validate`.
+    """
+    import importlib
     import json
+    import os
+
     from tracefork.store import TapeStore
     from tracefork.blame import BlameEngine, BudgetGovernor, StringMatchOracle
-    from tests.fakes import make_text_response, ScriptedFakeLLM
+    from tracefork.wire import make_text_response
 
     db = TapeStore(str(store))
     tape = db.load_tape(run_id)
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    agent_fn = getattr(importlib.import_module(module_path), fn_name)
 
     oracle = StringMatchOracle(success_re=success_re, failure_re=failure_re)
     est = BudgetGovernor.estimate(tape, k=k)
@@ -178,13 +195,20 @@ def blame(
     typer.echo(f"\n  Blame estimate: {est.n_forks} forks, ~${est.est_usd:.2f}")
     if est.est_usd > budget:
         typer.echo(f"  Estimated cost ${est.est_usd:.2f} exceeds budget ${budget:.2f}.")
+        typer.echo("  Use --budget to increase or --k to reduce trials.")
         raise typer.Exit(1)
 
-    def perturb_factory(step_idx: int):
-        mutated = make_text_response("FAIL — perturbed by blame engine")
-        return mutated, ScriptedFakeLLM([mutated] * 10)
+    mutated = make_text_response(perturbation)
 
-    report = BlameEngine.rank(tape, oracle, perturb_factory=perturb_factory, k=k, budget_usd=budget)
+    def perturb_factory(step_idx: int):
+        # tail_transport=None → the counterfactual tail hits the real API.
+        return mutated, None
+
+    report = BlameEngine.rank(
+        tape, agent_fn, oracle,
+        perturb_factory=perturb_factory, k=k, budget_usd=budget,
+        api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+    )
 
     typer.echo(f"\n  run-{run_id} · blame analysis · k={k} · {report.total_forks} forks\n")
     typer.echo(f"  {'rank':<5} {'step':<8} {'flip-rate':<12} {'95% CI':<22} interpretation")
