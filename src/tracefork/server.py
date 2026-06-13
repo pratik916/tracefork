@@ -1,0 +1,82 @@
+"""FastAPI server for tracefork live mode.
+
+Serves the report HTML at / and JSON endpoints at /api/run/{run_id}
+and /api/branch/{branch_id}. Single-threaded (uvicorn --workers 1).
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from .store import TapeStore
+from .report import _tape_to_data
+
+
+_HTML_PATH = Path(__file__).parent.parent.parent / "web" / "report.html"
+
+app = FastAPI(title="tracefork", docs_url=None, redoc_url=None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+_store: TapeStore | None = None
+
+
+def get_store() -> TapeStore:
+    if _store is None:
+        raise RuntimeError("Store not initialized — call init_store() first")
+    return _store
+
+
+def init_store(db_path: str = "store.db") -> None:
+    global _store
+    _store = TapeStore(db_path)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui() -> HTMLResponse:
+    html = _HTML_PATH.read_text()
+    # Empty server URL → the UI fetches same-origin (works on any --port).
+    inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
+    html = html.replace("</head>", inject + "</head>", 1)
+    return HTMLResponse(html)
+
+
+@app.get("/api/runs")
+async def list_runs() -> JSONResponse:
+    store = get_store()
+    return JSONResponse(store.list_runs())
+
+
+@app.get("/api/run/{run_id}")
+async def get_run(run_id: str) -> JSONResponse:
+    store = get_store()
+    try:
+        tape = store.load_tape(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    data = _tape_to_data(tape)
+    data["run_id"] = run_id
+    return JSONResponse(data)
+
+
+@app.get("/api/branch/{branch_id}")
+async def get_branch(branch_id: str) -> JSONResponse:
+    store = get_store()
+    try:
+        branch = store.load_branch(branch_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"branch {branch_id!r} not found")
+    data = _tape_to_data(branch["delta_tape"])
+    data["branch_id"] = branch_id
+    data["parent_run_id"] = branch["parent_run_id"]
+    data["divergence_step"] = branch["divergence_step"]
+    data["mutation_desc"] = branch["mutation_desc"]
+    return JSONResponse(data)

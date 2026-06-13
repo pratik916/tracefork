@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tracefork — time-travel debugger</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #6e7681; --green: #3fb950;
+    --blue: #58a6ff; --orange: #f0883e; --purple: #d2a8ff;
+    --red: #f85149; --yellow: #e3b341;
+  }
+  body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 13px; }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 15px; color: var(--green); }
+  header .run-meta { color: var(--muted); font-size: 11px; }
+  .layout { display: grid; grid-template-columns: 280px 1fr 320px; height: calc(100vh - 45px); }
+  .panel { border-right: 1px solid var(--border); overflow-y: auto; }
+  .panel:last-child { border-right: none; }
+  .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+                  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Panel 1 — Timeline */
+  .exchange-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .exchange-item:hover, .exchange-item.active { background: var(--surface); }
+  .exchange-item .step { font-size: 10px; color: var(--muted); }
+  .exchange-item .role { font-size: 12px; margin: 3px 0; }
+  .role-user { color: var(--blue); }
+  .role-assistant { color: var(--purple); }
+  .role-tool { color: var(--orange); }
+  .exchange-item .preview { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .blame-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #1a3a1a; color: var(--green); }
+  .blame-badge.high { background: #3a1a1a; color: var(--red); }
+
+  /* Panel 2 — Detail */
+  .detail-empty { padding: 40px; color: var(--muted); text-align: center; }
+  .detail-section { padding: 14px; border-bottom: 1px solid var(--border); }
+  .detail-section h3 { font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+  pre { background: var(--surface); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; line-height: 1.6; }
+  .key { color: var(--blue); }
+  .string { color: var(--green); }
+  .number { color: var(--yellow); }
+
+  /* Panel 3 — Blame */
+  .blame-empty { padding: 40px; color: var(--muted); text-align: center; }
+  .blame-row { padding: 8px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .blame-rank { width: 20px; color: var(--muted); font-size: 11px; }
+  .blame-info { flex: 1; }
+  .blame-step { font-size: 12px; }
+  .blame-ci { font-size: 10px; color: var(--muted); }
+  .blame-bar-wrap { width: 80px; }
+  .blame-bar { height: 6px; background: var(--green); border-radius: 3px; }
+  .blame-bar.decisive { background: var(--red); }
+  .blame-rate { font-size: 11px; text-align: right; min-width: 50px; }
+  .blame-rate.decisive { color: var(--red); font-weight: bold; }
+  .blame-header-row { padding: 6px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+                       display: flex; gap: 8px; font-size: 10px; color: var(--muted); }
+
+  .loading { padding: 40px; text-align: center; color: var(--muted); }
+  .error { padding: 20px; color: var(--red); }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
+  .tag-live { background: #1a3a1a; color: var(--green); }
+  .tag-static { background: #1a2a3a; color: var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <h1>tracefork</h1>
+  <span class="run-meta" id="run-meta">loading…</span>
+  <span class="tag" id="mode-tag"></span>
+</header>
+<div class="layout">
+  <div class="panel" id="timeline-panel">
+    <div class="panel-header">Timeline</div>
+    <div id="timeline-content"><div class="loading">loading…</div></div>
+  </div>
+  <div class="panel" id="detail-panel">
+    <div class="panel-header">Exchange Detail</div>
+    <div id="detail-content"><div class="detail-empty">← select an exchange</div></div>
+  </div>
+  <div class="panel" id="blame-panel">
+    <div class="panel-header">Blame</div>
+    <div id="blame-content"><div class="blame-empty">run tracefork blame to populate</div></div>
+  </div>
+</div>
+
+<script>
+// ── data source ───────────────────────────────────────────────────────────
+let DATA = null;
+
+async function loadData() {
+  if (window.__TRACEFORK_DATA__) {
+    // static mode: data injected at report-generation time
+    document.getElementById('mode-tag').textContent = 'static';
+    document.getElementById('mode-tag').className = 'tag tag-static';
+    return window.__TRACEFORK_DATA__;
+  }
+  if (window.__TRACEFORK_SERVER_URL__ !== undefined) {
+    // live mode: fetch from the serving origin (empty base → same-origin, any port)
+    document.getElementById('mode-tag').textContent = 'live';
+    document.getElementById('mode-tag').className = 'tag tag-live';
+    const url = window.__TRACEFORK_SERVER_URL__;
+    const runId = new URLSearchParams(location.search).get('run_id');
+    const resp = await fetch(`${url}/api/run/${runId}`);
+    if (!resp.ok) throw new Error(`server ${resp.status}: run not found`);
+    return resp.json();
+  }
+  throw new Error('No data source configured');
+}
+
+// ── render ─────────────────────────────────────────────────────────────────
+function renderTimeline(data) {
+  const blame = data.blame || {};
+  const html = data.exchanges.map((ex, i) => {
+    const flipRate = blame[i] ? blame[i].flip_rate : null;
+    const isDecisive = flipRate !== null && flipRate >= 0.7;
+    const badgeHtml = flipRate !== null
+      ? `<span class="blame-badge${isDecisive ? ' high' : ''}">${Math.round(flipRate*100)}%</span>`
+      : '';
+    const roleClass = ex.role === 'user' ? 'role-user' : ex.role === 'assistant' ? 'role-assistant' : 'role-tool';
+    return `<div class="exchange-item" data-i="${i}" onclick="selectExchange(${i})">
+      ${badgeHtml}
+      <div class="step">exchange ${i}</div>
+      <div class="role ${roleClass}">${ex.role || 'unknown'}</div>
+      <div class="preview">${escape(ex.preview || '')}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('timeline-content').innerHTML = html;
+}
+
+function renderBlame(data) {
+  const blame = data.blame;
+  if (!blame || Object.keys(blame).length === 0) return;
+  const entries = Object.entries(blame).sort((a, b) => b[1].flip_rate - a[1].flip_rate);
+  const headerHtml = `<div class="blame-header-row">
+    <span style="width:20px">rank</span>
+    <span style="flex:1">step</span>
+    <span style="width:80px">bar</span>
+    <span style="min-width:50px;text-align:right">flip</span>
+  </div>`;
+  const rowsHtml = entries.map(([step, info], rank) => {
+    const rate = info.flip_rate;
+    const isDecisive = rate >= 0.7;
+    const pct = Math.round(rate * 100);
+    return `<div class="blame-row">
+      <span class="blame-rank">${rank+1}</span>
+      <div class="blame-info">
+        <div class="blame-step">step-${step}</div>
+        <div class="blame-ci">95% CI [${info.ci_lo.toFixed(2)}, ${info.ci_hi.toFixed(2)}]</div>
+      </div>
+      <div class="blame-bar-wrap"><div class="blame-bar${isDecisive ? ' decisive' : ''}" style="width:${pct}%"></div></div>
+      <div class="blame-rate${isDecisive ? ' decisive' : ''}">${pct}%</div>
+    </div>`;
+  }).join('');
+  document.getElementById('blame-content').innerHTML = headerHtml + rowsHtml;
+}
+
+let _selected = -1;
+function selectExchange(i) {
+  if (_selected >= 0) {
+    document.querySelector(`[data-i="${_selected}"]`)?.classList.remove('active');
+  }
+  _selected = i;
+  document.querySelector(`[data-i="${i}"]`)?.classList.add('active');
+  const ex = DATA.exchanges[i];
+  const reqJson = syntaxHighlight(JSON.stringify(ex.request || {}, null, 2));
+  const respJson = syntaxHighlight(JSON.stringify(ex.response_preview || {}, null, 2));
+  document.getElementById('detail-content').innerHTML = `
+    <div class="detail-section">
+      <h3>Request (exchange ${i})</h3>
+      <pre>${reqJson}</pre>
+    </div>
+    <div class="detail-section">
+      <h3>Response</h3>
+      <pre>${respJson}</pre>
+    </div>`;
+}
+
+function syntaxHighlight(json) {
+  return json
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+      m => {
+        let cls = 'number';
+        if (/^"/.test(m)) cls = /:$/.test(m) ? 'key' : 'string';
+        return `<span class="${cls}">${m}</span>`;
+      });
+}
+
+function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── boot ───────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    DATA = await loadData();
+    document.getElementById('run-meta').textContent =
+      `${DATA.agent_name || 'unknown agent'} · ${DATA.exchanges.length} exchanges · ${DATA.created_at || ''}`;
+    renderTimeline(DATA);
+    renderBlame(DATA);
+    if (DATA.exchanges.length > 0) selectExchange(0);
+  } catch (e) {
+    document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;
+  }
+})();
+</script>
+</body>
+</html>
