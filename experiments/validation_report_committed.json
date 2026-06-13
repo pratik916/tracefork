@@ -1,0 +1,14 @@
+{
+  "top1_precision_by_class": {
+    "corrupted_tool_output": 1.0,
+    "misleading_retrieval": 1.0,
+    "wrong_system_prompt": 1.0,
+    "dropped_message": 1.0,
+    "poisoned_argument": 1.0
+  },
+  "overall_top1_precision": 1.0,
+  "negative_control_max_flip": 0.0,
+  "n_runs_per_class": 10,
+  "k": 5,
+  "reproduce_cmd": "tracefork validate --k 5 --n-runs 10"
+}
