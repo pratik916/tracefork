@@ -10,7 +10,14 @@ uv.lock
 *.tape.sqlite
 /tmp_tapes/
 
+# Runtime artifacts (CLI output, regenerated on demand)
+/store.db
+/report.html
+/blame_*.json
+/validation_report.json
+
 # Local-only planning scaffolding (workspace convention)
 docs/superpowers/
 .beads/
 planning/
+.superpowers/
