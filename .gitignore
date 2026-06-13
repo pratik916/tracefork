@@ -15,6 +15,7 @@ uv.lock
 /report.html
 /blame_*.json
 /validation_report.json
+/examples/demo_report.html
 
 # Local-only planning scaffolding (workspace convention)
 docs/superpowers/
