@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .providers import get_adapter
+
 _INJECT_MARKER = "</head>"
 
 
@@ -31,6 +33,7 @@ def _template_path() -> Path:
 
 def _tape_to_data(tape, blame: dict | None = None) -> dict:
     """Convert a Tape to the JSON shape expected by the web UI."""
+    adapter = get_adapter("anthropic")
     exchanges = []
     for req_bytes, resp_bytes in tape.exchanges:
         try:
@@ -41,15 +44,9 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
         try:
             resp_json = json.loads(resp_bytes.decode())
         except Exception:
-            # SSE stream — extract first data line
-            lines = resp_bytes.decode(errors="replace").splitlines()
-            data_lines = [
-                line[6:] for line in lines if line.startswith("data: ") and line != "data: [DONE]"
-            ]
-            try:
-                resp_json = json.loads(data_lines[0]) if data_lines else {"_raw": "sse"}
-            except Exception:
-                resp_json = {"_raw": "sse"}
+            # Streaming response — let the provider adapter extract the first
+            # JSON object from the SSE framing (or fall back to an opaque marker).
+            resp_json = adapter.parse_sse(resp_bytes) or {"_raw": "sse"}
 
         # Determine role from response
         role = "unknown"

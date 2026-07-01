@@ -24,7 +24,6 @@ counterfactual tail hits the real API under the budget cap.
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ import httpx
 
 from .constants import PRICING_TABLE, SONNET
 from .fork import BranchSpec, ForkEngine
+from .providers import get_adapter
 from .tape import Tape
 
 # ── Wilson score CI ────────────────────────────────────────────────────────
@@ -118,11 +118,9 @@ class BudgetExceededError(RuntimeError):
 
 def _detect_model(tape: Tape) -> str:
     """Best-effort model id from the first recorded request (defaults to Sonnet)."""
+    adapter = get_adapter()
     for req, _ in tape.exchanges:
-        try:
-            m = json.loads(req).get("model")
-        except Exception:
-            m = None
+        m = adapter.detect_model(req)
         if m:
             return m
     return SONNET
@@ -133,18 +131,17 @@ def _avg_tokens(tape: Tape) -> tuple[float, float]:
     present, else a ~4-bytes-per-token estimate from the raw bytes."""
     if not tape.exchanges:
         return (0.0, 0.0)
+    adapter = get_adapter()
     ins: list[float] = []
     outs: list[float] = []
     for req, resp in tape.exchanges:
-        usage: dict = {}
         try:
-            d = json.loads(resp)
-            if isinstance(d, dict):
-                usage = d.get("usage") or {}
+            norm = adapter.parse_response(resp)
+            in_tok, out_tok = norm.input_tokens, norm.output_tokens
         except Exception:
-            usage = {}
-        ins.append(usage.get("input_tokens") or max(1, len(req) // 4))
-        outs.append(usage.get("output_tokens") or max(1, len(resp) // 4))
+            in_tok = out_tok = None
+        ins.append(in_tok or max(1, len(req) // 4))
+        outs.append(out_tok or max(1, len(resp) // 4))
     n = len(tape.exchanges)
     return (sum(ins) / n, sum(outs) / n)
 
@@ -185,16 +182,13 @@ class BudgetGovernor:
 
 
 def _outcome_text(resp_bytes: bytes) -> str:
-    """Extract the assistant's text from a recorded response (JSON or SSE)."""
+    """Extract the assistant's text from a recorded response via the provider
+    adapter, falling back to the decoded raw bytes when it is not parseable JSON."""
     try:
-        d = json.loads(resp_bytes)
+        norm = get_adapter().parse_response(resp_bytes)
     except Exception:
         return resp_bytes.decode(errors="replace")
-    if isinstance(d, dict):
-        for block in d.get("content", []):
-            if block.get("type") == "text":
-                return block.get("text", "")
-    return ""
+    return norm.first_text()
 
 
 def _interpret(flip_rate: float) -> str:
