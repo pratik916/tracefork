@@ -187,7 +187,11 @@ def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     denom = 1 + z**2 / n
     centre = (p + z**2 / (2 * n)) / denom
     spread = (z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2))) / denom
-    return (max(0.0, centre - spread), min(1.0, centre + spread))
+    # Snap the analytically-exact boundaries (x=0 -> lo=0, x=n -> hi=1); the
+    # closed form yields ~1e-17 float dust there that differs across platforms.
+    lo = 0.0 if successes == 0 else max(0.0, centre - spread)
+    hi = 1.0 if successes == n else min(1.0, centre + spread)
+    return (lo, hi)
 
 
 def proportion_ci(
