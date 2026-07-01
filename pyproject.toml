@@ -10,6 +10,27 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Pratik Soni", email = "godofcode.pratik@gmail.com" }]
+keywords = [
+    "ai-agents", "llm", "debugging", "time-travel-debugger", "record-replay",
+    "causal-inference", "anthropic", "observability", "determinism",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -22,6 +43,12 @@ dev = [
 
 [project.scripts]
 tracefork = "tracefork.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/pratik916/tracefork"
+Repository = "https://github.com/pratik916/tracefork"
+Issues = "https://github.com/pratik916/tracefork/issues"
+Changelog = "https://github.com/pratik916/tracefork/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
