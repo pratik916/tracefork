@@ -1,6 +1,16 @@
-"""Centralised constants — model IDs, pricing, determinism boundary."""
+"""Centralised constants — model IDs, pricing, determinism boundary, tape format."""
 
 BOUNDARY_V1 = "single-process-asyncio-v1"
+
+# ── Tape on-the-wire (to_bytes/from_bytes) format ───────────────────────────
+# Magic marker + uint16 version prefix the serialized-tape envelope. The magic
+# begins with a NUL-free ASCII tag and ends in NUL so a versioned blob can never
+# be mistaken for the legacy JSON encoding (which starts with '{'). Blobs without
+# this marker are treated as legacy format version 1 (JSON + base64) and still
+# load — see tape.from_bytes. Bumping TAPE_FORMAT_VERSION adds a decoder + an
+# upcaster entry; existing blobs keep loading via the read-time upcaster chain.
+TAPE_MAGIC = b"TFTAPE\x00"
+TAPE_FORMAT_VERSION = 2
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"

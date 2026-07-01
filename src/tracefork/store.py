@@ -8,10 +8,10 @@ Schema:
 
 from __future__ import annotations
 
-import sqlite3
+import threading
 import uuid
 
-from .tape import Tape
+from .tape import Tape, open_sqlite
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS tapes (
@@ -38,21 +38,31 @@ class TapeStore:
 
     def __init__(self, db_path: str = "store.db") -> None:
         self._path = db_path
-        self._con = sqlite3.connect(db_path, check_same_thread=False)
+        # WAL + busy_timeout + foreign_keys, autocommit so writers take an explicit
+        # write lock (see open_sqlite). The one shared connection is safe across
+        # threads (check_same_thread=False); `_write_lock` serializes the blame
+        # fork write fan-out so two threads never open a transaction at once.
+        self._con = open_sqlite(db_path)
+        self._write_lock = threading.Lock()
         self._con.executescript(_DDL)
-        self._con.commit()
 
     # ── tapes ──────────────────────────────────────────────────────────────
 
     def save_tape(self, tape: Tape, *, run_id: str | None = None, created_at: str = "") -> str:
         rid = run_id or uuid.uuid4().hex[:12]
         blob = tape.to_bytes()
-        self._con.execute(
-            "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) "
-            "VALUES(?,?,?,?)",
-            (rid, tape.agent_name, blob, created_at),
-        )
-        self._con.commit()
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) "
+                    "VALUES(?,?,?,?)",
+                    (rid, tape.agent_name, blob, created_at),
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
         return rid
 
     def load_tape(self, run_id: str) -> Tape:
@@ -80,14 +90,20 @@ class TapeStore:
     ) -> str:
         bid = uuid.uuid4().hex[:12]
         blob = delta_tape.to_bytes()
-        self._con.execute(
-            """INSERT INTO branches
-               (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
-                mutation_desc, created_at)
-               VALUES(?,?,?,?,?,?)""",
-            (bid, parent_run_id, divergence_step, blob, mutation_desc, created_at),
-        )
-        self._con.commit()
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    """INSERT INTO branches
+                       (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+                        mutation_desc, created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (bid, parent_run_id, divergence_step, blob, mutation_desc, created_at),
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
         return bid
 
     def load_branch(self, branch_id: str) -> dict:
