@@ -4,19 +4,24 @@ Record mode: forward to the inner transport, buffer the full response body
 (works for both streaming SSE and non-streaming JSON — httpx buffers both
 identically via .read()/.aread()), append to the tape, return the response.
 
-Replay mode: for each request, sha256-assert its *body* matches the tape record,
-then serve the recorded bytes back. A replay transport has no inner transport;
-any unrecorded request is a hard error. The matched surface is the request body;
-request headers (e.g. ``anthropic-beta`` / ``anthropic-version``) are out of scope
-for the bit-exactness claim — see the README's determinism-boundary note.
+Replay mode: for each request, fingerprint-assert it matches the tape record via
+a ``RequestMatcher`` (default: raw ``sha256`` of the request body), then serve the
+recorded bytes back. A replay transport has no inner transport; any unrecorded
+request is a hard error. The default matched surface is the request body; request
+headers (e.g. ``anthropic-beta`` / ``anthropic-version``) are out of scope for the
+bit-exactness claim — see the README's determinism-boundary note. An opt-in
+``RequestMatcher`` (``matcher=``) can normalize volatile fields before hashing for
+providers whose raw bytes are non-deterministic; the record and replay sides MUST
+share the same matcher instance or the fingerprints will not line up.
 """
 
 from __future__ import annotations
 
 import httpx
 
+from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError
-from .tape import Tape, sha256_hex
+from .tape import Tape
 
 
 class TraceforkTransport(httpx.BaseTransport):
@@ -27,6 +32,8 @@ class TraceforkTransport(httpx.BaseTransport):
         mode: str,
         tape: Tape,
         inner: httpx.BaseTransport | None = None,
+        *,
+        matcher: RequestMatcher | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -34,16 +41,16 @@ class TraceforkTransport(httpx.BaseTransport):
         self.mode = mode
         self.tape = tape
         self.inner = inner
+        # Default is identity: raw sha256(request.content) — the pre-seam contract.
+        self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self._i = 0
         self.matched = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        body = request.content
-
         if self.mode == "record":
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
-            self.tape.append_exchange(body, resp_body)
+            self.tape.append_exchange(self.matcher.stored_request(request), resp_body)
             return httpx.Response(
                 inner_resp.status_code,
                 headers={
@@ -60,10 +67,12 @@ class TraceforkTransport(httpx.BaseTransport):
                 f"(tape has {len(self.tape.exchanges)} exchanges)"
             )
         rec_req, rec_resp = self.tape.exchange(self._i)
-        if sha256_hex(rec_req) != sha256_hex(body):
+        rec_fp = self.matcher.stored_fingerprint(rec_req)
+        live_fp = self.matcher.live_fingerprint(request)
+        if rec_fp != live_fp:
             raise DivergenceError(
                 f"request #{self._i} diverged from tape "
-                f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]})"
+                f"(recorded {rec_fp[:12]}, replay {live_fp[:12]})"
             )
         self._i += 1
         self.matched += 1
@@ -86,6 +95,8 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         mode: str,
         tape: Tape,
         inner: httpx.AsyncBaseTransport | None = None,
+        *,
+        matcher: RequestMatcher | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -93,16 +104,15 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         self.mode = mode
         self.tape = tape
         self.inner = inner
+        self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self._i = 0
         self.matched = 0
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        body = request.content
-
         if self.mode == "record":
             inner_resp = await self.inner.handle_async_request(request)  # type: ignore[union-attr]
             resp_body = await inner_resp.aread()
-            self.tape.append_exchange(body, resp_body)
+            self.tape.append_exchange(self.matcher.stored_request(request), resp_body)
             return httpx.Response(
                 inner_resp.status_code,
                 headers={
@@ -119,10 +129,12 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
                 f"(tape has {len(self.tape.exchanges)} exchanges)"
             )
         rec_req, rec_resp = self.tape.exchange(self._i)
-        if sha256_hex(rec_req) != sha256_hex(body):
+        rec_fp = self.matcher.stored_fingerprint(rec_req)
+        live_fp = self.matcher.live_fingerprint(request)
+        if rec_fp != live_fp:
             raise DivergenceError(
                 f"request #{self._i} diverged from tape "
-                f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]})"
+                f"(recorded {rec_fp[:12]}, replay {live_fp[:12]})"
             )
         self._i += 1
         self.matched += 1
