@@ -1,9 +1,11 @@
-"""Synthetic Anthropic transports — offline, deterministic stand-ins for the API.
+"""Synthetic provider transports — offline, deterministic stand-ins for the API.
 
-These serve real Anthropic wire-format bytes (built by `tracefork.wire`) so the
-genuine SDK parses them, but never touch the network. They are production
-components: the self-validation suite (`tracefork validate`) and the test suite
-both drive the recorder/fork/blame machinery through them at $0.
+These serve opaque provider wire-format bytes (built by `tracefork.wire`, which
+delegates to the registered provider adapter) so the genuine SDK parses them, but
+never touch the network. The transports themselves are provider-agnostic — they
+replay whatever response bytes they are handed. They are production components:
+the self-validation suite (`tracefork validate`) and the test suite both drive
+the recorder/fork/blame machinery through them at $0.
 
   - `ScriptedFakeLLM`     — returns a fixed list of responses in order.
   - `AsyncScriptedFakeLLM`— async variant.

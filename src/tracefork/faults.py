@@ -17,6 +17,9 @@ from __future__ import annotations
 import enum
 import json
 
+from .constants import SONNET
+from .providers import get_adapter
+
 FAULT_MARKER = "FAULT_MARKER"
 FAULT_MARKER_BYTES = FAULT_MARKER.encode()
 
@@ -30,18 +33,10 @@ class FaultClass(enum.Enum):
 
 
 def _text_message(text: str) -> bytes:
-    return json.dumps(
-        {
-            "id": "msg_fault",
-            "type": "message",
-            "role": "assistant",
-            "model": "claude-sonnet-4-6",
-            "content": [{"type": "text", "text": text}],
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": {"input_tokens": 10, "output_tokens": 10},
-        }
-    ).encode()
+    """A minimal marked text response, built through the provider adapter."""
+    return get_adapter("anthropic").build_text_response(
+        text, model=SONNET, input_tokens=10, output_tokens=10, message_id="msg_fault"
+    )
 
 
 class FaultInjector:
@@ -69,20 +64,13 @@ class FaultInjector:
         Falls back to a marked text message if the response has no tool_use
         block, so the fault always carries the marker inside valid JSON.
         """
-        try:
-            d = json.loads(resp_bytes)
-        except Exception:
+        d, tool_inputs = get_adapter("anthropic").tool_use_inputs(resp_bytes)
+        if d is None or not tool_inputs:
             return _text_message(f"corrupted output {FAULT_MARKER}")
-        touched = False
-        for block in d.get("content", []):
-            if block.get("type") == "tool_use":
-                inp = block.setdefault("input", {})
-                if field in inp:
-                    inp[field] = new_value
-                inp["_tracefork_fault"] = FAULT_MARKER
-                touched = True
-        if not touched:
-            return _text_message(f"corrupted output {FAULT_MARKER}")
+        for inp in tool_inputs:
+            if field in inp:
+                inp[field] = new_value
+            inp["_tracefork_fault"] = FAULT_MARKER
         return json.dumps(d).encode()
 
     @staticmethod
@@ -92,23 +80,18 @@ class FaultInjector:
     @staticmethod
     def poisoned_argument(resp_bytes: bytes) -> bytes:
         """Corrupt a tool-call argument (destination/city/location → INVALID)."""
-        try:
-            d = json.loads(resp_bytes)
-        except Exception:
+        d, tool_inputs = get_adapter("anthropic").tool_use_inputs(resp_bytes)
+        if d is None or not tool_inputs:
             return _text_message(f"poisoned argument {FAULT_MARKER}")
         touched = False
-        for block in d.get("content", []):
-            if block.get("type") == "tool_use":
-                inp = block.setdefault("input", {})
-                for key in ("destination", "city", "location"):
-                    if key in inp:
-                        inp[key] = f"INVALID {FAULT_MARKER}"
-                        touched = True
-                if not touched:
-                    inp["_tracefork_fault"] = FAULT_MARKER
+        for inp in tool_inputs:
+            for key in ("destination", "city", "location"):
+                if key in inp:
+                    inp[key] = f"INVALID {FAULT_MARKER}"
                     touched = True
-        if not touched:
-            return _text_message(f"poisoned argument {FAULT_MARKER}")
+            if not touched:
+                inp["_tracefork_fault"] = FAULT_MARKER
+                touched = True
         return json.dumps(d).encode()
 
     # ── text faults (replace the response with a marked text message) ─────────
