@@ -192,6 +192,16 @@ def blame(
     ),
     success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
     failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
+    ci_method: str = typer.Option(
+        "wilson", "--ci-method", help="Proportion CI: wilson|jeffreys|clopper_pearson|agresti_coull"
+    ),
+    confidence: float = typer.Option(0.95, "--confidence", help="CI confidence level (0,1)"),
+    fdr_q: float = typer.Option(
+        0.10, "--fdr-q", help="Benjamini-Hochberg false-discovery-rate for the responsible set"
+    ),
+    null_flip_rate: float = typer.Option(
+        0.05, "--null-flip-rate", help="Chance-flip null the binomial test scores each step against"
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path("store.db"), "--store", help="Path to store.db"
     ),
@@ -210,9 +220,14 @@ def blame(
     import json
     import os
 
-    from tracefork.blame import BlameEngine, BudgetGovernor, StringMatchOracle
+    from tracefork.blame import BlameEngine, BudgetGovernor, CIMethod, StringMatchOracle
     from tracefork.store import TapeStore
     from tracefork.wire import make_text_response
+
+    try:
+        method = CIMethod(ci_method)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     db = TapeStore(str(store))
     tape = db.load_tape(run_id)
@@ -243,17 +258,36 @@ def blame(
         k=k,
         budget_usd=budget,
         api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        ci_method=method,
+        confidence=confidence,
+        null_flip_rate=null_flip_rate,
+        fdr_q=fdr_q,
     )
 
-    typer.echo(f"\n  run-{run_id} · blame analysis · k={k} · {report.total_forks} forks\n")
-    typer.echo(f"  {'rank':<5} {'step':<8} {'flip-rate':<12} {'95% CI':<22} interpretation")
-    typer.echo(f"  {'─' * 70}")
+    ci_pct = round(confidence * 100)
+    typer.echo(
+        f"\n  run-{run_id} · blame analysis · k={k} · {report.total_forks} forks "
+        f"· {method.value} {ci_pct}% CI\n"
+    )
+    ci_hdr = f"{ci_pct}% CI"
+    typer.echo(
+        f"  {'rank':<5} {'step':<8} {'flip-rate':<12} {ci_hdr:<22} "
+        f"{'undef':<7} {'q-value':<10} interpretation"
+    )
+    typer.echo(f"  {'─' * 88}")
     for rank, r in enumerate(report.results, 1):
         ci_str = f"[{r.ci_lo:.2f}, {r.ci_hi:.2f}]"
+        undef_str = f"{r.undefined}/{r.trials}"
+        flag = " ⚠" if not r.trustworthy else ""
         typer.echo(
             f"  {rank:<5} step-{r.step_index:<3} {r.flip_rate:<12.2f} "
-            f"{ci_str:<22} {r.interpretation}"
+            f"{ci_str:<22} {undef_str:<7} {r.q_value:<10.3g} {r.interpretation}{flag}"
         )
+    if report.responsible_set:
+        steps = ", ".join(f"step-{s}" for s in report.responsible_set)
+        typer.echo(f"\n  responsible set (FDR q≤{fdr_q}): {steps}")
+    else:
+        typer.echo(f"\n  responsible set (FDR q≤{fdr_q}): (none pass the significance bar)")
     typer.echo("")
 
     report_path = Path(f"blame_{run_id}.json")
@@ -262,12 +296,25 @@ def blame(
             {
                 "run_id": run_id,
                 "k": k,
+                "ci_method": method.value,
+                "confidence": confidence,
+                "null_flip_rate": null_flip_rate,
+                "fdr_q": fdr_q,
+                "responsible_set": report.responsible_set,
                 "results": [
                     {
                         "step_index": r.step_index,
                         "flip_rate": r.flip_rate,
                         "ci_lo": r.ci_lo,
                         "ci_hi": r.ci_hi,
+                        "valid_trials": r.valid_trials,
+                        "undefined": r.undefined,
+                        "divergences": r.divergences,
+                        "divergence_rate": r.divergence_rate,
+                        "trustworthy": r.trustworthy,
+                        "p_value": r.p_value,
+                        "q_value": r.q_value,
+                        "responsible": r.responsible,
                         "interpretation": r.interpretation,
                     }
                     for r in report.results
