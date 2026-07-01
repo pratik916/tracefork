@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import anthropic
 import httpx
 
+from .matcher import RequestMatcher
 from .nondet import DivergenceError, find_divergence
 from .tape import Tape
 from .transport import TraceforkTransport
@@ -52,13 +53,15 @@ class ReplayVerifier:
         agent_fn,  # Callable[[anthropic.Anthropic], Any]
         *,
         api_key: str = "sk-ant-replay",
+        matcher: RequestMatcher | None = None,
     ) -> None:
         self._tape = tape
         self._agent_fn = agent_fn
         self._api_key = api_key
+        self._matcher = matcher
 
     def verify(self) -> VerificationResult:
-        transport = TraceforkTransport("replay", self._tape)
+        transport = TraceforkTransport("replay", self._tape, matcher=self._matcher)
         client = anthropic.Anthropic(
             api_key=self._api_key,
             http_client=httpx.Client(transport=transport),

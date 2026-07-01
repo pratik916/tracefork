@@ -27,17 +27,31 @@ from collections.abc import Callable
 import anthropic
 import httpx
 
+from .matcher import RequestMatcher
 from .nondet import RecordingNondet
 from .tape import Tape
 from .transport import AsyncTraceforkTransport, TraceforkTransport
 
 
 class Recorder:
-    """Sync context manager that records an Anthropic client's I/O."""
+    """Sync context manager that records an Anthropic client's I/O.
 
-    def __init__(self, client: anthropic.Anthropic, agent_name: str = "") -> None:
+    ``matcher`` is an opt-in ``RequestMatcher``; the default (``None``) is the
+    identity matcher (raw ``sha256`` of the request body). If a canonicalizing
+    matcher is passed, the *same* matcher must be used at replay/fork/verify time
+    or the fingerprints will not line up.
+    """
+
+    def __init__(
+        self,
+        client: anthropic.Anthropic,
+        agent_name: str = "",
+        *,
+        matcher: RequestMatcher | None = None,
+    ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
+        self._matcher = matcher
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
@@ -66,7 +80,7 @@ class Recorder:
         # Extract the original httpx transport to use as the recording inner transport.
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
         orig_inner = self._orig_client._client._transport
-        transport = TraceforkTransport("record", self._tape, orig_inner)
+        transport = TraceforkTransport("record", self._tape, orig_inner, matcher=self._matcher)
         # `.copy()` preserves the original client's base_url, auth_token, default
         # headers/query and timeout — only the transport and retries are swapped, so
         # a proxied or custom-base_url client still records faithfully.
@@ -93,9 +107,16 @@ class Recorder:
 class AsyncRecorder:
     """Async context manager that records an AsyncAnthropic client's I/O."""
 
-    def __init__(self, client: anthropic.AsyncAnthropic, agent_name: str = "") -> None:
+    def __init__(
+        self,
+        client: anthropic.AsyncAnthropic,
+        agent_name: str = "",
+        *,
+        matcher: RequestMatcher | None = None,
+    ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
+        self._matcher = matcher
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
@@ -119,7 +140,7 @@ class AsyncRecorder:
         self._tape.draws = self._nondet.draws
 
         orig_inner = self._orig_client._client._transport
-        transport = AsyncTraceforkTransport("record", self._tape, orig_inner)
+        transport = AsyncTraceforkTransport("record", self._tape, orig_inner, matcher=self._matcher)
         # `.copy()` preserves base_url, auth_token, default headers/query and timeout
         # (see the sync Recorder) — only the transport and retries are swapped.
         self._wrapped_client = self._orig_client.copy(
