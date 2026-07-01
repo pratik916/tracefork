@@ -10,7 +10,7 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(65 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(78 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
 classes at 1.00 top-1 precision). `src/tracefork_spike/` keeps the original Spike 0 that
@@ -26,7 +26,7 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (65 tests)
+uv run pytest -q                     # full offline suite (78 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
@@ -55,8 +55,15 @@ The product lives in `src/tracefork/`:
   sha256-asserts each request body matches (the divergence detector). A replay transport
   has **no inner transport**, so any unrecorded request is a hard error.
 - `tape.py` — `Tape` is content-addressed (sha256 blobs) + an ordered event log,
-  JSON+base64 in memory, persistable to SQLite, with a hash-chain `digest()` fingerprint.
-  (`to_bytes`/`from_bytes` are JSON, **not pickle** — no arbitrary-code-execution risk.)
+  persistable to SQLite, with a hash-chain `digest()` fingerprint. `to_bytes`/`from_bytes`
+  emit a **versioned envelope** (`TAPE_MAGIC` + uint16 version, then a zstd + content-
+  addressed binary container — no base64); `from_bytes` dispatches on the version through a
+  read-time upcaster chain and still loads legacy header-less JSON blobs as v1. The version
+  header is envelope metadata, **not** part of `digest()`, so the hash chain is byte-stable
+  across format versions. It's a JSON header + zstd blobs, **not pickle** — no
+  arbitrary-code-execution risk. `open_sqlite()` is the one hardened connection factory
+  (WAL, `synchronous=NORMAL`, `busy_timeout`, `foreign_keys=ON`); writers take `BEGIN
+  IMMEDIATE`. `store.py` reuses it and serializes its write fan-out with a lock.
 - `recorder.py` — `Recorder` context manager wraps a real `anthropic.Anthropic` at its
   `_client._transport` seam (via `client.copy(http_client=...)`, so base_url / auth_token /
   default headers are preserved). Patches `uuid.uuid4` globally; **does not** patch
