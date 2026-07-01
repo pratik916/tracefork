@@ -3,14 +3,14 @@
 Serves the report HTML at / and JSON endpoints at /api/run/{run_id}
 and /api/branch/{branch_id}. Single-threaded (uvicorn --workers 1).
 """
+
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .store import TapeStore
 from .report import _tape_to_data, _template_path
-
+from .store import TapeStore
 
 # No CORS middleware: the UI is served same-origin by this app and uvicorn
 # binds to 127.0.0.1 (see the `serve` CLI command), so cross-origin access is
@@ -52,7 +52,7 @@ async def get_run(run_id: str) -> JSONResponse:
     try:
         tape = store.load_tape(run_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found") from None
     data = _tape_to_data(tape)
     data["run_id"] = run_id
     return JSONResponse(data)
@@ -64,7 +64,7 @@ async def get_branch(branch_id: str) -> JSONResponse:
     try:
         branch = store.load_branch(branch_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"branch {branch_id!r} not found")
+        raise HTTPException(status_code=404, detail=f"branch {branch_id!r} not found") from None
     data = _tape_to_data(branch["delta_tape"])
     data["branch_id"] = branch_id
     data["parent_run_id"] = branch["parent_run_id"]

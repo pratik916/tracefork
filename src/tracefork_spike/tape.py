@@ -64,7 +64,7 @@ class Tape:
             con.close()
 
     @classmethod
-    def load(cls, path: str) -> "Tape":
+    def load(cls, path: str) -> Tape:
         con = sqlite3.connect(path)
         try:
             blobs = dict(con.execute("SELECT hash, data FROM blobs").fetchall())

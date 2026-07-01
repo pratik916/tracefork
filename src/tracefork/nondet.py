@@ -8,6 +8,7 @@ the negative control (fresh real values → forced divergence).
 The SDK masks transport exceptions as `APIConnectionError`; `find_divergence`
 unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -50,7 +51,7 @@ class RecordingNondet:
         self.draws: list[tuple[str, str]] = []
 
     def now_iso(self) -> str:
-        v = self._real_now(datetime.timezone.utc).isoformat()
+        v = self._real_now(datetime.UTC).isoformat()
         self.draws.append(("clock", v))
         return v
 

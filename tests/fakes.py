@@ -7,6 +7,7 @@ The real implementations are production components in the package:
 Tests import them from here for convenience; nothing in the package imports
 from the test tree.
 """
+
 from __future__ import annotations
 
 from tracefork.synthetic import (

@@ -7,6 +7,7 @@ overlay. Open the resulting HTML in any browser — no server required.
     uv run python examples/demo_report.py
     open examples/demo_report.html
 """
+
 from __future__ import annotations
 
 import json
@@ -56,8 +57,12 @@ def main() -> None:
         return SUCCESS_RESP, ScriptedFakeLLM([SUCCESS_RESP] * 30)
 
     report = BlameEngine.rank(
-        tape, synthetic_agent, oracle,
-        perturb_factory=perturb_factory, k=20, budget_usd=100.0,
+        tape,
+        synthetic_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=20,
+        budget_usd=100.0,
     )
 
     blame = {

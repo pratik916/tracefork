@@ -10,6 +10,7 @@ any unrecorded request is a hard error. The matched surface is the request body;
 request headers (e.g. ``anthropic-beta`` / ``anthropic-version``) are out of scope
 for the bit-exactness claim — see the README's determinism-boundary note.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -45,7 +46,9 @@ class TraceforkTransport(httpx.BaseTransport):
             self.tape.append_exchange(body, resp_body)
             return httpx.Response(
                 inner_resp.status_code,
-                headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
+                headers={
+                    "content-type": inner_resp.headers.get("content-type", "application/json")
+                },
                 content=resp_body,
                 request=request,
             )
@@ -102,7 +105,9 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
             self.tape.append_exchange(body, resp_body)
             return httpx.Response(
                 inner_resp.status_code,
-                headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
+                headers={
+                    "content-type": inner_resp.headers.get("content-type", "application/json")
+                },
                 content=resp_body,
                 request=request,
             )

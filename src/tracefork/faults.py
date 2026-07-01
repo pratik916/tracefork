@@ -11,11 +11,11 @@ The marker must stay inside the JSON: appending it after the closing brace
 would make the response unparseable and the fault would vanish into an
 exception instead of propagating.
 """
+
 from __future__ import annotations
 
 import enum
 import json
-
 
 FAULT_MARKER = "FAULT_MARKER"
 FAULT_MARKER_BYTES = FAULT_MARKER.encode()
@@ -30,16 +30,18 @@ class FaultClass(enum.Enum):
 
 
 def _text_message(text: str) -> bytes:
-    return json.dumps({
-        "id": "msg_fault",
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-sonnet-4-6",
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 10},
-    }).encode()
+    return json.dumps(
+        {
+            "id": "msg_fault",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 10},
+        }
+    ).encode()
 
 
 class FaultInjector:

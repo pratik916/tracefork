@@ -21,19 +21,23 @@ tail_transport)`. In tests and the offline validation suite, `tail_transport`
 is a scripted fake (zero cost); for a live run it is `None`, so the
 counterfactual tail hits the real API under the budget cap.
 """
+
 from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol, cast
+
+import httpx
 
 from .constants import PRICING_TABLE, SONNET
 from .fork import BranchSpec, ForkEngine
 from .tape import Tape
 
-
 # ── Wilson score CI ────────────────────────────────────────────────────────
+
 
 def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """95% Wilson score confidence interval for a proportion."""
@@ -48,6 +52,7 @@ def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 # ── Oracle protocol ─────────────────────────────────────────────────────────
 
+
 class Oracle(Protocol):
     def grade(self, output: str) -> bool | None: ...
 
@@ -57,6 +62,7 @@ class StringMatchOracle:
 
     def __init__(self, *, success_re: str, failure_re: str) -> None:
         import re
+
         self._success = re.compile(success_re)
         self._failure = re.compile(failure_re)
 
@@ -69,6 +75,7 @@ class StringMatchOracle:
 
 
 # ── Result types ────────────────────────────────────────────────────────────
+
 
 @dataclass
 class FlipRateResult:
@@ -103,6 +110,7 @@ class BlameEstimate:
 
 
 # ── BudgetGovernor ──────────────────────────────────────────────────────────
+
 
 class BudgetExceededError(RuntimeError):
     """Raised when a blame run's estimated cost exceeds the caller's budget."""
@@ -175,6 +183,7 @@ class BudgetGovernor:
 
 # ── outcome extraction ────────────────────────────────────────────────────────
 
+
 def _outcome_text(resp_bytes: bytes) -> str:
     """Extract the assistant's text from a recorded response (JSON or SSE)."""
     try:
@@ -198,13 +207,14 @@ def _interpret(flip_rate: float) -> str:
 
 # ── BlameEngine ─────────────────────────────────────────────────────────────
 
+
 class BlameEngine:
     """Ranks exchanges by causal flip-rate."""
 
     @staticmethod
     def rank(
         tape: Tape,
-        agent_fn,                 # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
         oracle: Oracle,
         *,
         perturb_factory: Callable[[int], tuple[bytes, object]],
@@ -237,11 +247,14 @@ class BlameEngine:
         for step_idx in range(len(tape.exchanges)):
             flips = 0
             for _trial in range(k):
-                mutated_resp, tail_transport = perturb_factory(step_idx)
+                mutated_resp, tail_transport_obj = perturb_factory(step_idx)
+                tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
                 spec = BranchSpec(divergence_step=step_idx, mutated_response=mutated_resp)
                 try:
                     branch = ForkEngine.fork(
-                        tape, spec, agent_fn,
+                        tape,
+                        spec,
+                        agent_fn,
                         post_fork_transport=tail_transport,
                         api_key=api_key,
                     )
@@ -261,18 +274,23 @@ class BlameEngine:
 
             flip_rate = flips / k if k > 0 else 0.0
             ci_lo, ci_hi = wilson_ci(flips, k)
-            results.append(FlipRateResult(
-                step_index=step_idx,
-                flip_rate=flip_rate,
-                ci_lo=ci_lo,
-                ci_hi=ci_hi,
-                flips=flips,
-                trials=k,
-                interpretation=_interpret(flip_rate),
-            ))
+            results.append(
+                FlipRateResult(
+                    step_index=step_idx,
+                    flip_rate=flip_rate,
+                    ci_lo=ci_lo,
+                    ci_hi=ci_hi,
+                    flips=flips,
+                    trials=k,
+                    interpretation=_interpret(flip_rate),
+                )
+            )
 
         results.sort(key=lambda r: r.flip_rate, reverse=True)
         return BlameReport(
-            results=results, k=k, total_forks=total_forks, parent_outcome=parent_outcome,
+            results=results,
+            k=k,
+            total_forks=total_forks,
+            parent_outcome=parent_outcome,
             est_cost_usd=est.est_usd,
         )

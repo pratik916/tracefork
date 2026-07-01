@@ -1,14 +1,12 @@
 """Replay + DriftDoctor tests — all offline, no API keys."""
-import pytest
+
 import anthropic
 import httpx
 
-from tracefork.tape import Tape
-from tracefork.nondet import DivergenceError
-from tracefork.transport import TraceforkTransport
-from tracefork.replay import ReplayVerifier, DriftDoctor, DriftCause, VerificationResult
 from tests.fakes import ScriptedFakeLLM, make_text_response, make_tool_use_response
-
+from tracefork.replay import DriftCause, DriftDoctor, ReplayVerifier
+from tracefork.tape import Tape
+from tracefork.transport import TraceforkTransport
 
 TEXT_RESP = make_text_response("Done.")
 TOOL_RESP = make_tool_use_response("book_flight", {"destination": "Tokyo", "seats": 1})
@@ -25,7 +23,8 @@ def _record_tape(responses: list[bytes]) -> Tape:
         max_retries=0,
     )
     client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "Hello"}],
     )
     return tape
@@ -33,7 +32,8 @@ def _record_tape(responses: list[bytes]) -> Tape:
 
 def _agent_fn(client: anthropic.Anthropic) -> str:
     resp = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "Hello"}],
     )
     return resp.content[0].text
@@ -55,7 +55,8 @@ def test_verifier_fails_on_code_change():
 
     def different_agent(client: anthropic.Anthropic) -> str:
         resp = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "Completely different prompt"}],
         )
         return resp.content[0].text
@@ -77,12 +78,20 @@ def test_verifier_matched_count():
     )
 
     def two_turn_agent(c: anthropic.Anthropic) -> None:
-        c.messages.create(model="claude-sonnet-4-6", max_tokens=100,
-                          messages=[{"role": "user", "content": "turn1"}])
-        c.messages.create(model="claude-sonnet-4-6", max_tokens=100,
-                          messages=[{"role": "user", "content": "turn1"},
-                                    {"role": "assistant", "content": "..."},
-                                    {"role": "user", "content": "turn2"}])
+        c.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "turn1"}],
+        )
+        c.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[
+                {"role": "user", "content": "turn1"},
+                {"role": "assistant", "content": "..."},
+                {"role": "user", "content": "turn2"},
+            ],
+        )
 
     two_turn_agent(client)
 
@@ -96,7 +105,8 @@ def test_drift_doctor_classifies_code_change():
 
     def changed_agent(client: anthropic.Anthropic) -> str:
         resp = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "different"}],
         )
         return resp.content[0].text

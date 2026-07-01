@@ -1,13 +1,18 @@
 """Recorder context manager tests — sync and async."""
+
 import uuid as _uuid
 
 import anthropic
 import httpx
 import pytest
 
-from tracefork import Recorder, AsyncRecorder
-from tracefork.tape import Tape
-from tests.fakes import ScriptedFakeLLM, AsyncScriptedFakeLLM, make_tool_use_response, make_text_response
+from tests.fakes import (
+    AsyncScriptedFakeLLM,
+    ScriptedFakeLLM,
+    make_text_response,
+    make_tool_use_response,
+)
+from tracefork import AsyncRecorder, Recorder
 
 TOOL_RESP = make_tool_use_response("book_flight", {"destination": "Tokyo", "seats": 1})
 TEXT_RESP = make_text_response("Done — flight booked.")
@@ -49,11 +54,13 @@ def test_recorder_captures_two_turns():
     client = _sync_client(fake)
     with Recorder(client) as rec:
         rec.client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "Book a flight"}],
         )
         rec.client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "Confirm"}],
         )
     assert len(rec.tape.exchanges) == 2
@@ -72,7 +79,8 @@ def test_recorder_patches_uuid4():
         uid = _uuid.uuid4()
         ids_generated.append(uid)
         rec.client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "hi"}],
         )
     uuid_draws = [v for k, v in rec.tape.draws if k == "uuid"]
@@ -85,7 +93,7 @@ def test_recorder_restores_uuid4_after_exit():
     orig_uuid4 = _uuid.uuid4
     fake = ScriptedFakeLLM([TEXT_RESP])
     client = _sync_client(fake)
-    with Recorder(client) as rec:
+    with Recorder(client):
         pass
     assert _uuid.uuid4 is orig_uuid4
 
@@ -95,7 +103,8 @@ def test_recorder_tape_digest_is_stable():
     client = _sync_client(fake)
     with Recorder(client) as rec:
         rec.client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "hi"}],
         )
     d = rec.tape.digest()
@@ -108,7 +117,8 @@ async def test_async_recorder_captures_exchange():
     client = _async_client(fake)
     async with AsyncRecorder(client, agent_name="async-test") as rec:
         await rec.client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6",
+            max_tokens=100,
             messages=[{"role": "user", "content": "Hello"}],
         )
     assert len(rec.tape.exchanges) == 1
