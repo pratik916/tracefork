@@ -17,6 +17,14 @@ uv.lock
 /validation_report.json
 /examples/demo_report.html
 
+# Build, coverage, and tool caches (regenerated on demand)
+/dist/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
 # Local-only planning scaffolding (workspace convention)
 docs/superpowers/
 .beads/
