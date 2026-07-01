@@ -5,6 +5,7 @@ A tape is the recorded artifact of one agent run: ordered HTTP exchanges
 content-addressed (keyed by sha256) and zstd-compressed so identical bytes
 are stored once. `digest()` is a hash chain over all draws + exchanges.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -49,21 +50,25 @@ class Tape:
         """Serialize tape to JSON bytes (base64-encoded for binary exchange fields)."""
         import base64
         import json
-        return json.dumps({
-            "exchanges": [
-                [base64.b64encode(req).decode(), base64.b64encode(resp).decode()]
-                for req, resp in self.exchanges
-            ],
-            "draws": self.draws,
-            "boundary": self.boundary,
-            "agent_name": self.agent_name,
-        }).encode()
+
+        return json.dumps(
+            {
+                "exchanges": [
+                    [base64.b64encode(req).decode(), base64.b64encode(resp).decode()]
+                    for req, resp in self.exchanges
+                ],
+                "draws": self.draws,
+                "boundary": self.boundary,
+                "agent_name": self.agent_name,
+            }
+        ).encode()
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "Tape":
+    def from_bytes(cls, data: bytes) -> Tape:
         """Deserialize tape from JSON bytes produced by to_bytes()."""
         import base64
         import json
+
         d = json.loads(data)
         tape = cls(
             boundary=d["boundary"],
@@ -71,8 +76,7 @@ class Tape:
         )
         tape.draws = [tuple(pair) for pair in d["draws"]]
         tape.exchanges = [
-            (base64.b64decode(req), base64.b64decode(resp))
-            for req, resp in d["exchanges"]
+            (base64.b64decode(req), base64.b64decode(resp)) for req, resp in d["exchanges"]
         ]
         return tape
 
@@ -91,9 +95,7 @@ class Tape:
                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """)
             for kind, value in self.draws:
-                con.execute(
-                    "INSERT INTO events (kind, a, b) VALUES ('draw', ?, ?)", (kind, value)
-                )
+                con.execute("INSERT INTO events (kind, a, b) VALUES ('draw', ?, ?)", (kind, value))
             for req, resp in self.exchanges:
                 rh, sh = sha256_hex(req), sha256_hex(resp)
                 con.execute(
@@ -104,9 +106,7 @@ class Tape:
                     "INSERT OR IGNORE INTO blobs VALUES (?, ?)",
                     (sh, _ZCTX.compress(resp)),
                 )
-                con.execute(
-                    "INSERT INTO events (kind, a, b) VALUES ('exchange', ?, ?)", (rh, sh)
-                )
+                con.execute("INSERT INTO events (kind, a, b) VALUES ('exchange', ?, ?)", (rh, sh))
             con.execute("INSERT INTO meta VALUES ('boundary', ?)", (self.boundary,))
             con.execute("INSERT INTO meta VALUES ('agent_name', ?)", (self.agent_name,))
             con.execute("INSERT INTO meta VALUES ('schema_version', '1')")
@@ -115,7 +115,7 @@ class Tape:
             con.close()
 
     @classmethod
-    def load(cls, path: str) -> "Tape":
+    def load(cls, path: str) -> Tape:
         con = sqlite3.connect(path)
         try:
             raw_blobs = dict(con.execute("SELECT hash, data FROM blobs").fetchall())
@@ -125,9 +125,7 @@ class Tape:
                 boundary=meta.get("boundary", BOUNDARY_V1),
                 agent_name=meta.get("agent_name", ""),
             )
-            for kind, a, b in con.execute(
-                "SELECT kind, a, b FROM events ORDER BY seq"
-            ).fetchall():
+            for kind, a, b in con.execute("SELECT kind, a, b FROM events ORDER BY seq").fetchall():
                 if kind == "draw":
                     tape.draws.append((a, b))
                 elif kind == "exchange":

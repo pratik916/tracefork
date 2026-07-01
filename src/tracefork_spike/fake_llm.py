@@ -71,7 +71,9 @@ class FakeAnthropicTransport(httpx.BaseTransport):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"Done — your flight to Tokyo is booked. Confirmation {confirmation}.",
+                        "text": (
+                            f"Done — your flight to Tokyo is booked. Confirmation {confirmation}."
+                        ),
                     }
                 ],
                 "stop_reason": "end_turn",

@@ -1,5 +1,10 @@
 # tracefork
 
+[![CI](https://github.com/pratik916/tracefork/actions/workflows/ci.yml/badge.svg)](https://github.com/pratik916/tracefork/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 **A time-travel debugger for AI agents that doesn't just replay a failed run — it
 proves the replay is bit-for-bit real, lets you fork any step, and measures *which*
 step caused the failure, with confidence intervals.**
@@ -49,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (62 tests).
+# 1. The full offline test suite (65 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -163,14 +168,31 @@ src/tracefork/      transport, tape, nondet, recorder, fork, store,
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              62 offline tests ($0, no key)
+tests/              65 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 62 offline tests
+uv run pytest -q                                   # all 65 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup,
+the invariants a PR must respect, and commit/PR conventions. The whole dev loop
+(tests, `validate`, lint, type-check) is offline and $0, so you can run the full gate
+with no API key. Please also read the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for how to report a vulnerability. In short: tapes
+are JSON + base64 (never pickle, so loading one can't execute code), and `tracefork
+serve` binds to 127.0.0.1 only.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

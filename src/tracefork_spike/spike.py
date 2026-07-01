@@ -95,14 +95,19 @@ def _fmt(result: dict) -> str:
         f"  request hashes matched .... {result['request_hashes_matched']}/{result['exchanges']}",
         f"  tape fingerprint .......... {result['record_fingerprint'][:24]}…",
         f"  replay fingerprint ........ {result['replay_fingerprint'][:24]}…",
-        f"  network calls / spend ..... 0 / $0.00",
+        "  network calls / spend ..... 0 / $0.00",
         f"  agent final answer ........ {result['final_text']!r}",
         "",
-        f"    [{'x' if c['output_identical'] else ' '}] replayed trajectory byte-identical to recorded",
-        f"    [{'x' if c['fingerprint_match'] else ' '}] tape fingerprint matches after save/load round-trip",
-        f"    [{'x' if c['all_request_hashes_matched'] else ' '}] every replayed request hash matched the tape",
-        f"    [{'x' if c['all_draws_consumed'] else ' '}] every recorded nondeterminism draw consumed",
-        f"    [{'x' if c['negative_control_detected_drift'] else ' '}] negative control: drift was DETECTED, not silently passed",
+        f"    [{'x' if c['output_identical'] else ' '}] "
+        "replayed trajectory byte-identical to recorded",
+        f"    [{'x' if c['fingerprint_match'] else ' '}] "
+        "tape fingerprint matches after save/load round-trip",
+        f"    [{'x' if c['all_request_hashes_matched'] else ' '}] "
+        "every replayed request hash matched the tape",
+        f"    [{'x' if c['all_draws_consumed'] else ' '}] "
+        "every recorded nondeterminism draw consumed",
+        f"    [{'x' if c['negative_control_detected_drift'] else ' '}] "
+        "negative control: drift was DETECTED, not silently passed",
         "",
         f"  RESULT: {ok}",
         "",

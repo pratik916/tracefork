@@ -46,7 +46,7 @@ def _execute_tool(name: str, tool_input: dict, nondet: NondetSource) -> dict:
     if name == "book_flight":
         return {
             "confirmation_id": nondet.new_id("CONF"),  # virtualized nondeterminism
-            "booked_at": nondet.now_iso(),             # virtualized nondeterminism
+            "booked_at": nondet.now_iso(),  # virtualized nondeterminism
             "destination": tool_input["destination"],
             "seats": tool_input["seats"],
         }

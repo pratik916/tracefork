@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy src/tracefork
+      - name: Tests + coverage
+        run: uv run pytest -q --cov --cov-report=term-missing
+      - name: Self-validation regression gate
+        run: uv run tracefork validate --check
+      - name: Build distribution
+        run: uv build
+      - name: Twine check
+        run: uv run --with twine twine check dist/*

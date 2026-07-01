@@ -5,14 +5,13 @@ Schema:
   branches(branch_id TEXT PK, parent_run_id TEXT, divergence_step INT,
            delta_tape_bytes BLOB, mutation_desc TEXT, created_at TEXT)
 """
+
 from __future__ import annotations
 
 import sqlite3
 import uuid
-from pathlib import Path
 
 from .tape import Tape
-
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS tapes (
@@ -49,16 +48,15 @@ class TapeStore:
         rid = run_id or uuid.uuid4().hex[:12]
         blob = tape.to_bytes()
         self._con.execute(
-            "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) VALUES(?,?,?,?)",
+            "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) "
+            "VALUES(?,?,?,?)",
             (rid, tape.agent_name, blob, created_at),
         )
         self._con.commit()
         return rid
 
     def load_tape(self, run_id: str) -> Tape:
-        row = self._con.execute(
-            "SELECT tape_bytes FROM tapes WHERE run_id=?", (run_id,)
-        ).fetchone()
+        row = self._con.execute("SELECT tape_bytes FROM tapes WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(f"run_id {run_id!r} not found")
         return Tape.from_bytes(bytes(row[0]))
@@ -117,8 +115,7 @@ class TapeStore:
             (parent_run_id,),
         ).fetchall()
         return [
-            {"branch_id": r[0], "divergence_step": r[1],
-             "mutation_desc": r[2], "created_at": r[3]}
+            {"branch_id": r[0], "divergence_step": r[1], "mutation_desc": r[2], "created_at": r[3]}
             for r in rows
         ]
 

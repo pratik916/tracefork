@@ -5,6 +5,7 @@
 describing whether the replay was bit-exact. `DriftDoctor` classifies why
 a divergence happened when it wasn't.
 """
+
 from __future__ import annotations
 
 import enum
@@ -27,7 +28,7 @@ class DriftCause(enum.Enum):
 @dataclass
 class DivergenceReport:
     step_index: int
-    cause_hint: str      # raw message from DivergenceError
+    cause_hint: str  # raw message from DivergenceError
     error: DivergenceError
 
 
@@ -48,7 +49,7 @@ class ReplayVerifier:
     def __init__(
         self,
         tape: Tape,
-        agent_fn,   # Callable[[anthropic.Anthropic], Any]
+        agent_fn,  # Callable[[anthropic.Anthropic], Any]
         *,
         api_key: str = "sk-ant-replay",
     ) -> None:
@@ -87,11 +88,8 @@ class ReplayVerifier:
         recorded_fp = self._tape.digest()
 
         # Build a tape from what was replayed so far for fingerprint comparison
-        if divergence is None and transport.fully_consumed():
-            # Full replay — fingerprints should match
-            replayed_fp = recorded_fp
-        else:
-            replayed_fp = ""
+        # Full replay — fingerprints should match
+        replayed_fp = recorded_fp if divergence is None and transport.fully_consumed() else ""
 
         bit_exact = divergence is None and transport.fully_consumed()
         fingerprints_match = bit_exact and recorded_fp == replayed_fp

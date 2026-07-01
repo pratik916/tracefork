@@ -18,9 +18,11 @@ Usage (async):
         result = await my_agent(rec.client)
     tape = rec.tape
 """
+
 from __future__ import annotations
 
 import uuid as _uuid_module
+from collections.abc import Callable
 
 import anthropic
 import httpx
@@ -39,7 +41,7 @@ class Recorder:
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
-        self._orig_uuid4 = None
+        self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
 
     @property
     def client(self) -> anthropic.Anthropic:
@@ -53,7 +55,7 @@ class Recorder:
             raise RuntimeError("Use Recorder as a context manager")
         return self._tape
 
-    def __enter__(self) -> "Recorder":
+    def __enter__(self) -> Recorder:
         # RecordingNondet captures the real datetime.now and uuid.uuid4 in __init__
         # before we patch uuid.uuid4 below. Order matters.
         self._nondet = RecordingNondet()
@@ -63,7 +65,7 @@ class Recorder:
 
         # Extract the original httpx transport to use as the recording inner transport.
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
-        orig_inner = self._orig_client._client._transport  # type: ignore[attr-defined]
+        orig_inner = self._orig_client._client._transport
         transport = TraceforkTransport("record", self._tape, orig_inner)
         # `.copy()` preserves the original client's base_url, auth_token, default
         # headers/query and timeout — only the transport and retries are swapped, so
@@ -81,7 +83,7 @@ class Recorder:
         def _patched_uuid4() -> _uuid_module.UUID:
             return _uuid_module.UUID(nondet.new_uuid_hex())
 
-        _uuid_module.uuid4 = _patched_uuid4  # type: ignore[assignment]
+        _uuid_module.uuid4 = _patched_uuid4
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -97,7 +99,7 @@ class AsyncRecorder:
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
-        self._orig_uuid4 = None
+        self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -111,12 +113,12 @@ class AsyncRecorder:
             raise RuntimeError("Use AsyncRecorder as an async context manager")
         return self._tape
 
-    async def __aenter__(self) -> "AsyncRecorder":
+    async def __aenter__(self) -> AsyncRecorder:
         self._nondet = RecordingNondet()
         self._tape = Tape(agent_name=self._agent_name)
         self._tape.draws = self._nondet.draws
 
-        orig_inner = self._orig_client._client._transport  # type: ignore[attr-defined]
+        orig_inner = self._orig_client._client._transport
         transport = AsyncTraceforkTransport("record", self._tape, orig_inner)
         # `.copy()` preserves base_url, auth_token, default headers/query and timeout
         # (see the sync Recorder) — only the transport and retries are swapped.
@@ -131,7 +133,7 @@ class AsyncRecorder:
         def _patched_uuid4() -> _uuid_module.UUID:
             return _uuid_module.UUID(nondet.new_uuid_hex())
 
-        _uuid_module.uuid4 = _patched_uuid4  # type: ignore[assignment]
+        _uuid_module.uuid4 = _patched_uuid4
         return self
 
     async def __aexit__(self, *args: object) -> None:

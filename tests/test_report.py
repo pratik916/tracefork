@@ -1,4 +1,5 @@
 """Report generation smoke-tests — offline, no API keys."""
+
 import json
 import tempfile
 from pathlib import Path
@@ -6,11 +7,10 @@ from pathlib import Path
 import anthropic
 import httpx
 
+from tests.fakes import ScriptedFakeLLM, make_text_response
+from tracefork.report import generate_report
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
-from tracefork.report import generate_report
-from tests.fakes import ScriptedFakeLLM, make_text_response
-
 
 TEXT_RESP = make_text_response("Hello world")
 
@@ -25,7 +25,8 @@ def _make_tape() -> Tape:
         max_retries=0,
     )
     client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "Hello"}],
     )
     return tape
@@ -84,7 +85,8 @@ def test_report_escapes_script_breakout():
         max_retries=0,
     )
     client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "hi"}],
     )
     with tempfile.TemporaryDirectory() as tmpdir:

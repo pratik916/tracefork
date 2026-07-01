@@ -15,6 +15,7 @@ flip-rate stays near zero — otherwise a high "precision" would be meaningless.
 The synthetic agent is the same callable during recording and every fork, so
 the fork prefix replays bit-for-bit (the determinism contract blame relies on).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,6 @@ from .synthetic import FaultAwareFakeLLM, ScriptedFakeLLM
 from .tape import Tape
 from .transport import TraceforkTransport
 from .wire import make_text_response, make_tool_use_response
-
 
 SUCCESS_RESP = make_text_response("SUCCESS — confirmed")
 FAIL_RESP = make_text_response("FAIL — cancelled")
@@ -53,12 +53,14 @@ def synthetic_agent(client: anthropic.Anthropic) -> str:
     """Two-turn agent: ask, then confirm — echoing turn 1's response into the
     turn-2 request so an injected fault propagates to the outcome."""
     r1 = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "book a flight to Tokyo"}],
     )
     echoed = _serialize_response(r1)
     r2 = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[
             {"role": "user", "content": "book a flight to Tokyo"},
             {"role": "assistant", "content": echoed},
@@ -125,8 +127,12 @@ class ValidationRunner:
                 return SUCCESS_RESP, ScriptedFakeLLM([SUCCESS_RESP] * 10)
 
             report = BlameEngine.rank(
-                tape, synthetic_agent, oracle,
-                perturb_factory=perturb_factory, k=self._k, budget_usd=100.0,
+                tape,
+                synthetic_agent,
+                oracle,
+                perturb_factory=perturb_factory,
+                k=self._k,
+                budget_usd=100.0,
             )
             top = report.top()
             if top is not None and top.step_index == fault_step:
@@ -137,8 +143,12 @@ class ValidationRunner:
                 return SUCCESS_RESP, ScriptedFakeLLM([SUCCESS_RESP] * 10)
 
             ctrl = BlameEngine.rank(
-                tape, synthetic_agent, oracle,
-                perturb_factory=null_perturb_factory, k=self._k, budget_usd=100.0,
+                tape,
+                synthetic_agent,
+                oracle,
+                perturb_factory=null_perturb_factory,
+                k=self._k,
+                budget_usd=100.0,
             )
             for r in ctrl.results:
                 max_flip_control = max(max_flip_control, r.flip_rate)

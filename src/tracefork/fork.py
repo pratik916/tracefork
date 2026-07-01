@@ -17,6 +17,7 @@ step onward (the mutation exchange + any tail). The expensive prefix lives in
 the parent tape and is never re-paid for — that is the "fork for $0 up to the
 divergence point" property.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,8 +42,8 @@ class Branch:
     divergence_step: int
     delta_tape: Tape
     mutation_desc: str = ""
-    prefix_replayed: int = 0   # parent exchanges replayed for $0 (the savings)
-    tail_recorded: int = 0     # counterfactual exchanges recorded fresh
+    prefix_replayed: int = 0  # parent exchanges replayed for $0 (the savings)
+    tail_recorded: int = 0  # counterfactual exchanges recorded fresh
 
 
 class ForkTransport(httpx.BaseTransport):
@@ -127,7 +128,7 @@ class ForkEngine:
     def fork(
         parent_tape: Tape,
         spec: BranchSpec,
-        agent_fn,                 # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",

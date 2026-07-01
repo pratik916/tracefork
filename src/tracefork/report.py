@@ -3,11 +3,11 @@
 In static mode, the entire tape data is serialized as JSON and injected
 into the HTML template as `window.__TRACEFORK_DATA__ = {...}`.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
 
 _INJECT_MARKER = "</head>"
 
@@ -21,20 +21,18 @@ def _template_path() -> Path:
     """
     here = Path(__file__).parent
     for cand in (
-        here / "web" / "report.html",                 # installed wheel (force-included)
-        here.parent.parent / "web" / "report.html",   # repo root (src/tracefork -> repo)
+        here / "web" / "report.html",  # installed wheel (force-included)
+        here.parent.parent / "web" / "report.html",  # repo root (src/tracefork -> repo)
     ):
         if cand.exists():
             return cand
-    raise FileNotFoundError(
-        "web/report.html not found (looked in the package and the repo root)"
-    )
+    raise FileNotFoundError("web/report.html not found (looked in the package and the repo root)")
 
 
 def _tape_to_data(tape, blame: dict | None = None) -> dict:
     """Convert a Tape to the JSON shape expected by the web UI."""
     exchanges = []
-    for i, (req_bytes, resp_bytes) in enumerate(tape.exchanges):
+    for req_bytes, resp_bytes in tape.exchanges:
         try:
             req_json = json.loads(req_bytes.decode())
         except Exception:
@@ -45,7 +43,9 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
         except Exception:
             # SSE stream — extract first data line
             lines = resp_bytes.decode(errors="replace").splitlines()
-            data_lines = [l[6:] for l in lines if l.startswith("data: ") and l != "data: [DONE]"]
+            data_lines = [
+                line[6:] for line in lines if line.startswith("data: ") and line != "data: [DONE]"
+            ]
             try:
                 resp_json = json.loads(data_lines[0]) if data_lines else {"_raw": "sse"}
             except Exception:
@@ -72,17 +72,20 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
                         preview = block["text"][:80]
                         break
                     if block.get("type") == "tool_use":
-                        preview = f"→ {block.get('name', 'tool')}({json.dumps(block.get('input', {}))[:60]})"
+                        tool_input_preview = json.dumps(block.get("input", {}))[:60]
+                        preview = f"→ {block.get('name', 'tool')}({tool_input_preview})"
                         break
         except Exception:
             pass
 
-        exchanges.append({
-            "role": role,
-            "preview": preview,
-            "request": req_json,
-            "response_preview": resp_json,
-        })
+        exchanges.append(
+            {
+                "role": role,
+                "preview": preview,
+                "request": req_json,
+                "response_preview": resp_json,
+            }
+        )
 
     return {
         "agent_name": tape.agent_name,

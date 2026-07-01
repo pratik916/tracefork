@@ -23,7 +23,7 @@ class DivergenceError(RuntimeError):
     """Raised when a replay diverges from the recorded tape."""
 
 
-def find_divergence(exc: BaseException | None) -> "DivergenceError | None":
+def find_divergence(exc: BaseException | None) -> DivergenceError | None:
     """Walk an exception's cause/context chain for a DivergenceError.
 
     The Anthropic SDK wraps any exception raised inside its httpx transport in an
@@ -51,7 +51,7 @@ class RecordingNondet:
         self.draws: list[tuple[str, str]] = []
 
     def now_iso(self) -> str:
-        v = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        v = datetime.datetime.now(datetime.UTC).isoformat()
         self.draws.append(("clock", v))
         return v
 

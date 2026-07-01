@@ -1,24 +1,26 @@
 """Fault injection + self-validation tests — all offline, zero API keys."""
+
 import json
 
 import anthropic
 import httpx
 
+from tests.fakes import (
+    FaultAwareFakeLLM,
+    ScriptedFakeLLM,
+    make_text_response,
+    make_tool_use_response,
+)
+from tracefork.faults import FAULT_MARKER_BYTES, FaultClass, FaultInjector
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
-from tracefork.faults import FaultClass, FaultInjector, FAULT_MARKER_BYTES
 from tracefork.validate import ValidationRunner, run_all_fault_classes
-from tests.fakes import (
-    ScriptedFakeLLM, FaultAwareFakeLLM,
-    make_text_response, make_tool_use_response,
-)
-
 
 SUCCESS_TEXT = "SUCCESS — booking confirmed"
-FAIL_TEXT    = "FAIL — no flights available"
+FAIL_TEXT = "FAIL — no flights available"
 SUCCESS_RESP = make_text_response(SUCCESS_TEXT)
-FAIL_RESP    = make_text_response(FAIL_TEXT)
-TOOL_RESP    = make_tool_use_response("check_availability", {"seats": 3, "destination": "Tokyo"})
+FAIL_RESP = make_text_response(FAIL_TEXT)
+TOOL_RESP = make_tool_use_response("check_availability", {"seats": 3, "destination": "Tokyo"})
 
 
 def _record_tool_use_tape() -> Tape:
@@ -32,11 +34,13 @@ def _record_tool_use_tape() -> Tape:
         max_retries=0,
     )
     client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "book a flight to Tokyo"}],
     )
     client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[
             {"role": "user", "content": "book a flight to Tokyo"},
             {"role": "assistant", "content": "checking…"},
@@ -47,6 +51,7 @@ def _record_tool_use_tape() -> Tape:
 
 
 # ── FaultInjector ─────────────────────────────────────────────────────────
+
 
 def test_fault_class_enum_has_five_members():
     assert len(list(FaultClass)) == 5
@@ -76,6 +81,7 @@ def test_all_injected_faults_are_valid_json_with_marker():
 
 # ── FaultAwareFakeLLM (the CI-layer fault → failure mechanism) ─────────────
 
+
 def _client(transport: TraceforkTransport) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
@@ -86,24 +92,37 @@ def _client(transport: TraceforkTransport) -> anthropic.Anthropic:
 
 def test_fault_aware_fake_returns_failure_on_marker():
     marker = b"FAULT_MARKER"
-    t1 = TraceforkTransport("record", Tape(), FaultAwareFakeLLM(
-        normal_responses=[SUCCESS_RESP], fault_responses=[FAIL_RESP], fault_marker=marker))
+    t1 = TraceforkTransport(
+        "record",
+        Tape(),
+        FaultAwareFakeLLM(
+            normal_responses=[SUCCESS_RESP], fault_responses=[FAIL_RESP], fault_marker=marker
+        ),
+    )
     r = _client(t1).messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "book normally"}],
     )
     assert r.content[0].text == SUCCESS_TEXT
 
-    t2 = TraceforkTransport("record", Tape(), FaultAwareFakeLLM(
-        normal_responses=[SUCCESS_RESP], fault_responses=[FAIL_RESP], fault_marker=marker))
+    t2 = TraceforkTransport(
+        "record",
+        Tape(),
+        FaultAwareFakeLLM(
+            normal_responses=[SUCCESS_RESP], fault_responses=[FAIL_RESP], fault_marker=marker
+        ),
+    )
     r2 = _client(t2).messages.create(
-        model="claude-sonnet-4-6", max_tokens=100,
+        model="claude-sonnet-4-6",
+        max_tokens=100,
         messages=[{"role": "user", "content": "FAULT_MARKER inject fault here"}],
     )
     assert r2.content[0].text == FAIL_TEXT
 
 
 # ── self-validation: blame fingers the injected step ───────────────────────
+
 
 def test_validation_runner_fingers_fault_step():
     """With deterministic fakes the injected step is ranked #1 every time, and

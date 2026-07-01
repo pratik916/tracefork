@@ -1,13 +1,14 @@
 """Transport tests — sync and async record/replay/divergence."""
-import json
-import pytest
-import httpx
-from tracefork.tape import Tape
-from tracefork.nondet import DivergenceError
-from tracefork.transport import TraceforkTransport, AsyncTraceforkTransport
 
+import httpx
+import pytest
+
+from tracefork.nondet import DivergenceError
+from tracefork.tape import Tape
+from tracefork.transport import AsyncTraceforkTransport, TraceforkTransport
 
 # --- helpers ---
+
 
 def _fake_inner_response(content: bytes) -> httpx.Response:
     return httpx.Response(200, headers={"content-type": "application/json"}, content=content)
@@ -34,6 +35,7 @@ def _make_request(body: bytes) -> httpx.Request:
 
 
 # --- sync transport ---
+
 
 def test_sync_record_captures_exchange():
     tape = Tape()
@@ -82,6 +84,7 @@ def test_sync_record_requires_inner():
 
 
 # --- async transport ---
+
 
 @pytest.mark.asyncio
 async def test_async_record_captures_exchange():

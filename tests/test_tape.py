@@ -1,5 +1,8 @@
-import tempfile, os
+import os
+import tempfile
+
 from tracefork.tape import Tape, sha256_hex
+
 
 def _make_tape() -> Tape:
     t = Tape(agent_name="test-agent")
@@ -8,12 +11,15 @@ def _make_tape() -> Tape:
     t.append_exchange(b"request-2", b"response-2")
     return t
 
+
 def test_sha256_hex_is_deterministic():
     assert sha256_hex(b"hello") == sha256_hex(b"hello")
     assert sha256_hex(b"hello") != sha256_hex(b"world")
 
+
 def test_digest_is_deterministic():
     assert _make_tape().digest() == _make_tape().digest()
+
 
 def test_digest_changes_on_draws():
     t1 = _make_tape()
@@ -21,11 +27,13 @@ def test_digest_changes_on_draws():
     t2.draws[0] = ("clock", "2026-01-02T00:00:00+00:00")
     assert t1.digest() != t2.digest()
 
+
 def test_digest_changes_on_exchange():
     t1 = _make_tape()
     t2 = _make_tape()
     t2.exchanges[0] = (b"different", b"response-1")
     assert t1.digest() != t2.digest()
+
 
 def test_save_load_roundtrip():
     tape = _make_tape()
@@ -42,6 +50,7 @@ def test_save_load_roundtrip():
     finally:
         os.unlink(path)
 
+
 def test_dedup_identical_blobs():
     tape = Tape()
     tape.append_exchange(b"same-request", b"same-response")
@@ -51,6 +60,7 @@ def test_dedup_identical_blobs():
     try:
         tape.save(path)
         import sqlite3
+
         con = sqlite3.connect(path)
         blob_count = con.execute("SELECT COUNT(*) FROM blobs").fetchone()[0]
         con.close()
@@ -58,6 +68,7 @@ def test_dedup_identical_blobs():
         assert blob_count == 2
     finally:
         os.unlink(path)
+
 
 def test_meta_roundtrip():
     tape = Tape(agent_name="my-agent", boundary="single-process-asyncio-v1")
@@ -70,6 +81,7 @@ def test_meta_roundtrip():
         assert loaded.boundary == "single-process-asyncio-v1"
     finally:
         os.unlink(path)
+
 
 def test_to_bytes_from_bytes_roundtrip():
     tape = _make_tape()

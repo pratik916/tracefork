@@ -101,7 +101,9 @@ def test_fake_endpoint_emits_real_anthropic_wire_format():
     req = httpx.Request(
         "POST",
         "https://api.anthropic.com/v1/messages",
-        content=json.dumps({"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+        content=json.dumps(
+            {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+        ).encode(),
     )
     resp = transport.handle_request(req)
     body = json.loads(resp.read())
