@@ -47,6 +47,12 @@ providers = [
     "openai>=1.0",
     "google-genai>=0.3",
 ]
+# Optional: the MCP (Model Context Protocol) SDK, only needed to record/replay a
+# live MCP client (stdio / Streamable-HTTP). The tool seam parses raw JSON-RPC
+# frames, so offline tests never import it — it is NOT a hard dependency.
+mcp = [
+    "mcp>=1.0",
+]
 
 [project.scripts]
 tracefork = "tracefork.cli:app"

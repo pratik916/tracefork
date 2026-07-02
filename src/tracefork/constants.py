@@ -9,8 +9,10 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # this marker are treated as legacy format version 1 (JSON + base64) and still
 # load — see tape.from_bytes. Bumping TAPE_FORMAT_VERSION adds a decoder + an
 # upcaster entry; existing blobs keep loading via the read-time upcaster chain.
+# v3 adds the JSON-RPC tool-exchange log (MCP / native tool frames); v2 and v1
+# tapes upcast to an empty tool log, so their content digest is unchanged.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 2
+TAPE_FORMAT_VERSION = 3
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"
