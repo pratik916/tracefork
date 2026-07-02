@@ -25,11 +25,12 @@ import sqlite3
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import zstandard as zstd
 
 from .constants import BOUNDARY_V1, TAPE_FORMAT_VERSION, TAPE_MAGIC
+from .plugins import SERIALIZER_GROUP, Registry
 
 _ZCTX = zstd.ZstdCompressor(level=3)
 _DCTX = zstd.ZstdDecompressor()
@@ -288,3 +289,71 @@ def _decode(data: bytes) -> _Fields:
         fields = _UPCASTERS[v](fields)
         v += 1
     return fields
+
+
+# ── pluggable TapeSerializer seam ────────────────────────────────────────────
+#
+# `Tape.to_bytes`/`Tape.from_bytes` above remain the canonical, versioned
+# binary codec that `TapeStore` persists — untouched by this seam. A
+# `TapeSerializer` is an *alternative format* (e.g. a debugging-friendly JSON
+# dump, or a third-party wire format) a caller can opt into via the registry
+# below. Nothing currently reaches for anything but the default `"binary"`
+# serializer, so behavior is unchanged.
+
+
+@runtime_checkable
+class TapeSerializer(Protocol):
+    """Pluggable tape (de)serialization format, decoupled from persistence
+    (see `store.py`'s `StorageBackend` for the persistence-layer seam)."""
+
+    name: str
+
+    def dumps(self, tape: Tape) -> bytes:
+        """Serialize ``tape`` to bytes in this serializer's format."""
+        ...
+
+    def loads(self, data: bytes) -> Tape:
+        """Deserialize bytes previously produced by ``dumps`` back to a ``Tape``."""
+        ...
+
+
+class BinaryTapeSerializer:
+    """Default ``TapeSerializer``: the existing versioned binary envelope
+    (``Tape.to_bytes``/``Tape.from_bytes``) — what ``TapeStore`` uses today."""
+
+    name = "binary"
+
+    def dumps(self, tape: Tape) -> bytes:
+        return tape.to_bytes()
+
+    def loads(self, data: bytes) -> Tape:
+        return Tape.from_bytes(data)
+
+
+SERIALIZER_REGISTRY: Registry[TapeSerializer] = Registry(SERIALIZER_GROUP, kind="tape serializer")
+SERIALIZER_REGISTRY.register("binary", BinaryTapeSerializer())
+
+
+def register_serializer(name: str, serializer: TapeSerializer) -> None:
+    """Register a ``TapeSerializer`` instance under ``name``."""
+    SERIALIZER_REGISTRY.register(name, serializer)
+
+
+def get_serializer(name: str = "binary") -> TapeSerializer:
+    """Look up a registered serializer by name (default: the binary codec)."""
+    return SERIALIZER_REGISTRY.get_or_raise(name)
+
+
+def registered_serializers() -> list[str]:
+    """Sorted names of all registered serializers."""
+    return SERIALIZER_REGISTRY.names()
+
+
+def load_serializer_entry_points(
+    *, allow: frozenset[str] | set[str] | None = None, allow_all: bool = False
+) -> list[str]:
+    """Opt-in: discover third-party serializers advertised under the
+    ``tracefork.serializers`` entry-point group (see ``plugins.py`` for the
+    security-gating contract — nothing loads unless explicitly allowlisted).
+    """
+    return SERIALIZER_REGISTRY.load_entry_points(allow=allow, allow_all=allow_all)

@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from ..plugins import PROVIDER_GROUP, Registry
+
 DEFAULT_PROVIDER = "anthropic"
 
 
@@ -131,23 +133,24 @@ class ProviderAdapter(Protocol):
 
 
 # ── registry ────────────────────────────────────────────────────────────────
+#
+# Backed by the generic `Registry` (see `plugins.py`) rather than a plain
+# dict; `Registry` *is* a `dict[str, T]` subclass, so `_REGISTRY.pop(...)`,
+# `sorted(_REGISTRY)`, and `name in _REGISTRY` keep working exactly as before
+# this seam existed — only entry-point discovery (`load_provider_entry_points`,
+# opt-in, see `plugins.py`) is new.
 
-_REGISTRY: dict[str, ProviderAdapter] = {}
+_REGISTRY: Registry[ProviderAdapter] = Registry(PROVIDER_GROUP, kind="provider adapter")
 
 
 def register_adapter(adapter: ProviderAdapter, *, name: str | None = None) -> None:
     """Register ``adapter`` under ``name`` (defaults to ``adapter.name``)."""
-    _REGISTRY[name or adapter.name] = adapter
+    _REGISTRY.register(name or adapter.name, adapter)
 
 
 def get_adapter(name: str = DEFAULT_PROVIDER) -> ProviderAdapter:
     """Look up a registered adapter by name (default: the Anthropic adapter)."""
-    try:
-        return _REGISTRY[name]
-    except KeyError:
-        raise KeyError(
-            f"no provider adapter registered for {name!r}; registered: {sorted(_REGISTRY)}"
-        ) from None
+    return _REGISTRY.get_or_raise(name)
 
 
 def default_adapter() -> ProviderAdapter:
@@ -157,4 +160,14 @@ def default_adapter() -> ProviderAdapter:
 
 def registered_providers() -> list[str]:
     """Sorted names of all registered adapters."""
-    return sorted(_REGISTRY)
+    return _REGISTRY.names()
+
+
+def load_provider_entry_points(
+    *, allow: frozenset[str] | set[str] | None = None, allow_all: bool = False
+) -> list[str]:
+    """Opt-in: discover third-party provider adapters advertised under the
+    ``tracefork.providers`` entry-point group (see ``plugins.py`` for the
+    security-gating contract — nothing loads unless explicitly allowlisted).
+    """
+    return _REGISTRY.load_entry_points(allow=allow, allow_all=allow_all)

@@ -16,6 +16,7 @@ from .base import (
     ProviderAdapter,
     default_adapter,
     get_adapter,
+    load_provider_entry_points,
     register_adapter,
     registered_providers,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "ProviderAdapter",
     "default_adapter",
     "get_adapter",
+    "load_provider_entry_points",
     "register_adapter",
     "registered_providers",
 ]

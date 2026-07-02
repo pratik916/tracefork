@@ -1,5 +1,7 @@
 """tracefork — time-travel debugger for AI agents."""
 
+from .config import RedactionPolicy, TraceforkConfig
+from .record_mode import RecordMode
 from .recorder import AsyncRecorder, Recorder
 from .redact import Redactor, safe_defaults, with_content_redaction
 from .tape import Tape
@@ -11,4 +13,7 @@ __all__ = [
     "Redactor",
     "safe_defaults",
     "with_content_redaction",
+    "TraceforkConfig",
+    "RedactionPolicy",
+    "RecordMode",
 ]

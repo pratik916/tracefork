@@ -10,8 +10,44 @@ from __future__ import annotations
 
 import threading
 import uuid
+from typing import Protocol, runtime_checkable
 
 from .tape import Tape, open_sqlite
+
+
+@runtime_checkable
+class StorageBackend(Protocol):
+    """The persistence interface ``TapeStore`` (SQLite) already satisfies.
+
+    Naming this seam lets a filesystem, object-store (S3/GCS), or other
+    backend drop in later without touching any caller that only depends on
+    this surface (``cli.py``, ``server.py``, ``fork.py``, ``blame.py``).
+    ``TapeStore`` stays the default, unchanged implementation — nothing here
+    alters its behavior.
+    """
+
+    def save_tape(self, tape: Tape, *, run_id: str | None = None, created_at: str = "") -> str: ...
+
+    def load_tape(self, run_id: str) -> Tape: ...
+
+    def list_runs(self) -> list[dict]: ...
+
+    def save_branch(
+        self,
+        *,
+        parent_run_id: str,
+        divergence_step: int,
+        delta_tape: Tape,
+        mutation_desc: str = "",
+        created_at: str = "",
+    ) -> str: ...
+
+    def load_branch(self, branch_id: str) -> dict: ...
+
+    def list_branches(self, parent_run_id: str) -> list[dict]: ...
+
+    def close(self) -> None: ...
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS tapes (

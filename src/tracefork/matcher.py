@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import httpx
 
+from .plugins import MATCHER_GROUP, Registry
 from .tape import sha256_hex
 
 if TYPE_CHECKING:
@@ -239,3 +240,42 @@ def redacting_matcher() -> CanonicalizingMatcher:
         volatile_body_fields=frozenset({"idempotency_key", "request_id"}),
         name="redacting",
     )
+
+
+# ── registry (named lookup for the presets above, plus third-party matchers) ─
+#
+# Every built-in here is a frozen, stateless instance (`IdentityMatcher`/
+# `CanonicalizingMatcher` carry no mutable state), so — unlike the Oracle
+# registry — sharing one ready instance across every caller is safe; there is
+# no need to store factories.
+
+MATCHER_REGISTRY: Registry[RequestMatcher] = Registry(MATCHER_GROUP, kind="request matcher")
+MATCHER_REGISTRY.register("identity", IDENTITY_MATCHER)
+MATCHER_REGISTRY.register("gemini", gemini_matcher())
+MATCHER_REGISTRY.register("bedrock", bedrock_matcher())
+MATCHER_REGISTRY.register("redacting", redacting_matcher())
+
+
+def register_matcher(name: str, matcher: RequestMatcher) -> None:
+    """Register a ``RequestMatcher`` instance under ``name``."""
+    MATCHER_REGISTRY.register(name, matcher)
+
+
+def get_matcher(name: str = "identity") -> RequestMatcher:
+    """Look up a registered matcher by name (default: the identity matcher)."""
+    return MATCHER_REGISTRY.get_or_raise(name)
+
+
+def registered_matchers() -> list[str]:
+    """Sorted names of all registered matchers."""
+    return MATCHER_REGISTRY.names()
+
+
+def load_matcher_entry_points(
+    *, allow: frozenset[str] | set[str] | None = None, allow_all: bool = False
+) -> list[str]:
+    """Opt-in: discover third-party matchers advertised under the
+    ``tracefork.matchers`` entry-point group (see ``plugins.py`` for the
+    security-gating contract — nothing loads unless explicitly allowlisted).
+    """
+    return MATCHER_REGISTRY.load_entry_points(allow=allow, allow_all=allow_all)

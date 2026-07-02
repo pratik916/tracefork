@@ -263,6 +263,63 @@ def test_header_only_redaction_via_recorder_stays_replayable():
     assert body["messages"][0]["content"] == "Hello"
 
 
+def test_recorder_config_metadata_policy_builds_redactor():
+    """`Recorder(config=...)` derives its redactor from `TraceforkConfig` when
+    no explicit `redactor=` is given — the plugin-arch config wiring in
+    `recorder.py`."""
+    from tracefork.config import RedactionPolicy, TraceforkConfig
+
+    fake = ScriptedFakeLLM([make_text_response("hi")])
+    client = _sync_client(fake)
+    config = TraceforkConfig(redaction_policy=RedactionPolicy.METADATA)
+    with Recorder(client, config=config) as rec:
+        rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    assert rec.tape.content_redacted is False
+    body = json.loads(rec.tape.exchanges[0][0])
+    assert body["messages"][0]["content"] == "Hello"  # metadata policy leaves content untouched
+
+
+def test_recorder_explicit_redactor_wins_over_config():
+    """An explicit `redactor=` argument always wins over `config`'s."""
+    from tracefork.config import RedactionPolicy, TraceforkConfig
+
+    fake = ScriptedFakeLLM([make_text_response("hi")])
+    client = _sync_client(fake)
+    config = TraceforkConfig(
+        redaction_policy=RedactionPolicy.CONTENT, capture_message_content=False
+    )
+    explicit = safe_defaults()  # metadata-only — should win over config's CONTENT policy
+    with Recorder(client, redactor=explicit, config=config) as rec:
+        rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    assert rec.tape.content_redacted is False  # explicit redactor's flag, not config's
+    body = json.loads(rec.tape.exchanges[0][0])
+    assert body["messages"][0]["content"] == "Hello"
+
+
+def test_recorder_default_config_none_is_untouched():
+    """`Recorder(client)` with no `config` and no `redactor` stays exactly as
+    before this seam existed — the default-of-defaults case."""
+    fake = ScriptedFakeLLM([make_text_response("hi")])
+    client = _sync_client(fake)
+    with Recorder(client) as rec:
+        rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    assert rec.tape.content_redacted is False
+    body = json.loads(rec.tape.exchanges[0][0])
+    assert body["messages"][0]["content"] == "Hello"
+
+
 def test_content_redactor_preserves_structure():
     fn = content_redactor()
     body = json.dumps(
