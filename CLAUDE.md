@@ -108,6 +108,17 @@ The product lives in `src/tracefork/`:
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and
   `rank()` raises `BudgetExceededError` if the estimate exceeds `budget_usd`.
+- `judge.py` — OPT-IN, additive on top of `blame.py`'s `Oracle` protocol (never imported by the
+  default $0 path): `LLMJudgeOracle` is a binary-rubric judge with few-shot examples, a
+  configurable ("cross-family") judge model with a self-judge guard, position-swap averaging
+  (grades twice with the candidate output moved in the prompt; disagreement or low average
+  confidence abstains via `None`) — testable OFFLINE via an injected `judge_fn` (prompt -> raw
+  text), never a real API call in tests. `calibrate_oracle()` measures any `Oracle`'s FPR/FNR/
+  Cohen's kappa against a labeled gold set (`kappa_alert` below 0.6). `rogan_gladen_correct()` /
+  `debias_flip_rate()` debias an observed flip-rate for judge FPR/FNR (Rogan-Gladen 1978) and
+  widen a step's CI via delta-method propagation of BOTH k-sampling noise and finite-gold-set
+  judge noise. Pure math, reuses `blame.z_from_confidence`; registers `"llm_judge"` into
+  `blame.ORACLE_REGISTRY` at import time (importing the module is itself the opt-in).
 - `faults.py` / `validate.py` — 5 fault classes (valid JSON, marker **inside** a content
   field) + the self-validation runner; a synthetic agent echoes each response forward so an
   injected fault propagates to a fault-aware tail. `run_all_fault_classes()` scores top-1.
