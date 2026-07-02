@@ -2,7 +2,7 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, validate, export, ingest.
+Commands: replay, verify, fork, report, serve, blame, validate, bench, export, ingest.
 """
 
 from __future__ import annotations
@@ -472,6 +472,94 @@ def validate(
                 typer.echo(f"    {r_str}")
             raise typer.Exit(1)
         typer.echo("  No regressions vs committed report.")
+
+
+@app.command()
+def bench(
+    k: int = typer.Option(3, "--k", help="Forks per candidate step per scenario"),
+    m_samples: int = typer.Option(2, "--m-samples", help="Temporal-Shapley permutation samples"),
+    output: Path = typer.Option(  # noqa: B008
+        Path("bench_report.json"), "--output", "-o"
+    ),
+) -> None:
+    """Long-tape competing-fault benchmark for the coalition/temporal-Shapley
+    blame engine (`shapley_rank`).
+
+    Unlike `validate` (a single planted fault vs. an inert control on a short
+    tape), `bench` plants SEVERAL causally-distinct faults on one longer tape
+    at once -- a true root cause, a downstream echo that must not be blamed as
+    root, and a two-part necessary-not-sufficient conjunction -- and measures
+    whether the engine's necessity/sufficiency classification matches ground
+    truth for each, including the one case that does not resolve cleanly (a
+    documented limitation, not hidden). Offline, $0. See
+    `tracefork.competing_faults` and `tracefork.bench` module docstrings, and
+    README -> Validation scope, for exactly what each case means and why.
+    """
+    import json as _json
+
+    from tracefork.bench import run_bench
+
+    typer.echo(f"\n  tracefork bench — k={k}, m_samples={m_samples}")
+    typer.echo(f"  {'─' * 60}")
+
+    report = run_bench(k=k, m_samples=m_samples)
+
+    for c in report.cases:
+        status = "OK" if c.resolved else "LIMITATION"
+        nec = f"necessity(exp={c.expected_necessity!s:<5} act={c.actual_necessity!s:<5})"
+        suff = f"sufficiency(exp={c.expected_sufficiency!s:<5} act={c.actual_sufficiency!s:<5})"
+        typer.echo(f"  [{status:<10}] {c.name:<32} {nec} {suff}")
+        if c.note:
+            typer.echo(f"               {c.note}")
+
+    typer.echo(
+        f"\n  competing-fault discrimination: {report.accuracy:.2f} "
+        f"({report.n_resolved}/{report.n_cases}), "
+        f"95% CI [{report.ci_lo:.2f}, {report.ci_hi:.2f}]"
+    )
+    typer.echo(
+        f"  context only, not reproduced here: published Who&When log-based "
+        f"step-attribution top-1 anchor ~{report.who_and_when_anchor:.3f} "
+        f"(see README — Validation scope)"
+    )
+
+    output.write_text(
+        _json.dumps(
+            {
+                "k": k,
+                "m_samples": m_samples,
+                "accuracy": report.accuracy,
+                "n_resolved": report.n_resolved,
+                "n_cases": report.n_cases,
+                "ci_lo": report.ci_lo,
+                "ci_hi": report.ci_hi,
+                "who_and_when_anchor": report.who_and_when_anchor,
+                "cases": [
+                    {
+                        "name": c.name,
+                        "step_index": c.step_index,
+                        "role": c.role.value,
+                        "expected_necessity": c.expected_necessity,
+                        "expected_sufficiency": c.expected_sufficiency,
+                        "actual_necessity": c.actual_necessity,
+                        "actual_sufficiency": c.actual_sufficiency,
+                        "resolved": c.resolved,
+                        "note": c.note,
+                    }
+                    for c in report.cases
+                ],
+            },
+            indent=2,
+        )
+    )
+    typer.echo(f"\n  Report saved to {output}\n")
+
+    unexpected = report.unexpected_failures()
+    if unexpected:
+        typer.echo("  REGRESSION: unresolved cases beyond the known limitation:")
+        for c in unexpected:
+            typer.echo(f"    {c.name}")
+        raise typer.Exit(1)
 
 
 @app.command()
