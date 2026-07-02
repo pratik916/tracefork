@@ -10,10 +10,13 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(438 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(616 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
-classes at 1.00 top-1 precision). `src/tracefork_spike/` keeps the original Spike 0 that
+classes at 1.00 top-1 precision, plus a longer competing-fault fixture that measures
+whether the coalition/temporal-Shapley engine discriminates *several* simultaneously
+planted causes — `tracefork bench`; see README → Validation scope for exactly what each
+number does and doesn't claim). `src/tracefork_spike/` keeps the original Spike 0 that
 de-risked the load-bearing assumption (bit-exact, no-key replay within a declared
 determinism boundary). Design/feature list: `../ideas/2026-06-11-tracefork-features.md`;
 spike finding: `SPIKE0.md`.
@@ -26,13 +29,14 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (438 tests)
+uv run pytest -q                     # full offline suite (616 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
+uv run tracefork bench                # long-tape competing-fault discrimination benchmark
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, proxy
+uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 ```
 
@@ -125,6 +129,17 @@ The product lives in `src/tracefork/`:
   **Scope (don't overstate):** the fixture is a positive-vs-inert control on a short tape —
   it proves the engine is genuinely causal (not a fixed-slot artifact), not that it
   discriminates among competing causes on long tapes. See README → Validation scope.
+- `competing_faults.py` / `bench.py` — the longer-tape ANSWER to that scope note: a
+  7-exchange tape with several causally-DISTINCT faults planted at once (a root,
+  a downstream echo, and a two-part necessary-not-sufficient AND-conjunction), scored
+  against `blame.py`'s coalition/temporal-Shapley engine (`shapley_rank`) via `tracefork
+  bench`. 8/9 planted cases resolve correctly; the 9th is a documented, NOT hidden,
+  limitation of single-ordering temporal Shapley (it under-credits the earlier half of a
+  symmetric conjunction) — see `competing_faults.py`'s module docstring and README →
+  Validation scope. Cites, but does not reproduce, the published Who&When (ICML 2025)
+  ~14.2% log-based step-attribution anchor as context only — no external dataset is ever
+  downloaded (offline/$0 invariant applies here too). Zero-diff over the engines: both
+  modules only call `blame.py`'s existing public API.
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
   three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).
@@ -165,7 +180,7 @@ The product lives in `src/tracefork/`:
   them installed. Where a framework's exact internal attribute names/event
   shapes aren't a documented stable API, injection is defensive (a short
   candidate list, never one hard-coded name) — see each module's docstring.
-- `cli.py` — Typer entry point for all eight commands.
+- `cli.py` — Typer entry point for all eleven commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
