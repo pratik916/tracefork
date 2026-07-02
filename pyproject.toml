@@ -40,6 +40,13 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+# Optional: the OpenAI / Google Gemini SDKs are only needed for live record/replay
+# against those providers. The adapters parse raw wire JSON/bytes, so offline
+# tests never import them — they are NOT hard dependencies.
+providers = [
+    "openai>=1.0",
+    "google-genai>=0.3",
+]
 
 [project.scripts]
 tracefork = "tracefork.cli:app"

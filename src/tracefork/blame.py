@@ -45,7 +45,8 @@ from typing import Protocol, cast
 
 import httpx
 
-from .constants import PRICING_TABLE, SONNET
+from . import pricing
+from .constants import SONNET
 from .fork import BranchSpec, ForkEngine
 from .nondet import find_divergence
 from .plugins import ORACLE_GROUP, Registry
@@ -425,9 +426,9 @@ class BudgetGovernor:
         Only the counterfactual *tail* hits the API — the replayed prefix and the
         mutated step itself cost $0. Forking step ``i`` records ``n-1-i`` tail
         calls, so total billed calls = ``sum_i (n-1-i) * k``. Each call is priced
-        with the model's real per-token rates (``constants.PRICING_TABLE``) against
-        the tape's recorded token usage. Pass ``cost_per_fork_usd`` to override with
-        a flat per-fork figure instead.
+        with the model's real per-token rates (``pricing.get_rates``, backed by the
+        bundled offline snapshot) against the tape's recorded token usage. Pass
+        ``cost_per_fork_usd`` to override with a flat per-fork figure instead.
         """
         n_candidates = len(tape.exchanges)
         n_forks = n_candidates * k
@@ -435,9 +436,7 @@ class BudgetGovernor:
             est_usd = n_forks * cost_per_fork_usd
         else:
             billed_calls = sum(n_candidates - 1 - i for i in range(n_candidates)) * k
-            in_rate, out_rate = PRICING_TABLE.get(
-                model or _detect_model(tape), PRICING_TABLE[SONNET]
-            )
+            in_rate, out_rate = pricing.get_rates(model or _detect_model(tape))
             avg_in, avg_out = _avg_tokens(tape)
             est_usd = billed_calls * (avg_in * in_rate + avg_out * out_rate)
         return BlameEstimate(n_candidates=n_candidates, n_forks=n_forks, est_usd=est_usd)

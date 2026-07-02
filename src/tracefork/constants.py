@@ -19,6 +19,12 @@ OPUS = "claude-opus-4-8"
 
 # Pricing per token (USD), list price per 1M tokens — update PRICING_VERSION when
 # changed. Source: the `claude-api` skill (current Anthropic list pricing).
+#
+# These per-token Anthropic anchors are kept as the byte-identity guardrail for
+# the pricing registry: the pinned snapshot in `pricing.py`
+# (`tracefork/data/pricing.json`) MUST reproduce them exactly, so `BudgetGovernor`
+# behaviour is unchanged. The flat per-model `PRICING_TABLE` was replaced by the
+# provider-generic `(provider, model) -> rates` registry in `pricing.py`.
 PRICING_VERSION = "2026-06b"
 SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
 SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
@@ -26,9 +32,3 @@ HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
 HAIKU_OUTPUT_PER_TOKEN = 5.00 / 1_000_000
 OPUS_INPUT_PER_TOKEN = 5.00 / 1_000_000
 OPUS_OUTPUT_PER_TOKEN = 25.00 / 1_000_000
-
-PRICING_TABLE: dict[str, tuple[float, float]] = {
-    SONNET: (SONNET_INPUT_PER_TOKEN, SONNET_OUTPUT_PER_TOKEN),
-    HAIKU: (HAIKU_INPUT_PER_TOKEN, HAIKU_OUTPUT_PER_TOKEN),
-    OPUS: (OPUS_INPUT_PER_TOKEN, OPUS_OUTPUT_PER_TOKEN),
-}
