@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Google ADK adapter** (`adapters/adk.py`, opt-in `adk` extra) — `bind()` routes
+  an ADK `LlmAgent`/`Gemini`'s underlying `google-genai` client through the
+  existing `TraceforkTransport` via a short candidate-path search for the
+  `google.genai` `BaseApiClient`'s private `_httpx_client`/`_async_httpx_client`
+  attributes (the target itself, a `genai.Client`, an ADK `Gemini` model wrapper,
+  or an `LlmAgent` whose `.model` already holds one) — the same Gemini
+  `generateContent` wire format `providers/gemini.py` already parses. Step
+  visibility is a real `BasePlugin` (`make_plugin()`) over ADK's documented
+  agent/model/tool before/after callback boundaries, registered once on the
+  `Runner` rather than threaded through every agent — observer-only, never a
+  second capture path.
+
 ## [0.2.0] - 2026-07-02
 
 Generic, multi-provider, production-hardening release. The bit-exact, $0,
