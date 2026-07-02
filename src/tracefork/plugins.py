@@ -44,6 +44,7 @@ PROVIDER_GROUP = "tracefork.providers"
 ORACLE_GROUP = "tracefork.oracles"
 SERIALIZER_GROUP = "tracefork.serializers"
 MATCHER_GROUP = "tracefork.matchers"
+ADAPTER_GROUP = "tracefork.adapters"
 
 
 def _env_allowlist() -> tuple[set[str], bool]:

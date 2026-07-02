@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Framework adapters** (`adapters/`, opt-in `frameworks` extra): a minimal
+  adapter protocol — `bind()` (route the framework's underlying LLM client through
+  the *existing* `TraceforkTransport` + `NondetSource`), `on_step()` (map a
+  framework callback event to a neutral `Step`), `teardown()` — plus a
+  `StepDAG`/`from_run_tree` normalizer that overlays a run's structure on the tape
+  (byte seam stays at httpx; callbacks are observer-only annotation). Ships a
+  **LangChain/LangGraph** adapter: injects the tracefork transport into
+  `ChatOpenAI` (`root_client.copy(http_client=…)`) and `ChatAnthropic` (no
+  `http_client` field — a fresh `anthropic` client seeded via `object.__setattr__`
+  before its cached-property client is built), a `BaseCallbackHandler` step
+  collector, and a **tape-backed LangGraph checkpointer** for bit-exact, $0
+  time-travel replay. Registered via the plugin registry (`tracefork.adapters`
+  entry-point group, same security gating as every other seam). `langchain-*`
+  /`langgraph` are optional and all imports are guarded — `import tracefork` and
+  the full offline suite run with none installed; the framework-facing wrappers
+  are exercised against the real library when present and skipped otherwise.
+  (OpenAI Agents SDK / CrewAI / AutoGen are tracked as follow-ups.)
 - **OTel GenAI / OpenInference interop** (`interop.py`, `tracefork export`/`ingest`):
   adopts `gen_ai.*` attribute names (pinned semconv version) for the normalized
   provider view; exports a tape + blame report as an OTel GenAI trace (OTLP/JSON

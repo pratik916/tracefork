@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (387 tests).
+# 1. The full offline test suite (427 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -235,6 +235,39 @@ a **structlog JSON** logging pipeline (`observability.configure_structlog_json()
 double opt-in even when installed (`enable_otel_instrumentation()` or
 `TRACEFORK_OTEL_ENABLED=1`), so merely installing the extra changes nothing.
 
+## Framework adapters (opt-in)
+
+Most agents in the wild are built on a framework, not raw SDK calls — and a
+framework's own tracing/callbacks are **observer-only**, so they can annotate a run
+but can't give you bit-exact, $0 replay. tracefork's adapters keep the byte seam
+exactly where it already is (the httpx transport) and use the framework layer only
+for **structure**: `bind()` routes the framework's underlying LLM client through
+the *existing* `TraceforkTransport` + `NondetSource`, while callbacks feed a
+neutral **step-DAG** (`Step`/`StepDAG`) that overlays the tape.
+
+```python
+from tracefork import LangChainAdapter, make_callback_handler, make_tape_backed_checkpointer
+
+adapter = LangChainAdapter()
+# Replay a recorded tape through a LangChain chat model — bit-exact, $0, no key.
+# (ChatOpenAI via root_client.copy(http_client=…); ChatAnthropic — which has no
+#  http_client field — via a fresh anthropic client seeded before first use.)
+result = adapter.bind(chat_model, tape, mode="replay")
+handler = make_callback_handler(adapter.dag)      # step structure via BaseCallbackHandler
+```
+
+The marquee is **tape-backed LangGraph time-travel**: pair a replay-bound chat model
+with `make_tape_backed_checkpointer(tape)` and LangGraph's own checkpoint time-travel
+resumes graph state while the model replays its I/O from the tape — bit-exact and $0.
+
+`langchain-*` / `langgraph` are **optional** (`pip install 'tracefork[frameworks]'`);
+every framework import is guarded, so `import tracefork` and the whole offline test
+suite run with none of them installed. Only the LangChain adapter (OpenAI/Anthropic
+via LangChain/LangGraph) ships here; OpenAI Agents SDK / CrewAI / AutoGen are tracked
+as follow-ups. The framework-facing thin wrappers are exercised against the real
+library when present and skipped cleanly otherwise, so the pinned adapter version
+ranges (which churn) are validated separately from the offline core.
+
 ## Validation scope
 
 What `tracefork validate` proves, stated precisely: the blame engine is **genuinely
@@ -258,18 +291,19 @@ iteration; until then, read 1.00 as "the instrument reliably finds the planted c
 src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, store,
                     blame, faults, validate, report, server, wire, synthetic, cli,
                     interop (OTel GenAI / OpenInference export+ingest),
-                    observability (opt-in structlog + OTel self-instrumentation)
+                    observability (opt-in structlog + OTel self-instrumentation),
+                    adapters/ (opt-in framework seam: LangChain/LangGraph)
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              387 offline tests ($0, no key)
+tests/              427 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 387 offline tests
+uv run pytest -q                                   # all 427 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```
