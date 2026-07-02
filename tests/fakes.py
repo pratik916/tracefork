@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from tracefork.synthetic import (
     AsyncScriptedFakeLLM,
+    AsyncStreamingFakeLLM,
     FaultAwareFakeLLM,
     ScriptedFakeLLM,
 )
@@ -22,5 +23,6 @@ __all__ = [
     "make_tool_use_response",
     "ScriptedFakeLLM",
     "AsyncScriptedFakeLLM",
+    "AsyncStreamingFakeLLM",
     "FaultAwareFakeLLM",
 ]

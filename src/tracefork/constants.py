@@ -59,3 +59,12 @@ GENAI_SEMCONV_VERSION = "1.29.0"
 # agent. It supports blame-by-re-execution at the step-structure level only —
 # see `interop.py`'s module docstring for the precise scope.
 OTEL_INGESTED_BOUNDARY = "otel-ingested-blame-only-v1"
+
+# Boundary marker for a `Tape` recorded through `proxy.py`'s localhost base-URL
+# record/replay proxy rather than tracefork's in-process httpx transport seam.
+# Deliberately distinct from `BOUNDARY_V1`: a proxy-recorded tape has no
+# in-process `NondetSource` behind it (the client is on the other side of a TCP
+# socket), so it sits outside the full single-process determinism boundary —
+# see `proxy.py`'s module docstring for the precise scope. Metadata only, like
+# `OTEL_INGESTED_BOUNDARY`; never fed into `digest()`.
+PROXY_BOUNDARY = "proxy-record-replay-v1"

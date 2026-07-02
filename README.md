@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (539 tests).
+# 1. The full offline test suite (548 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -99,6 +99,7 @@ uv run tracefork --help
 | `validate [--k 3] [--n-runs 5] [--check]` | Run the fault-injection suite; `--check` gates against the committed report. |
 | `export  <run_id> --otel\|--openinference -o out.json` | Export a tape (+ optional `--blame-report`) as an OTel GenAI trace or an OpenInference dataset. |
 | `ingest  <trace.json> --otel\|--openinference -o out.tape.sqlite` | Build a tape's step structure from an externally-produced trace — blame-by-re-execution only, **not** bit-exact replayable. |
+| `proxy   record\|replay --tape <tape> [--upstream url] [--port 8899]` | Localhost base-URL record/replay proxy for non-Python clients (curl, Node, Go, ...) — see [Localhost record/replay proxy](#localhost-recordreplay-proxy-for-non-python-clients-opt-in). |
 
 Replay, verify, fork, and the offline demos need no key. `blame` against a *real* run
 re-runs the agent's counterfactual tails against the live API, which is why it's
@@ -321,6 +322,53 @@ correctly in isolation, but wiring a replayed `InvokeModelWithResponseStream` ca
 real `bedrock-runtime` client's own parser is materially deeper than this seam's proven
 contract. See `bedrock_transport.py`'s module docstring for the precise boundary.
 
+## Localhost record/replay proxy for non-Python clients (opt-in)
+
+Every seam above patches something Python-side (`httpx`'s transport, botocore's
+`before-send` hook). None of that helps if the agent is curl, a Node/Go service, or
+Python code you can't wrap. `proxy.py` is a **localhost base-URL proxy**: point the
+client's `base_url`/endpoint at `http://127.0.0.1:<port>` instead of the provider
+directly, and tracefork sits in between.
+
+```bash
+# record: forwards every request to the real upstream and tees it into a tape
+uv run tracefork proxy record --tape run.tape.sqlite --upstream https://api.anthropic.com --port 8899
+
+# point any client at the proxy instead of the provider, e.g.:
+curl http://127.0.0.1:8899/v1/messages -H 'x-api-key: ...' -d '{...}'
+
+# replay: serves the recorded bytes back, with NO upstream at all
+uv run tracefork proxy replay --tape run.tape.sqlite --port 8899
+```
+
+**This is a base-URL proxy, not a transparent TLS MITM.** It does not generate a CA or
+intercept a client's `CONNECT` tunnel — that needs the client to trust a custom root
+cert, which is out of scope here. It works for anything that can set its own base
+URL/endpoint (every major provider SDK, curl, any HTTP client), which is what "non-httpx
+/ non-Python clients" means in practice.
+
+**Outside the full determinism boundary.** Every other seam in this codebase captures
+the agent's clock/id/random draws through the in-process `NondetSource` (`nondet.py`) so
+replay is bit-exact regardless of what the agent reads. A non-Python client on the other
+side of a TCP socket has no such seam — tracefork can't see, let alone virtualize,
+whatever timestamp/UUID/idempotency-key material the client bakes into its own request.
+So bit-exact replay through this proxy depends on the client sending a
+**canonically-identical request** on both runs. If the client rotates something
+call-to-call (a fresh idempotency key, a client-side timestamp), point `--matcher` at one
+of the existing `matcher.py` presets (`redacting`, `gemini`, `bedrock`) — the same seam
+`transport.py` already uses to normalize Gemini's `?key=` or Bedrock's SigV4 headers —
+so the volatile material is canonicalized away instead of causing a false divergence. An
+unrecorded request, or a genuine body/field change the matcher doesn't normalize, is
+still a hard error (HTTP 502) — replay must fail loud, not silently drift.
+
+Streaming (SSE) responses are teed chunk-by-chunk *while forwarding* in record mode, not
+buffered in full before the client sees the first byte. The tape itself only ever stores
+body bytes (like every other tape here), so replay recovers the SSE-vs-JSON distinction
+with a small framing heuristic rather than a persisted header — see `proxy.py`'s module
+docstring for the exact rule. Storage/hashing reuse `tape.py` unchanged, and the
+replay-time divergence check reuses `matcher.py`'s existing `RequestMatcher` protocol —
+nothing new was invented for either.
+
 ## Validation scope
 
 What `tracefork validate` proves, stated precisely: the blame engine is **genuinely
@@ -348,18 +396,19 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     adapters/ (opt-in framework seam: LangChain/LangGraph),
                     bedrock_transport (opt-in botocore before-send record/replay seam),
                     eventstream (standalone AWS event-stream binary framing codec),
+                    proxy (opt-in localhost base-URL record/replay proxy for non-Python clients),
                     providers/ (anthropic, openai, gemini, bedrock adapters)
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              539 offline tests ($0, no key)
+tests/              548 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 539 offline tests
+uv run pytest -q                                   # all 548 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```

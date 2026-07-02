@@ -9,6 +9,11 @@ the recorder/fork/blame machinery through them at $0.
 
   - `ScriptedFakeLLM`     — returns a fixed list of responses in order.
   - `AsyncScriptedFakeLLM`— async variant.
+  - `AsyncStreamingFakeLLM` — async variant that streams each scripted response
+    as multiple chunks (SSE-shaped by default) instead of one buffered body —
+    `proxy.py`'s tests use it as an injected fake upstream to prove record mode
+    tees a streaming response while forwarding it, not only after fully
+    buffering it.
   - `FaultAwareFakeLLM`   — returns a *failure* script when a fault marker
     appears in the request body, else a *normal* script; this is how an
     injected fault propagates into a flipped outcome during validation.
@@ -22,7 +27,7 @@ the recorder/fork/blame machinery through them at $0.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -82,6 +87,51 @@ class AsyncScriptedFakeLLM(httpx.AsyncBaseTransport):
             200,
             headers={"content-type": "application/json"},
             content=resp,
+        )
+
+
+class AsyncStreamingFakeLLM(httpx.AsyncBaseTransport):
+    """Streams a scripted response as multiple chunks per request.
+
+    `chunked_responses` is a list of chunk-lists, one entry per request; each
+    entry's bytes are yielded in sequence via an async generator, so a caller
+    reading the response through `.aiter_bytes()` observes it arrive
+    incrementally rather than as one buffered blob — the shape a real SSE
+    upstream has. Raises `ScriptExhausted` if more requests arrive than the
+    script has entries.
+    """
+
+    class ScriptExhausted(RuntimeError):
+        pass
+
+    def __init__(
+        self,
+        chunked_responses: list[list[bytes]],
+        *,
+        content_type: str = "text/event-stream",
+    ) -> None:
+        self._responses = list(chunked_responses)
+        self._content_type = content_type
+        self._i = 0
+        self.requests_received: list[bytes] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests_received.append(request.content)
+        if self._i >= len(self._responses):
+            raise self.ScriptExhausted(
+                f"AsyncStreamingFakeLLM exhausted after {len(self._responses)} response(s)"
+            )
+        chunks = self._responses[self._i]
+        self._i += 1
+
+        async def _stream() -> AsyncIterator[bytes]:
+            for chunk in chunks:
+                yield chunk
+
+        return httpx.Response(
+            200,
+            headers={"content-type": self._content_type},
+            content=_stream(),
         )
 
 
