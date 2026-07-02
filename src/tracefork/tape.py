@@ -69,6 +69,12 @@ class Tape:
     # `redact.py` and the README's Redaction section. Never touched by `digest()`
     # (metadata, like `boundary`/`agent_name`, not hash-chained content).
     content_redacted: bool = False
+    # JSON-RPC tool-I/O frames (MCP + native tool calls), teed by the tool seam
+    # (`tools.py`) the same way `exchanges` holds LLM request/response bytes.
+    # Kept as a SEPARATE ordered log so the LLM record/replay/fork/blame path is
+    # byte-for-byte unchanged: an LLM-only tape has an empty tool log, so its
+    # `digest()` and serialized envelope carry no tool material at all.
+    tool_exchanges: list[tuple[bytes, bytes]] = field(default_factory=list)
 
     def append_exchange(self, request_body: bytes, response_body: bytes) -> None:
         self.exchanges.append((request_body, response_body))
@@ -76,13 +82,23 @@ class Tape:
     def exchange(self, i: int) -> tuple[bytes, bytes]:
         return self.exchanges[i]
 
+    def append_tool_exchange(self, request_frame: bytes, response_frame: bytes) -> None:
+        self.tool_exchanges.append((request_frame, response_frame))
+
+    def tool_exchange(self, i: int) -> tuple[bytes, bytes]:
+        return self.tool_exchanges[i]
+
     def digest(self) -> str:
-        """sha256 hash chain over draws then exchanges — the tape fingerprint."""
+        """sha256 hash chain over draws, then LLM exchanges, then tool exchanges
+        — the tape fingerprint. An empty tool log contributes nothing, so the
+        digest of any pre-tool (LLM-only) tape is byte-identical to before."""
         h = hashlib.sha256()
         for kind, value in self.draws:
             h.update(b"D:" + kind.encode() + b":" + value.encode() + b"\n")
         for req, resp in self.exchanges:
             h.update(b"X:" + sha256_hex(req).encode() + b":" + sha256_hex(resp).encode() + b"\n")
+        for req, resp in self.tool_exchanges:
+            h.update(b"T:" + sha256_hex(req).encode() + b":" + sha256_hex(resp).encode() + b"\n")
         return h.hexdigest()
 
     def to_bytes(self) -> bytes:
@@ -90,7 +106,7 @@ class Tape:
         a content-addressed, zstd-compressed binary container). Shared blobs are
         stored once by sha256, and there is no base64, so the ~1.33x base64
         blow-up of the legacy format is gone. Read back with `from_bytes`."""
-        return _encode_v2(self)
+        return _encode_v3(self)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Tape:
@@ -107,6 +123,7 @@ class Tape:
         )
         tape.draws = [tuple(pair) for pair in f["draws"]]
         tape.exchanges = f["exchanges"]
+        tape.tool_exchanges = f["tool_exchanges"]
         return tape
 
     def save(self, path: str) -> None:
@@ -137,9 +154,16 @@ class Tape:
                     (sh, _ZCTX.compress(resp)),
                 )
                 con.execute("INSERT INTO events (kind, a, b) VALUES ('exchange', ?, ?)", (rh, sh))
+            for req, resp in self.tool_exchanges:
+                rh, sh = sha256_hex(req), sha256_hex(resp)
+                con.execute("INSERT OR IGNORE INTO blobs VALUES (?, ?)", (rh, _ZCTX.compress(req)))
+                con.execute("INSERT OR IGNORE INTO blobs VALUES (?, ?)", (sh, _ZCTX.compress(resp)))
+                con.execute(
+                    "INSERT INTO events (kind, a, b) VALUES ('tool_exchange', ?, ?)", (rh, sh)
+                )
             con.execute("INSERT INTO meta VALUES ('boundary', ?)", (self.boundary,))
             con.execute("INSERT INTO meta VALUES ('agent_name', ?)", (self.agent_name,))
-            con.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+            con.execute("INSERT INTO meta VALUES ('schema_version', '2')")
             con.execute(
                 "INSERT INTO meta VALUES ('content_redacted', ?)",
                 (str(int(self.content_redacted)),),
@@ -165,6 +189,8 @@ class Tape:
                     tape.draws.append((a, b))
                 elif kind == "exchange":
                     tape.exchanges.append((blobs[a], blobs[b]))
+                elif kind == "tool_exchange":
+                    tape.tool_exchanges.append((blobs[a], blobs[b]))
             return tape
         finally:
             con.close()
@@ -180,14 +206,17 @@ class Tape:
 _Fields = dict[str, Any]
 
 
-def _encode_v2(tape: Tape) -> bytes:
-    """Version-2 body: a JSON header (boundary, agent_name, draws, the exchange
-    hash pairs, and the dedup'd blob-hash order) followed by, for each unique
-    blob in order, a uint32 length + its zstd-compressed bytes. Content-addressed
-    (each distinct request/response stored once) and base64-free."""
+def _encode_v3(tape: Tape) -> bytes:
+    """Version-3 body: a JSON header (boundary, agent_name, draws, the LLM
+    exchange hash pairs, the tool-exchange hash pairs, and the dedup'd blob-hash
+    order) followed by, for each unique blob in order, a uint32 length + its
+    zstd-compressed bytes. Content-addressed (each distinct request/response
+    stored once, LLM and tool blobs sharing one store) and base64-free. LLM
+    blobs are ordered first, so an LLM-only tape's blob layout is identical to
+    the v2 format that preceded the tool log."""
     order: list[str] = []
     seen: dict[str, bytes] = {}
-    for req, resp in tape.exchanges:
+    for req, resp in (*tape.exchanges, *tape.tool_exchanges):
         for blob in (req, resp):
             h = sha256_hex(blob)
             if h not in seen:
@@ -198,6 +227,9 @@ def _encode_v2(tape: Tape) -> bytes:
         "agent_name": tape.agent_name,
         "draws": tape.draws,
         "exchanges": [[sha256_hex(req), sha256_hex(resp)] for req, resp in tape.exchanges],
+        "tool_exchanges": [
+            [sha256_hex(req), sha256_hex(resp)] for req, resp in tape.tool_exchanges
+        ],
         "blob_hashes": order,
         "content_redacted": tape.content_redacted,
     }
@@ -229,8 +261,8 @@ def _decode_v1_json(body: bytes) -> _Fields:
     }
 
 
-def _decode_v2_binary(body: bytes) -> _Fields:
-    """Content-addressed zstd container written by `_encode_v2`."""
+def _read_blob_container(body: bytes) -> tuple[Any, dict[str, bytes]]:
+    """Parse the shared v2/v3 binary container into (header, blobs-by-hash)."""
     (header_len,) = struct.unpack_from(">I", body, 0)
     off = 4
     header = json.loads(body[off : off + header_len])
@@ -241,11 +273,32 @@ def _decode_v2_binary(body: bytes) -> _Fields:
         off += 4
         blobs[h] = _DCTX.decompress(body[off : off + blob_len])
         off += blob_len
+    return header, blobs
+
+
+def _decode_v2_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container without a tool log (pre-v3)."""
+    header, blobs = _read_blob_container(body)
     return {
         "boundary": header["boundary"],
         "agent_name": header["agent_name"],
         "draws": [tuple(pair) for pair in header["draws"]],
         "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "content_redacted": header.get("content_redacted", False),
+    }
+
+
+def _decode_v3_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container written by `_encode_v3` (adds the tool log)."""
+    header, blobs = _read_blob_container(body)
+    return {
+        "boundary": header["boundary"],
+        "agent_name": header["agent_name"],
+        "draws": [tuple(pair) for pair in header["draws"]],
+        "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "tool_exchanges": [
+            (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
+        ],
         "content_redacted": header.get("content_redacted", False),
     }
 
@@ -257,12 +310,22 @@ def _upcast_v1_to_v2(fields: _Fields) -> _Fields:
     return fields
 
 
+def _upcast_v2_to_v3(fields: _Fields) -> _Fields:
+    """v2 -> v3 adds the JSON-RPC tool-exchange log; a pre-v3 tape simply had
+    none, so it defaults to empty — leaving every existing tape's content digest
+    and replay behavior unchanged."""
+    fields.setdefault("tool_exchanges", [])
+    return fields
+
+
 _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     1: _decode_v1_json,
     2: _decode_v2_binary,
+    3: _decode_v3_binary,
 }
 _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     1: _upcast_v1_to_v2,
+    2: _upcast_v2_to_v3,
 }
 
 

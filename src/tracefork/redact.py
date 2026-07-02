@@ -297,6 +297,19 @@ class Redactor:
             data = REDACTED if result is None else result
         return data
 
+    def apply_request(self, req_body: bytes) -> bytes:
+        """Run `request_filters` over a raw request body about to be stored — the
+        symmetric counterpart to `apply_response`. The LLM (httpx) path folds
+        request redaction into the matcher seam (`RedactingMatcher`); the tool
+        seam (`tools.py`) has no httpx request/matcher, so it applies request
+        redaction directly through this method to both the stored frame and the
+        replay-time frame, keeping the divergence fingerprint consistent."""
+        data = req_body
+        for fn in self.request_filters:
+            result = fn(data)
+            data = REDACTED if result is None else result
+        return data
+
 
 def safe_defaults(*, secret_env_vars: Iterable[str] = DEFAULT_SECRET_ENV_VARS) -> Redactor:
     """Metadata-only safe defaults: auth headers + known secret env values.
