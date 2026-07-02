@@ -150,6 +150,21 @@ The product lives in `src/tracefork/`:
   `NondetSource` exists on this path, so a proxy-recorded tape (`Tape.boundary =
   constants.PROXY_BOUNDARY`) sits outside the full single-process determinism boundary; see
   the module docstring and README → Localhost record/replay proxy.
+- `adapters/` — opt-in framework adapters (`bind()` routes a framework's LLM client
+  through the *existing* `TraceforkTransport`/`NondetSource`; `on_step()` maps a
+  framework callback/event to a neutral `Step`/`StepDAG` overlay — observer-only,
+  never a second capture path). `base.py` owns the protocol/registry;
+  `langchain.py` (`ChatOpenAI`/`ChatAnthropic` + a tape-backed LangGraph
+  checkpointer), `openai_agents.py` (defensive client-attribute injection +
+  `agents.set_default_openai_client()` + a `TracingProcessor`),
+  `crewai.py` (LiteLLM's `client_session`/`aclient_session` — CrewAI's actual httpx
+  chokepoint — + a `crewai_event_bus` listener), and `autogen.py` (defensive
+  client-attribute injection + an `InterventionHandler` message-level seam) are the
+  concrete adapters, each its own optional extra with every framework import
+  guarded, so `import tracefork` and the whole offline suite work with none of
+  them installed. Where a framework's exact internal attribute names/event
+  shapes aren't a documented stable API, injection is defensive (a short
+  candidate list, never one hard-coded name) — see each module's docstring.
 - `cli.py` — Typer entry point for all eight commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):

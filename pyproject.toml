@@ -76,6 +76,32 @@ frameworks = [
     "langchain-anthropic>=1.4,<2",
     "langgraph>=1.2,<2",
 ]
+# Optional: the OpenAI Agents SDK, only needed to bind a *live* Agents SDK run's
+# underlying openai client to tracefork's transport seam (`adapters/openai_agents.py`),
+# or to install its tracing core as a real TracingProcessor. The adapter guards
+# every import, so `import tracefork` and the whole offline test suite work with
+# it NOT installed. Pin range is conservative (this package churns fast).
+"openai-agents" = [
+    "openai-agents>=0.10,<1",
+]
+# Optional: CrewAI, only needed for the real `crewai_event_bus` listener
+# (`adapters/crewai.py`'s `make_event_listener`); `bind()` itself never imports
+# crewai or litellm (duck-typed against whatever module-like object it's
+# handed), so `import tracefork` and the whole offline test suite work with
+# neither installed. litellm — the actual httpx chokepoint `bind()` targets —
+# is crewai's own transitive dependency, so it is not pinned separately here.
+crewai = [
+    "crewai>=1.0,<2",
+]
+# Optional: autogen-core (the InterventionHandler message-level seam) +
+# autogen-ext (the OpenAIChatCompletionClient model wrapper `bind()` targets),
+# only needed to exercise `adapters/autogen.py` against the real framework.
+# Both imports are guarded, so `import tracefork` and the whole offline test
+# suite work with neither installed.
+autogen = [
+    "autogen-core>=0.7,<1",
+    "autogen-ext>=0.7,<1",
+]
 # Optional: structlog JSON logging + OTel self-instrumentation of
 # record/replay/fork/blame (see observability.py). Export/ingest of OTel
 # GenAI / OpenInference data (interop.py) needs NEITHER of these — it produces

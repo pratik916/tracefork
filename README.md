@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (548 tests).
+# 1. The full offline test suite (594 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -276,11 +276,35 @@ resumes graph state while the model replays its I/O from the tape — bit-exact 
 
 `langchain-*` / `langgraph` are **optional** (`pip install 'tracefork[frameworks]'`);
 every framework import is guarded, so `import tracefork` and the whole offline test
-suite run with none of them installed. Only the LangChain adapter (OpenAI/Anthropic
-via LangChain/LangGraph) ships here; OpenAI Agents SDK / CrewAI / AutoGen are tracked
-as follow-ups. The framework-facing thin wrappers are exercised against the real
-library when present and skipped cleanly otherwise, so the pinned adapter version
-ranges (which churn) are validated separately from the offline core.
+suite run with none of them installed. The framework-facing thin wrappers are
+exercised against the real library when present and skipped cleanly otherwise, so
+the pinned adapter version ranges (which churn) are validated separately from the
+offline core.
+
+Three more adapters ship the same way, each its own optional extra and each
+targeting the framework's actual model-call chokepoint:
+
+- **OpenAI Agents SDK** (`pip install 'tracefork[openai-agents]'`) — `bind()` injects
+  into an Agents SDK model wrapper's underlying `openai` client (defensive attribute
+  search, since the SDK doesn't document the stored attribute name); `bind_default_client()`
+  wraps the SDK's own documented `agents.set_default_openai_client()` for a
+  process-wide injection with no attribute guessing. Step visibility is a real
+  `TracingProcessor` (`make_tracing_processor()`, installable via `agents.set_trace_processors()`).
+- **CrewAI** (`pip install 'tracefork[crewai]'`) — CrewAI routes every model call
+  through LiteLLM, so `bind()` targets LiteLLM's own documented custom-client
+  surface (`litellm.client_session` / `litellm.aclient_session`) rather than CrewAI
+  itself. Step visibility is a `crewai_event_bus` listener (`make_event_listener()`)
+  over crew/agent/task/tool/LLM-call boundary events.
+- **AutoGen** (`pip install 'tracefork[autogen]'`, `autogen-core`/`autogen-ext`) —
+  `bind()` injects into an AutoGen model client's underlying `openai` client (same
+  defensive attribute search). Step visibility is a message-level `InterventionHandler`
+  (`make_intervention_handler()`) — pass-through only, so it stays an annotation
+  layer, never a second capture path.
+
+Each adapter's real-framework wrapper is import-guarded and validated against a
+synthetic stand-in mimicking the framework's interface (never a live call) in the
+offline test suite; the thin real subclasses are only reachable — and only
+smoke-tested — when the framework is actually installed (`pytest.importorskip`).
 
 ## AWS Bedrock (opt-in)
 
@@ -393,7 +417,8 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     blame, faults, validate, report, server, wire, synthetic, cli,
                     interop (OTel GenAI / OpenInference export+ingest),
                     observability (opt-in structlog + OTel self-instrumentation),
-                    adapters/ (opt-in framework seam: LangChain/LangGraph),
+                    adapters/ (opt-in framework seam: LangChain/LangGraph, OpenAI
+                    Agents SDK, CrewAI, AutoGen),
                     bedrock_transport (opt-in botocore before-send record/replay seam),
                     eventstream (standalone AWS event-stream binary framing codec),
                     proxy (opt-in localhost base-URL record/replay proxy for non-Python clients),
@@ -401,14 +426,14 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              548 offline tests ($0, no key)
+tests/              594 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 548 offline tests
+uv run pytest -q                                   # all 594 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```
