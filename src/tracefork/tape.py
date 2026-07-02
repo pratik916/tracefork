@@ -60,6 +60,14 @@ class Tape:
     draws: list[tuple[str, str]] = field(default_factory=list)
     boundary: str = BOUNDARY_V1
     agent_name: str = ""
+    # Set by `Recorder`/`AsyncRecorder` when an opt-in content-redacting `Redactor`
+    # scrubbed message CONTENT (as opposed to just headers/secret env values) on
+    # this tape. Forensic-only: redacted response content changes what the agent
+    # sees on replay, and redacted request content weakens the divergence check,
+    # so a `content_redacted` tape is not guaranteed bit-exact-replayable — see
+    # `redact.py` and the README's Redaction section. Never touched by `digest()`
+    # (metadata, like `boundary`/`agent_name`, not hash-chained content).
+    content_redacted: bool = False
 
     def append_exchange(self, request_body: bytes, response_body: bytes) -> None:
         self.exchanges.append((request_body, response_body))
@@ -91,7 +99,11 @@ class Tape:
         up to the current schema. Legacy blobs with no magic marker (the original
         JSON + base64 encoding) are detected and loaded as format version 1."""
         f = _decode(data)
-        tape = cls(boundary=f["boundary"], agent_name=f["agent_name"])
+        tape = cls(
+            boundary=f["boundary"],
+            agent_name=f["agent_name"],
+            content_redacted=f.get("content_redacted", False),
+        )
         tape.draws = [tuple(pair) for pair in f["draws"]]
         tape.exchanges = f["exchanges"]
         return tape
@@ -127,6 +139,10 @@ class Tape:
             con.execute("INSERT INTO meta VALUES ('boundary', ?)", (self.boundary,))
             con.execute("INSERT INTO meta VALUES ('agent_name', ?)", (self.agent_name,))
             con.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+            con.execute(
+                "INSERT INTO meta VALUES ('content_redacted', ?)",
+                (str(int(self.content_redacted)),),
+            )
             con.execute("COMMIT")
         finally:
             con.close()
@@ -141,6 +157,7 @@ class Tape:
             tape = cls(
                 boundary=meta.get("boundary", BOUNDARY_V1),
                 agent_name=meta.get("agent_name", ""),
+                content_redacted=bool(int(meta.get("content_redacted", "0"))),
             )
             for kind, a, b in con.execute("SELECT kind, a, b FROM events ORDER BY seq").fetchall():
                 if kind == "draw":
@@ -181,6 +198,7 @@ def _encode_v2(tape: Tape) -> bytes:
         "draws": tape.draws,
         "exchanges": [[sha256_hex(req), sha256_hex(resp)] for req, resp in tape.exchanges],
         "blob_hashes": order,
+        "content_redacted": tape.content_redacted,
     }
     header_json = json.dumps(header).encode()
     parts: list[bytes] = [
@@ -206,6 +224,7 @@ def _decode_v1_json(body: bytes) -> _Fields:
         "exchanges": [
             (base64.b64decode(req), base64.b64decode(resp)) for req, resp in d["exchanges"]
         ],
+        "content_redacted": d.get("content_redacted", False),
     }
 
 
@@ -226,6 +245,7 @@ def _decode_v2_binary(body: bytes) -> _Fields:
         "agent_name": header["agent_name"],
         "draws": [tuple(pair) for pair in header["draws"]],
         "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "content_redacted": header.get("content_redacted", False),
     }
 
 
