@@ -13,6 +13,11 @@ bit-exactness claim — see the README's determinism-boundary note. An opt-in
 ``RequestMatcher`` (``matcher=``) can normalize volatile fields before hashing for
 providers whose raw bytes are non-deterministic; the record and replay sides MUST
 share the same matcher instance or the fingerprints will not line up.
+
+An opt-in ``Redactor`` (``redactor=``, record mode only) additionally scrubs the
+response body before it is stored. Request-side redaction is applied further
+upstream, inside the matcher itself (``Redactor.matcher()``), so that record and
+replay hash the identical redacted form — see ``redact.py``.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import httpx
 
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError
+from .redact import Redactor
 from .tape import Tape
 
 
@@ -34,6 +40,7 @@ class TraceforkTransport(httpx.BaseTransport):
         inner: httpx.BaseTransport | None = None,
         *,
         matcher: RequestMatcher | None = None,
+        redactor: Redactor | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -43,6 +50,8 @@ class TraceforkTransport(httpx.BaseTransport):
         self.inner = inner
         # Default is identity: raw sha256(request.content) — the pre-seam contract.
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
+        # Default is None: no redaction — the pre-redaction contract (byte-identical).
+        self.redactor = redactor
         self._i = 0
         self.matched = 0
 
@@ -50,7 +59,8 @@ class TraceforkTransport(httpx.BaseTransport):
         if self.mode == "record":
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
-            self.tape.append_exchange(self.matcher.stored_request(request), resp_body)
+            stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
+            self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
             return httpx.Response(
                 inner_resp.status_code,
                 headers={
@@ -97,6 +107,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         inner: httpx.AsyncBaseTransport | None = None,
         *,
         matcher: RequestMatcher | None = None,
+        redactor: Redactor | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -105,6 +116,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         self.tape = tape
         self.inner = inner
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
+        self.redactor = redactor
         self._i = 0
         self.matched = 0
 
@@ -112,7 +124,8 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         if self.mode == "record":
             inner_resp = await self.inner.handle_async_request(request)  # type: ignore[union-attr]
             resp_body = await inner_resp.aread()
-            self.tape.append_exchange(self.matcher.stored_request(request), resp_body)
+            stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
+            self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
             return httpx.Response(
                 inner_resp.status_code,
                 headers={

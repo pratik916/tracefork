@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (65 tests).
+# 1. The full offline test suite (188 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -143,6 +143,34 @@ that boundary — and the verifier will *detect* the resulting drift rather than
 it. Forking and blame assume the agent rebuilds its prefix deterministically (the same
 property replay proves). See [`SPIKE0.md`](SPIKE0.md) for how the boundary was de-risked.
 
+## Redaction (opt-in)
+
+Recording real traffic can put secrets and PII on a tape. Redaction is entirely opt-in —
+`Recorder`/`AsyncRecorder` behave byte-for-byte as before unless you pass a `redactor`:
+
+```python
+from tracefork import Recorder, safe_defaults, with_content_redaction
+
+# Metadata only: auth headers + known secret env values (ANTHROPIC_API_KEY, ...).
+# Fully bit-exact-replayable — redaction runs inside the matcher seam, so record
+# and replay hash the identical redacted form.
+with Recorder(client, redactor=safe_defaults()) as rec:
+    ...
+
+# Opt in further: also scrub message CONTENT (prompts/completions), mirroring
+# OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT. This marks the tape
+# `content_redacted = True` — forensic-only, NOT guaranteed bit-exact
+# replayable, because the agent sees redacted text on replay instead of the
+# real completion, and a redacted request can no longer prove a genuine
+# prompt change didn't happen.
+with Recorder(client, redactor=with_content_redaction()) as rec:
+    ...
+```
+
+Redactors never affect what the live agent sees during recording — only what lands on the
+tape. See `redact.py` for the full pipeline (ordered `RedactorFn` callbacks, `regex_redactor`,
+`secret_value_redactor`, the header-redaction rules).
+
 ## Validation scope
 
 What `tracefork validate` proves, stated precisely: the blame engine is **genuinely
@@ -163,19 +191,19 @@ iteration; until then, read 1.00 as "the instrument reliably finds the planted c
 ## Layout
 
 ```
-src/tracefork/      transport, tape, nondet, recorder, fork, store,
+src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, store,
                     blame, faults, validate, report, server, wire, synthetic, cli
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              65 offline tests ($0, no key)
+tests/              188 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 65 offline tests
+uv run pytest -q                                   # all 188 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```

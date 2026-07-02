@@ -90,6 +90,7 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
         "blame": blame or {},
         "created_at": "",
         "fingerprint": tape.digest()[:16],
+        "content_redacted": tape.content_redacted,
     }
 
 
