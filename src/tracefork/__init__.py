@@ -1,5 +1,24 @@
 """tracefork — time-travel debugger for AI agents."""
 
+from .adapters import (
+    BaseFrameworkAdapter,
+    BindResult,
+    FrameworkAdapter,
+    LangChainAdapter,
+    Step,
+    StepDAG,
+    TapeBackedCheckpointStore,
+    TraceforkCallbackCore,
+    get_framework_adapter,
+    langchain_available,
+    langgraph_available,
+    make_callback_handler,
+    make_tape_backed_checkpointer,
+    register_framework_adapter,
+    registered_framework_adapters,
+    require_langchain,
+    require_langgraph,
+)
 from .boundary_guard import BoundaryGuard, BoundaryViolationError
 from .config import RedactionPolicy, TraceforkConfig
 from .interop import (
@@ -61,4 +80,21 @@ __all__ = [
     "require_structlog",
     "enable_otel_instrumentation",
     "get_logger",
+    "Step",
+    "StepDAG",
+    "BindResult",
+    "FrameworkAdapter",
+    "BaseFrameworkAdapter",
+    "LangChainAdapter",
+    "TraceforkCallbackCore",
+    "TapeBackedCheckpointStore",
+    "get_framework_adapter",
+    "register_framework_adapter",
+    "registered_framework_adapters",
+    "make_callback_handler",
+    "make_tape_backed_checkpointer",
+    "langchain_available",
+    "require_langchain",
+    "langgraph_available",
+    "require_langgraph",
 ]
