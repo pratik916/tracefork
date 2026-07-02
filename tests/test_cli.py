@@ -209,3 +209,105 @@ def test_ingest_otel_builds_step_structure_and_warns_not_bit_exact(tmp_path):
     ingested = Tape.load(str(out_tape))
     assert ingested.boundary == OTEL_INGESTED_BOUNDARY
     assert len(ingested.exchanges) == 2
+
+
+# ── report --agent / --blame-report (divergence diagnostics + trust flags) ──
+
+
+def _extract_report_data(html: str) -> dict:
+    marker = "window.__TRACEFORK_DATA__ = "
+    start = html.find(marker) + len(marker)
+    end = html.find(";\n", start)
+    return json.loads(html[start:end])
+
+
+def test_report_writes_html_file(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    out = tmp_path / "report.html"
+
+    result = runner.invoke(app, ["report", run_id, "--store", str(db), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+    data = _extract_report_data(out.read_text())
+    assert data["replay"] == {}
+    assert data["blame"] == {}
+
+
+def test_report_with_agent_embeds_bit_exact_replay_receipt(tmp_path):
+    """`--agent` replays the tape and embeds a bit-exactness receipt; the
+    fixture's own producing agent must replay clean (no divergence)."""
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    out = tmp_path / "report.html"
+
+    result = runner.invoke(
+        app,
+        [
+            "report",
+            run_id,
+            "--store",
+            str(db),
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "-o",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    assert data["replay"]["bit_exact"] is True
+    assert data["replay"]["divergence"] is None
+
+
+def test_report_with_blame_report_embeds_trust_flags(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    out = tmp_path / "report.html"
+
+    blame_path = tmp_path / f"blame_{run_id}.json"
+    blame_path.write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "step_index": 0,
+                        "flip_rate": 0.5,
+                        "ci_lo": 0.2,
+                        "ci_hi": 0.8,
+                        "divergence_rate": 0.4,
+                        "undefined": 4,
+                        "trials": 10,
+                        "valid_trials": 6,
+                        "trustworthy": False,
+                    }
+                ]
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "report",
+            run_id,
+            "--store",
+            str(db),
+            "--blame-report",
+            str(blame_path),
+            "-o",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    step0 = data["blame"]["0"]
+    assert step0["divergence_rate"] == 0.4
+    assert step0["undefined"] == 4
+    assert step0["trustworthy"] is False

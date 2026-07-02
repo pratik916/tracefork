@@ -192,3 +192,68 @@ def test_fixture_corpus_check_passes_after_regenerating_manifest_digest(tmp_path
     # ...but the fixture agent no longer reproduces the (corrupted) request,
     # so replay still isn't bit-exact.
     assert result.all_passed is False
+
+
+# ── structured divergence diagnostics (divergence.py integration) ──────────
+
+
+def test_verifier_captures_structured_diag_on_divergence():
+    """A code-change divergence must carry a structured diff identifying the
+    field that changed, not just the bare fingerprint-mismatch message."""
+    tape = _record_tape([TEXT_RESP])
+
+    def different_agent(client: anthropic.Anthropic) -> str:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Completely different prompt"}],
+        )
+        return resp.content[0].text
+
+    result = ReplayVerifier(tape, different_agent).verify()
+    assert result.divergence is not None
+    diag = result.divergence.diag
+    assert diag is not None
+    assert diag.is_real_divergence is True
+    assert diag.field_diffs, "expected at least one changed field"
+    assert any("content" in d.path for d in diag.field_diffs)
+
+
+def test_verifier_diag_is_none_when_bit_exact():
+    tape = _record_tape([TEXT_RESP])
+    result = ReplayVerifier(tape, _agent_fn).verify()
+    assert result.divergence is None
+
+
+def test_verification_result_to_dict_bit_exact():
+    from tracefork.replay import verification_result_to_dict
+
+    tape = _record_tape([TEXT_RESP])
+    result = ReplayVerifier(tape, _agent_fn).verify()
+    data = verification_result_to_dict(result)
+    assert data["bit_exact"] is True
+    assert data["divergence"] is None
+    json.dumps(data)  # JSON-safe
+
+
+def test_verification_result_to_dict_with_divergence():
+    from tracefork.replay import verification_result_to_dict
+
+    tape = _record_tape([TEXT_RESP])
+
+    def different_agent(client: anthropic.Anthropic) -> str:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Completely different prompt"}],
+        )
+        return resp.content[0].text
+
+    result = ReplayVerifier(tape, different_agent).verify()
+    data = verification_result_to_dict(result)
+    assert data["bit_exact"] is False
+    assert data["divergence"]["step_index"] == 0
+    assert data["divergence"]["cause"] == "code_change"
+    assert data["divergence"]["diag"]["is_real_divergence"] is True
+    assert data["divergence"]["diag"]["field_diffs"]
+    json.dumps(data)  # JSON-safe

@@ -63,6 +63,28 @@
   .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
   .tag-live { background: #1a3a1a; color: var(--green); }
   .tag-static { background: #1a2a3a; color: var(--blue); }
+
+  /* Replay-report / divergence diagnostics */
+  .tag-pass { background: #1a3a1a; color: var(--green); cursor: default; }
+  .tag-fail { background: #3a1a1a; color: var(--red); cursor: pointer; }
+  .tag-fail:hover { text-decoration: underline; }
+  .nav-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
+             font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
+  .nav-btn:hover { border-color: var(--blue); }
+  .nav-btn:disabled { opacity: 0.4; cursor: default; }
+  .detail-nav { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px;
+                border-bottom: 1px solid var(--border); background: var(--surface); }
+  .diverge-note { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; }
+  .diverge-note.real { background: #3a1a1a; color: var(--red); }
+  .diverge-note.tolerated { background: #3a3010; color: var(--yellow); }
+  .diff-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+  .diff-table th, .diff-table td { border: 1px solid var(--border); padding: 4px 6px; text-align: left; vertical-align: top; word-break: break-all; }
+  .diff-table th { background: var(--surface); color: var(--muted); font-weight: normal; }
+  .diff-path { color: var(--blue); font-family: ui-monospace, monospace; }
+  .diff-recorded { color: var(--red); }
+  .diff-live { color: var(--green); }
+  .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .trust-warn { color: var(--yellow); }
 </style>
 </head>
 <body>
@@ -70,6 +92,7 @@
   <h1>tracefork</h1>
   <span class="run-meta" id="run-meta">loading…</span>
   <span class="tag" id="mode-tag"></span>
+  <span class="tag" id="replay-tag" onclick="jumpToDivergence()" title="click to rewind to the diverging step"></span>
 </header>
 <div class="layout">
   <div class="panel" id="timeline-panel">
@@ -113,21 +136,48 @@ async function loadData() {
 // ── render ─────────────────────────────────────────────────────────────────
 function renderTimeline(data) {
   const blame = data.blame || {};
+  const divergence = (data.replay && data.replay.divergence) || null;
   const html = data.exchanges.map((ex, i) => {
     const flipRate = blame[i] ? blame[i].flip_rate : null;
     const isDecisive = flipRate !== null && flipRate >= 0.7;
     const badgeHtml = flipRate !== null
       ? `<span class="blame-badge${isDecisive ? ' high' : ''}">${Math.round(flipRate*100)}%</span>`
       : '';
+    const divergeHtml = divergence && divergence.step_index === i
+      ? `<span class="blame-badge high" title="replay diverged here">⚡ diverged</span>`
+      : '';
     const roleClass = ex.role === 'user' ? 'role-user' : ex.role === 'assistant' ? 'role-assistant' : 'role-tool';
     return `<div class="exchange-item" data-i="${i}" onclick="selectExchange(${i})">
-      ${badgeHtml}
+      ${divergeHtml}${badgeHtml}
       <div class="step">exchange ${i}</div>
       <div class="role ${roleClass}">${escape(ex.role || 'unknown')}</div>
       <div class="preview">${escape(ex.preview || '')}</div>
     </div>`;
   }).join('');
   document.getElementById('timeline-content').innerHTML = html;
+}
+
+function renderReplayBadge(data) {
+  const el = document.getElementById('replay-tag');
+  const replay = data.replay;
+  if (!replay || Object.keys(replay).length === 0) {
+    el.textContent = '';
+    el.className = 'tag';
+    return;
+  }
+  if (replay.bit_exact) {
+    el.textContent = `replay ${replay.matched}/${replay.total} bit-exact`;
+    el.className = 'tag tag-pass';
+  } else {
+    const step = replay.divergence ? replay.divergence.step_index : '?';
+    el.textContent = `replay diverged @ step ${step}`;
+    el.className = 'tag tag-fail';
+  }
+}
+
+function jumpToDivergence() {
+  const divergence = DATA && DATA.replay && DATA.replay.divergence;
+  if (divergence) selectExchange(divergence.step_index);
 }
 
 function renderBlame(data) {
@@ -144,11 +194,13 @@ function renderBlame(data) {
     const rate = info.flip_rate;
     const isDecisive = rate >= 0.7;
     const pct = Math.round(rate * 100);
+    const trustHtml = renderTrustFlags(info);
     return `<div class="blame-row">
       <span class="blame-rank">${rank+1}</span>
       <div class="blame-info">
         <div class="blame-step">step-${step}</div>
         <div class="blame-ci">95% CI [${info.ci_lo.toFixed(2)}, ${info.ci_hi.toFixed(2)}]</div>
+        ${trustHtml}
       </div>
       <div class="blame-bar-wrap"><div class="blame-bar${isDecisive ? ' decisive' : ''}" style="width:${pct}%"></div></div>
       <div class="blame-rate${isDecisive ? ' decisive' : ''}">${pct}%</div>
@@ -157,8 +209,19 @@ function renderBlame(data) {
   document.getElementById('blame-content').innerHTML = headerHtml + rowsHtml;
 }
 
+function renderTrustFlags(info) {
+  // Additive: older blame dicts (pre-trust-flags) only carry flip_rate/ci_lo/ci_hi.
+  if (typeof info.divergence_rate !== 'number') return '';
+  const divPct = Math.round(info.divergence_rate * 100);
+  const undef = info.undefined !== undefined ? info.undefined : 0;
+  const trials = info.trials !== undefined ? info.trials : (info.valid_trials || 0) + undef;
+  const warn = info.trustworthy === false ? ' <span class="trust-warn">⚠ low-confidence</span>' : '';
+  return `<div class="trust-flags">divergence ${divPct}% · undefined ${undef}/${trials}${warn}</div>`;
+}
+
 let _selected = -1;
 function selectExchange(i) {
+  if (!DATA || i < 0 || i >= DATA.exchanges.length) return;
   if (_selected >= 0) {
     document.querySelector(`[data-i="${_selected}"]`)?.classList.remove('active');
   }
@@ -167,7 +230,13 @@ function selectExchange(i) {
   const ex = DATA.exchanges[i];
   const reqJson = syntaxHighlight(JSON.stringify(ex.request || {}, null, 2));
   const respJson = syntaxHighlight(JSON.stringify(ex.response_preview || {}, null, 2));
-  document.getElementById('detail-content').innerHTML = `
+  // Rewind-to-step: prev/next step through recorded exchanges from here.
+  const navHtml = `<div class="detail-nav">
+      <button class="nav-btn" onclick="selectExchange(${i - 1})" ${i <= 0 ? 'disabled' : ''}>‹ prev</button>
+      <span>exchange ${i} / ${DATA.exchanges.length - 1}</span>
+      <button class="nav-btn" onclick="selectExchange(${i + 1})" ${i >= DATA.exchanges.length - 1 ? 'disabled' : ''}>next ›</button>
+    </div>`;
+  document.getElementById('detail-content').innerHTML = navHtml + `
     <div class="detail-section">
       <h3>Request (exchange ${i})</h3>
       <pre>${reqJson}</pre>
@@ -175,6 +244,35 @@ function selectExchange(i) {
     <div class="detail-section">
       <h3>Response</h3>
       <pre>${respJson}</pre>
+    </div>` + renderDivergencePanel(i);
+}
+
+function renderDivergencePanel(i) {
+  const divergence = (DATA.replay && DATA.replay.divergence) || null;
+  if (!divergence || divergence.step_index !== i) return '';
+  const diag = divergence.diag;
+  let body = `<p>${escape(divergence.message || '')}</p>`;
+  if (diag) {
+    const noteClass = diag.is_real_divergence ? 'real' : 'tolerated';
+    const noteText = diag.is_real_divergence ? 'real divergence' : 'tolerated / non-semantic';
+    body += `<p><span class="diverge-note ${noteClass}">${noteText}</span> · matcher '${escape(diag.matcher_name)}'</p>`;
+    if (diag.normalized_fields && diag.normalized_fields.length) {
+      body += `<p class="trust-flags">normalized (excluded from comparison): ${diag.normalized_fields.map(escape).join(', ')}</p>`;
+    }
+    if (diag.field_diffs && diag.field_diffs.length) {
+      const rows = diag.field_diffs.map(d => `<tr>
+          <td class="diff-path">${escape(d.path)}</td>
+          <td class="diff-recorded">${escape(JSON.stringify(d.recorded))}</td>
+          <td class="diff-live">${escape(JSON.stringify(d.live))}</td>
+        </tr>`).join('');
+      body += `<table class="diff-table"><thead><tr><th>field</th><th>recorded</th><th>live</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } else {
+      body += `<p class="trust-flags">no field-level diff available</p>`;
+    }
+  }
+  return `<div class="detail-section">
+      <h3>Divergence Diagnostic</h3>
+      ${body}
     </div>`;
 }
 
@@ -199,6 +297,7 @@ function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
       `${DATA.agent_name || 'unknown agent'} · ${DATA.exchanges.length} exchanges · ${DATA.created_at || ''}`;
     renderTimeline(DATA);
     renderBlame(DATA);
+    renderReplayBadge(DATA);
     if (DATA.exchanges.length > 0) selectExchange(0);
   } catch (e) {
     document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;

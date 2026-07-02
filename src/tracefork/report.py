@@ -31,7 +31,7 @@ def _template_path() -> Path:
     raise FileNotFoundError("web/report.html not found (looked in the package and the repo root)")
 
 
-def _tape_to_data(tape, blame: dict | None = None) -> dict:
+def _tape_to_data(tape, blame: dict | None = None, replay: dict | None = None) -> dict:
     """Convert a Tape to the JSON shape expected by the web UI."""
     adapter = get_adapter("anthropic")
     exchanges = []
@@ -88,6 +88,10 @@ def _tape_to_data(tape, blame: dict | None = None) -> dict:
         "agent_name": tape.agent_name,
         "exchanges": exchanges,
         "blame": blame or {},
+        # Replay-report data (see `replay.verification_result_to_dict`): bit-exactness
+        # receipt + a structured divergence diagnostic on drift. `{}` (falsy) when no
+        # replay was run — the UI renders a neutral "no replay data" state for that.
+        "replay": replay or {},
         "created_at": "",
         "fingerprint": tape.digest()[:16],
         "content_redacted": tape.content_redacted,
@@ -115,13 +119,17 @@ def generate_report(
     output_path: Path,
     *,
     blame: dict | None = None,
+    replay: dict | None = None,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
     The tape data is injected before </head> so the UI loads it synchronously.
+    `replay` (optional) is the JSON-safe dict from
+    `tracefork.replay.verification_result_to_dict` — a bit-exactness receipt
+    plus a structured divergence diagnostic when the replay drifted.
     """
     html = _template_path().read_text()
-    data = _tape_to_data(tape, blame)
+    data = _tape_to_data(tape, blame, replay)
     inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
