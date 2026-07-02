@@ -11,7 +11,14 @@ from pathlib import Path
 
 import typer
 
+from tracefork.config import TraceforkConfig
+
 app = typer.Typer(name="tracefork", help="Time-travel debugger for AI agents.")
+
+# Module-level so `TRACEFORK_DB_PATH`/`TRACEFORK_BUDGET_USD` (if set) become the
+# CLI's own option defaults below; unset (the common case), these equal today's
+# hardcoded literals ("store.db", 5.0) exactly — see `config.py`.
+_DEFAULT_CONFIG = TraceforkConfig.from_env()
 
 
 @app.command()
@@ -82,7 +89,9 @@ def fork(
         ..., "--response", "-r", help="Path to .bytes file containing mutated response"
     ),
     agent: str = typer.Option(..., "--agent", "-a", help="Import path of post-fork agent fn"),
-    store: Path = typer.Option(Path("store.db"), "--store", help="Path to store.db"),  # noqa: B008
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
     desc: str = typer.Option("", "--desc", "-d", help="Human description of mutation"),
 ) -> None:
     """Fork a run at a step with a mutated response, record the new branch."""
@@ -133,7 +142,7 @@ def report(
         Path("report.html"), "--output", "-o", help="Output HTML file"
     ),
     store: Path = typer.Option(  # noqa: B008
-        Path("store.db"), "--store", help="Path to store.db"
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
 ) -> None:
     """Generate a self-contained HTML report from a tape."""
@@ -158,7 +167,7 @@ def report(
 @app.command()
 def serve(
     store: Path = typer.Option(  # noqa: B008
-        Path("store.db"), "--store", help="Path to store.db"
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
     port: int = typer.Option(7777, "--port", "-p", help="Port to listen on"),
 ) -> None:
@@ -184,7 +193,7 @@ def blame(
         "it is re-run for each fork and must be deterministic up to the fork point",
     ),
     k: int = typer.Option(10, "--k", help="Forks per candidate step"),
-    budget: float = typer.Option(5.0, "--budget", help="USD spend cap"),
+    budget: float = typer.Option(_DEFAULT_CONFIG.budget_usd, "--budget", help="USD spend cap"),
     perturbation: str = typer.Option(
         "[tracefork] this step did not complete as recorded",
         "--perturbation",
@@ -203,7 +212,7 @@ def blame(
         0.05, "--null-flip-rate", help="Chance-flip null the binomial test scores each step against"
     ),
     store: Path = typer.Option(  # noqa: B008
-        Path("store.db"), "--store", help="Path to store.db"
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
 ) -> None:
     """Run causal blame analysis on a recorded run.

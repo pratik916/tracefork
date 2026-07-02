@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from tracefork.constants import TAPE_FORMAT_VERSION, TAPE_MAGIC
-from tracefork.store import TapeStore
+from tracefork.store import StorageBackend, TapeStore
 from tracefork.tape import Tape, open_sqlite
 
 # The exact digest of `_golden_tape()`, frozen at the pre-header format. If a change
@@ -184,6 +184,42 @@ def test_concurrent_writers_separate_connections_no_lock(tmp_path):
         assert len(s.list_runs()) == 8 * 5
     finally:
         s.close()
+
+
+# ── StorageBackend protocol conformance ─────────────────────────────────────
+
+
+def test_tape_store_satisfies_storage_backend_protocol(tmp_path):
+    """`TapeStore` (SQLite) must structurally satisfy `StorageBackend` — the
+    seam a future filesystem/object-store backend would implement instead."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        assert isinstance(store, StorageBackend)
+    finally:
+        store.close()
+
+
+def test_storage_backend_full_round_trip_through_the_protocol_surface(tmp_path):
+    """Exercise every `StorageBackend` method via the protocol-typed surface —
+    proof the protocol's shape actually matches what `TapeStore` does."""
+    backend: StorageBackend = TapeStore(str(tmp_path / "store.db"))
+    try:
+        tape = _small_tape(b"proto")
+        run_id = backend.save_tape(tape, run_id="proto-run")
+        assert backend.load_tape(run_id).exchanges == tape.exchanges
+        assert any(r["run_id"] == run_id for r in backend.list_runs())
+
+        branch_id = backend.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            mutation_desc="test branch",
+        )
+        loaded_branch = backend.load_branch(branch_id)
+        assert loaded_branch["parent_run_id"] == run_id
+        assert any(b["branch_id"] == branch_id for b in backend.list_branches(run_id))
+    finally:
+        backend.close()
 
 
 def test_concurrent_writers_shared_store_serialized(tmp_path):

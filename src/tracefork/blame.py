@@ -48,6 +48,7 @@ import httpx
 from .constants import PRICING_TABLE, SONNET
 from .fork import BranchSpec, ForkEngine
 from .nondet import find_divergence
+from .plugins import ORACLE_GROUP, Registry
 from .providers import get_adapter
 from .tape import Tape
 
@@ -266,6 +267,43 @@ class StringMatchOracle:
         if self._failure.search(output):
             return False
         return None
+
+
+# ── Oracle registry ─────────────────────────────────────────────────────────
+#
+# Stores *classes* (factories), not ready instances: unlike a provider adapter
+# or a request matcher, every Oracle implementation so far (`StringMatchOracle`)
+# needs domain-specific constructor arguments (the success/failure regexes),
+# so there is no sensible zero-arg default instance to register. A caller
+# does `get_oracle("string_match")(success_re=..., failure_re=...)`.
+
+ORACLE_REGISTRY: Registry[type[Oracle]] = Registry(ORACLE_GROUP, kind="oracle")
+ORACLE_REGISTRY.register("string_match", StringMatchOracle)
+
+
+def register_oracle(name: str, oracle_cls: type[Oracle]) -> None:
+    """Register an ``Oracle`` factory (a class) under ``name``."""
+    ORACLE_REGISTRY.register(name, oracle_cls)
+
+
+def get_oracle(name: str = "string_match") -> type[Oracle]:
+    """Look up a registered ``Oracle`` factory by name (default: ``StringMatchOracle``)."""
+    return ORACLE_REGISTRY.get_or_raise(name)
+
+
+def registered_oracles() -> list[str]:
+    """Sorted names of all registered ``Oracle`` factories."""
+    return ORACLE_REGISTRY.names()
+
+
+def load_oracle_entry_points(
+    *, allow: frozenset[str] | set[str] | None = None, allow_all: bool = False
+) -> list[str]:
+    """Opt-in: discover third-party oracles advertised under the
+    ``tracefork.oracles`` entry-point group (see ``plugins.py`` for the
+    security-gating contract — nothing loads unless explicitly allowlisted).
+    """
+    return ORACLE_REGISTRY.load_entry_points(allow=allow, allow_all=allow_all)
 
 
 # ── Trial outcomes ───────────────────────────────────────────────────────────

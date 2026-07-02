@@ -27,6 +27,7 @@ from collections.abc import Callable
 import anthropic
 import httpx
 
+from .config import TraceforkConfig
 from .matcher import RequestMatcher
 from .nondet import RecordingNondet
 from .redact import Redactor
@@ -49,6 +50,11 @@ class Recorder:
     form), scrubs the response body before it is stored, and — if the redactor
     also scrubs message content — marks ``tape.content_redacted = True``
     (forensic-only; see the README's Redaction section).
+
+    ``config`` is an opt-in ``TraceforkConfig`` (see ``config.py``); the
+    default (``None``) is likewise byte-identical to today. When given *and*
+    ``redactor`` is not passed explicitly, ``config.build_redactor()`` supplies
+    the redactor — an explicit ``redactor=`` argument always wins.
     """
 
     def __init__(
@@ -58,11 +64,13 @@ class Recorder:
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
+        config: TraceforkConfig | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
         self._matcher = matcher
         self._redactor = redactor
+        self._config = config
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
@@ -87,17 +95,20 @@ class Recorder:
         self._tape = Tape(agent_name=self._agent_name)
         # Share the draws list so recording nondet populates the tape's draws directly
         self._tape.draws = self._nondet.draws
-        if self._redactor is not None:
-            self._tape.content_redacted = self._redactor.content_redacted
+        # An explicit `redactor=` always wins; otherwise fall back to `config`'s
+        # (default `config=None` → `None`, byte-identical to today).
+        redactor = self._redactor
+        if redactor is None and self._config is not None:
+            redactor = self._config.build_redactor()
+        if redactor is not None:
+            self._tape.content_redacted = redactor.content_redacted
 
         # Extract the original httpx transport to use as the recording inner transport.
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
         orig_inner = self._orig_client._client._transport
-        effective_matcher = (
-            self._redactor.matcher(self._matcher) if self._redactor else self._matcher
-        )
+        effective_matcher = redactor.matcher(self._matcher) if redactor else self._matcher
         transport = TraceforkTransport(
-            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=self._redactor
+            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=redactor
         )
         # `.copy()` preserves the original client's base_url, auth_token, default
         # headers/query and timeout — only the transport and retries are swapped, so
@@ -125,7 +136,8 @@ class Recorder:
 class AsyncRecorder:
     """Async context manager that records an AsyncAnthropic client's I/O.
 
-    See ``Recorder`` for the ``matcher`` / ``redactor`` contract — identical here.
+    See ``Recorder`` for the ``matcher`` / ``redactor`` / ``config`` contract —
+    identical here.
     """
 
     def __init__(
@@ -135,11 +147,13 @@ class AsyncRecorder:
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
+        config: TraceforkConfig | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
         self._matcher = matcher
         self._redactor = redactor
+        self._config = config
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
@@ -161,15 +175,16 @@ class AsyncRecorder:
         self._nondet = RecordingNondet()
         self._tape = Tape(agent_name=self._agent_name)
         self._tape.draws = self._nondet.draws
-        if self._redactor is not None:
-            self._tape.content_redacted = self._redactor.content_redacted
+        redactor = self._redactor
+        if redactor is None and self._config is not None:
+            redactor = self._config.build_redactor()
+        if redactor is not None:
+            self._tape.content_redacted = redactor.content_redacted
 
         orig_inner = self._orig_client._client._transport
-        effective_matcher = (
-            self._redactor.matcher(self._matcher) if self._redactor else self._matcher
-        )
+        effective_matcher = redactor.matcher(self._matcher) if redactor else self._matcher
         transport = AsyncTraceforkTransport(
-            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=self._redactor
+            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=redactor
         )
         # `.copy()` preserves base_url, auth_token, default headers/query and timeout
         # (see the sync Recorder) — only the transport and retries are swapped.
