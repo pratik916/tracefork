@@ -4,12 +4,22 @@
 `TraceforkTransport("replay", tape)`, and returns a `VerificationResult`
 describing whether the replay was bit-exact. `DriftDoctor` classifies why
 a divergence happened when it wasn't.
+
+`run_fixture_corpus_check()` extends this into a replay-as-regression gate
+(the `validate --check` idea, applied to plain replay): given a directory of
+committed tapes + a `manifest.json` pinning each tape's agent and expected
+`digest()`, it replays every fixture and asserts both bit-exact replay *and*
+a digest match — so a future change that silently alters tape encoding,
+request canonicalization, or a fixture agent's own behavior fails loudly.
 """
 
 from __future__ import annotations
 
 import enum
+import importlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import anthropic
 import httpx
@@ -120,3 +130,76 @@ class DriftDoctor:
             return DriftCause.BOUNDARY_VIOLATION
         # Default: request bytes diverged — agent code changed
         return DriftCause.CODE_CHANGE
+
+
+@dataclass
+class FixtureResult:
+    """Outcome of replaying one fixture from a committed corpus."""
+
+    name: str
+    tape_path: str
+    agent: str
+    passed: bool
+    reason: str  # "" when passed
+    digest: str
+
+
+@dataclass
+class CorpusCheckResult:
+    fixtures: list[FixtureResult]
+
+    @property
+    def all_passed(self) -> bool:
+        return all(f.passed for f in self.fixtures)
+
+
+def run_fixture_corpus_check(fixtures_dir: Path) -> CorpusCheckResult:
+    """Replay every fixture tape named in ``fixtures_dir/manifest.json`` and
+    assert both bit-exact replay and a ``digest()`` match against the
+    manifest's pinned value — a replay-as-regression gate for a small,
+    committed tape corpus (mirrors ``validate --check``'s regression idea).
+
+    ``manifest.json`` is a JSON list of objects::
+
+        [{"name": "...", "tape": "foo.tape.sqlite",
+          "agent": "pkg.mod:fn", "digest": "<sha256 hex>"}, ...]
+
+    Raises ``FileNotFoundError`` if the manifest is missing (the corpus
+    directory doesn't exist or wasn't set up).
+    """
+    manifest_path = fixtures_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
+    results: list[FixtureResult] = []
+    for entry in manifest:
+        name = entry["name"]
+        tape_file = fixtures_dir / entry["tape"]
+        agent_path = entry["agent"]
+        expected_digest = entry["digest"]
+
+        tape = Tape.load(str(tape_file))
+        module_path, fn_name = agent_path.rsplit(":", 1)
+        agent_fn = getattr(importlib.import_module(module_path), fn_name)
+
+        verification = ReplayVerifier(tape, agent_fn).verify()
+        actual_digest = tape.digest()
+
+        if not verification.bit_exact:
+            hint = verification.divergence.cause_hint if verification.divergence else "unknown"
+            reason = f"replay not bit-exact: {hint}"
+        elif actual_digest != expected_digest:
+            reason = f"digest mismatch: expected {expected_digest[:12]}…, got {actual_digest[:12]}…"
+        else:
+            reason = ""
+
+        results.append(
+            FixtureResult(
+                name=name,
+                tape_path=str(tape_file),
+                agent=agent_path,
+                passed=reason == "",
+                reason=reason,
+                digest=actual_digest,
+            )
+        )
+    return CorpusCheckResult(fixtures=results)

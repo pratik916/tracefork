@@ -6,7 +6,15 @@ block, `uuid.uuid4` is patched globally so agent-generated IDs are recorded.
 `datetime.datetime.now` is NOT patched here — it is a C classmethod on an
 immutable type (Python 3.12+) and replacing `datetime.datetime` with a subclass
 breaks pydantic's lazy schema builder inside the Anthropic SDK. Agents that need
-deterministic timestamps should call `nondet.now_iso()` via `NondetSource`.
+deterministic timestamps or random draws should call `nondet.now_iso()` /
+`nondet.random_float()` via `NondetSource` (see `nondet.py`) — like the clock,
+`random` is not patched globally here.
+
+An opt-in `boundary_guard=True` (or `TraceforkConfig(boundary_guard=True)`)
+wraps the recording window in a `BoundaryGuard`, which hard-errors on thread/
+subprocess spawn or direct `random`/clock reads that bypass `NondetSource` —
+see `boundary_guard.py`. Default is off; behavior is unchanged unless a caller
+opts in.
 
 Usage (sync):
     with Recorder(client, agent_name="my-agent") as rec:
@@ -27,6 +35,7 @@ from collections.abc import Callable
 import anthropic
 import httpx
 
+from .boundary_guard import BoundaryGuard
 from .config import TraceforkConfig
 from .matcher import RequestMatcher
 from .nondet import RecordingNondet
@@ -53,8 +62,16 @@ class Recorder:
 
     ``config`` is an opt-in ``TraceforkConfig`` (see ``config.py``); the
     default (``None``) is likewise byte-identical to today. When given *and*
-    ``redactor`` is not passed explicitly, ``config.build_redactor()`` supplies
-    the redactor — an explicit ``redactor=`` argument always wins.
+    ``redactor``/``boundary_guard`` are not passed explicitly, ``config``
+    supplies them — an explicit argument always wins.
+
+    ``boundary_guard`` is an opt-in tri-state flag (see ``boundary_guard.py``):
+    ``None`` (default) defers to ``config.boundary_guard`` (itself ``False``
+    by default); an explicit ``True``/``False`` always wins over ``config``.
+    When effectively ``True``, a ``BoundaryGuard`` wraps the whole recording
+    window (from here through ``__exit__``), hard-erroring on thread/
+    subprocess spawn or direct ``random``/clock reads. Default is off —
+    identical to before this flag existed.
     """
 
     def __init__(
@@ -65,16 +82,19 @@ class Recorder:
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         config: TraceforkConfig | None = None,
+        boundary_guard: bool | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
         self._matcher = matcher
         self._redactor = redactor
         self._config = config
+        self._boundary_guard_flag = boundary_guard
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
+        self._guard: BoundaryGuard | None = None
 
     @property
     def client(self) -> anthropic.Anthropic:
@@ -127,17 +147,29 @@ class Recorder:
             return _uuid_module.UUID(nondet.new_uuid_hex())
 
         _uuid_module.uuid4 = _patched_uuid4
+
+        # Explicit `boundary_guard=` always wins; otherwise fall back to `config`'s
+        # (default `config=None` → `False`, byte-identical to today).
+        guard_enabled = self._boundary_guard_flag
+        if guard_enabled is None:
+            guard_enabled = self._config.boundary_guard if self._config is not None else False
+        if guard_enabled:
+            self._guard = BoundaryGuard()
+            self._guard.__enter__()
         return self
 
     def __exit__(self, *args: object) -> None:
+        if self._guard is not None:
+            self._guard.__exit__(*args)
+            self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]
 
 
 class AsyncRecorder:
     """Async context manager that records an AsyncAnthropic client's I/O.
 
-    See ``Recorder`` for the ``matcher`` / ``redactor`` / ``config`` contract —
-    identical here.
+    See ``Recorder`` for the ``matcher`` / ``redactor`` / ``config`` /
+    ``boundary_guard`` contract — identical here.
     """
 
     def __init__(
@@ -148,16 +180,19 @@ class AsyncRecorder:
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         config: TraceforkConfig | None = None,
+        boundary_guard: bool | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
         self._matcher = matcher
         self._redactor = redactor
         self._config = config
+        self._boundary_guard_flag = boundary_guard
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
+        self._guard: BoundaryGuard | None = None
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -200,7 +235,18 @@ class AsyncRecorder:
             return _uuid_module.UUID(nondet.new_uuid_hex())
 
         _uuid_module.uuid4 = _patched_uuid4
+
+        # See the sync Recorder for the explicit-vs-config precedence rule.
+        guard_enabled = self._boundary_guard_flag
+        if guard_enabled is None:
+            guard_enabled = self._config.boundary_guard if self._config is not None else False
+        if guard_enabled:
+            self._guard = BoundaryGuard()
+            self._guard.__enter__()
         return self
 
     async def __aexit__(self, *args: object) -> None:
+        if self._guard is not None:
+            self._guard.__exit__(*args)
+            self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]

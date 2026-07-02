@@ -1,5 +1,6 @@
 """tracefork — time-travel debugger for AI agents."""
 
+from .boundary_guard import BoundaryGuard, BoundaryViolationError
 from .config import RedactionPolicy, TraceforkConfig
 from .record_mode import RecordMode
 from .recorder import AsyncRecorder, Recorder
@@ -16,4 +17,6 @@ __all__ = [
     "TraceforkConfig",
     "RedactionPolicy",
     "RecordMode",
+    "BoundaryGuard",
+    "BoundaryViolationError",
 ]

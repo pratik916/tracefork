@@ -1,0 +1,14 @@
+[
+  {
+    "name": "single_turn",
+    "tape": "single_turn.tape.sqlite",
+    "agent": "tracefork.fixtures:single_turn_agent",
+    "digest": "5020d10d6829cfd079f71dc0aa88c36e973302a8861eed9284f2eb70792139d1"
+  },
+  {
+    "name": "two_turn",
+    "tape": "two_turn.tape.sqlite",
+    "agent": "tracefork.fixtures:two_turn_agent",
+    "digest": "7ac5b4eb3a6a6c4acf613379851c24badec9e13dec5d9a419ab5457b32e71552"
+  }
+]

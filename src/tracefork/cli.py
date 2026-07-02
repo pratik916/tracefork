@@ -23,14 +23,29 @@ _DEFAULT_CONFIG = TraceforkConfig.from_env()
 
 @app.command()
 def replay(
-    tape_path: Path = typer.Argument(..., help="Path to a .tape.sqlite file"),  # noqa: B008
-    agent: str = typer.Option(..., "--agent", "-a", help="Import path of agent fn (pkg.mod:fn)"),
+    tape_path: Path = typer.Argument(None, help="Path to a .tape.sqlite file"),  # noqa: B008
+    agent: str = typer.Option(None, "--agent", "-a", help="Import path of agent fn (pkg.mod:fn)"),
+    check: Path = typer.Option(  # noqa: B008
+        None,
+        "--check",
+        help="Path to a committed fixture corpus dir (replay-as-regression gate): "
+        "asserts every fixture tape replays bit-exact and its digest() matches "
+        "the corpus's manifest.json",
+    ),
 ) -> None:
-    """Replay a tape and print the verification receipt."""
+    """Replay a tape and print the verification receipt, or gate a fixture corpus with --check."""
     import importlib
 
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
+
+    if check is not None:
+        _run_replay_check(check)
+        return
+
+    if tape_path is None or agent is None:
+        typer.echo("Provide a tape path and --agent, or use --check <fixtures dir>")
+        raise typer.Exit(1)
 
     tape = Tape.load(str(tape_path))
 
@@ -41,6 +56,27 @@ def replay(
     result = ReplayVerifier(tape, agent_fn).verify()
     _print_receipt(tape_path, result)
     raise typer.Exit(0 if result.bit_exact else 1)
+
+
+def _run_replay_check(fixtures_dir: Path) -> None:
+    """`replay --check` body: gate a committed tape corpus. Exits 1 on any
+    fixture failure (missing manifest, non-bit-exact replay, or digest drift)."""
+    from tracefork.replay import run_fixture_corpus_check
+
+    if not (fixtures_dir / "manifest.json").exists():
+        typer.echo(f"No manifest.json found under {fixtures_dir}")
+        raise typer.Exit(1)
+
+    result = run_fixture_corpus_check(fixtures_dir)
+
+    typer.echo(f"\n  tracefork replay --check {fixtures_dir}")
+    typer.echo(f"  {'─' * 60}")
+    for f in result.fixtures:
+        status = "PASS" if f.passed else "FAIL"
+        typer.echo(f"  [{status}] {f.name:<20} {f.reason}")
+    n_pass = sum(1 for f in result.fixtures if f.passed)
+    typer.echo(f"\n  {n_pass}/{len(result.fixtures)} fixtures passed\n")
+    raise typer.Exit(0 if result.all_passed else 1)
 
 
 @app.command()

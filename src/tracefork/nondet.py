@@ -5,6 +5,15 @@ and serving it back identically at replay. `RecordingNondet` draws real values
 and logs them; `ReplayNondet` serves them back in order; `DriftingNondet` is
 the negative control (fresh real values → forced divergence).
 
+Three draw kinds are virtualized: clock (`now_iso`), id (`new_uuid_hex`), and
+random (`random_float`) — each recorded/replayed the same way. Like `now_iso`,
+`random_float` is additive/opt-in: an agent must be handed the active
+`NondetSource` explicitly (see `tracefork_spike.agent` for the pattern) and
+call it instead of `random.random()` directly; nothing in `Recorder` patches
+`random` globally the way it does `uuid.uuid4` (see `recorder.py`).
+`random_float()` logs the exact `float.hex()` representation so replay is
+bit-exact with no float-formatting rounding.
+
 The SDK masks transport exceptions as `APIConnectionError`; `find_divergence`
 unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
 """
@@ -12,6 +21,7 @@ unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
 from __future__ import annotations
 
 import datetime
+import random
 import uuid
 from typing import Protocol
 
@@ -38,16 +48,18 @@ def find_divergence(exc: BaseException | None) -> DivergenceError | None:
 class NondetSource(Protocol):
     def now_iso(self) -> str: ...
     def new_uuid_hex(self) -> str: ...
+    def random_float(self) -> float: ...
 
 
 class RecordingNondet:
     """Draws genuinely real values and logs each draw."""
 
     def __init__(self) -> None:
-        # Capture the real datetime.now and uuid.uuid4 at init time, before
-        # Recorder.__enter__ patches datetime.datetime with a subclass.
+        # Capture the real datetime.now, uuid.uuid4, and random.random at init
+        # time, before Recorder.__enter__ patches datetime.datetime with a subclass.
         self._real_now = datetime.datetime.now
         self._real_uuid4 = uuid.uuid4
+        self._real_random = random.random
         self.draws: list[tuple[str, str]] = []
 
     def now_iso(self) -> str:
@@ -58,6 +70,14 @@ class RecordingNondet:
     def new_uuid_hex(self) -> str:
         v = self._real_uuid4().hex
         self.draws.append(("uuid", v))
+        return v
+
+    def random_float(self) -> float:
+        v = self._real_random()
+        # float.hex() is an exact, lossless hexadecimal representation that
+        # round-trips via float.fromhex() with no precision loss — unlike
+        # str(v)/repr(v), which can lose bits for some values.
+        self.draws.append(("random", v.hex()))
         return v
 
 
@@ -87,6 +107,9 @@ class ReplayNondet:
 
     def new_uuid_hex(self) -> str:
         return self._next("uuid")
+
+    def random_float(self) -> float:
+        return float.fromhex(self._next("random"))
 
     def fully_consumed(self) -> bool:
         return self._i == len(self._draws)

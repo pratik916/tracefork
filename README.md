@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (188 tests).
+# 1. The full offline test suite (336 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -90,6 +90,7 @@ uv run tracefork --help
 | Command | What it does |
 |---|---|
 | `replay  <tape> --agent pkg.mod:fn` | Replay a tape and print the bit-exact verification receipt. |
+| `replay  --check <fixtures dir>` | Replay-as-regression gate: assert every fixture in a committed tape corpus replays bit-exact and its `digest()` matches. |
 | `verify  <tape> --agent pkg.mod:fn` | Verify replay; exit non-zero on drift (CI gate). |
 | `fork    <run_id> --step N --response f --agent pkg.mod:fn` | Fork a run at step N with a mutated response; record the counterfactual branch. |
 | `blame   <run_id> --agent pkg.mod:fn [--k 10] [--budget 5.0]` | Rank every step by causal flip-rate with 95% CIs (re-runs the agent; budget-capped). |
@@ -114,10 +115,13 @@ is the contract between them.
   transport**, so an unrecorded request is a hard error, never a silent network call.
 - **`tape.py`** — content-addressed (sha256) blobs + an ordered event log, persistable to
   SQLite, with a hash-chain `digest()` fingerprint.
-- **`nondet.py`** — `NondetSource` is the only way the agent gets time/ids;
+- **`nondet.py`** — `NondetSource` is the only way the agent gets time/ids/random draws;
   `RecordingNondet` logs real draws, `ReplayNondet` serves them back, `DriftingNondet` is
   the negative control. `find_divergence()` unwraps the `DivergenceError` the SDK buries
   inside an `APIConnectionError` so a real divergence isn't mistaken for a network blip.
+- **`boundary_guard.py`** — opt-in (default off) `BoundaryGuard`: hard-errors at record
+  time on thread/subprocess spawn or direct `random`/clock reads that bypass
+  `NondetSource`, instead of letting the tape fail replay later, mysteriously.
 - **`fork.py`** — `ForkTransport` runs three phases: **prefix-replay** (served from the
   parent tape for $0, request asserted to match — the agent must be deterministic up to
   the fork point), **mutation-injection** (same request, swapped response), and
@@ -136,12 +140,22 @@ is the contract between them.
 
 ## Determinism boundary (v1, honest scope)
 
-Bit-exact replay holds within a declared boundary: **single-process, clock + id
+Bit-exact replay holds within a declared boundary: **single-process, clock + id + random
 nondeterminism, captured through `NondetSource`**. An agent that reads `datetime.now()` /
 `uuid` / `random` directly, or runs its loop across threads/subprocesses, steps outside
 that boundary — and the verifier will *detect* the resulting drift rather than paper over
 it. Forking and blame assume the agent rebuilds its prefix deterministically (the same
 property replay proves). See [`SPIKE0.md`](SPIKE0.md) for how the boundary was de-risked.
+
+An opt-in `BoundaryGuard` (default off; `Recorder(..., boundary_guard=True)` or
+`TraceforkConfig(boundary_guard=True)`) turns *some* of these violations — thread/
+subprocess spawn, direct `random.random()`/`time.monotonic()`/`time.sleep()` — into a loud
+error at record time instead of a drift only discovered on replay. It deliberately can't
+intercept everything: `datetime.datetime.now()` is a classmethod on an immutable C type
+(can't be monkeypatched without breaking the SDK's pydantic schema builder — see
+`recorder.py`), and `time.time()` is called unconditionally by httpx's cookie-jar
+machinery on every response, so guarding it would false-positive on every exchange. See
+`boundary_guard.py`'s module docstring for the full, precise scope.
 
 ## Redaction (opt-in)
 
@@ -196,14 +210,14 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              188 offline tests ($0, no key)
+tests/              336 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 188 offline tests
+uv run pytest -q                                   # all 336 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```

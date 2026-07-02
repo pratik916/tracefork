@@ -10,7 +10,7 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(78 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(336 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
 classes at 1.00 top-1 precision). `src/tracefork_spike/` keeps the original Spike 0 that
@@ -26,13 +26,14 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (78 tests)
+uv run pytest -q                     # full offline suite (336 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
 uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate
+uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 ```
 
 ## Architecture (the parts that span files)
@@ -43,12 +44,26 @@ is the contract between them.
 
 The product lives in `src/tracefork/`:
 
-- `nondet.py` — `NondetSource` is the *only* way the agent gets time/ids.
-  `RecordingNondet` draws real values and logs them; `ReplayNondet` serves them back in
-  order; `DriftingNondet` is the negative control (fresh values → forced divergence).
-  `find_divergence()` unwraps a `DivergenceError` from the `APIConnectionError` the SDK
-  wraps transport exceptions in — **keep this; without it a real divergence looks like a
-  network blip.**
+- `nondet.py` — `NondetSource` is the *only* way the agent gets time/ids/random draws
+  (`now_iso`/`new_uuid_hex`/`random_float`). `RecordingNondet` draws real values and logs
+  them; `ReplayNondet` serves them back in order; `DriftingNondet` is the negative control
+  (fresh values → forced divergence). `random_float()` logs the exact `float.hex()` string
+  (lossless round-trip, no float-formatting dust) and, like `now_iso()`, is additive/opt-in
+  — an agent must be handed the active `NondetSource` explicitly; nothing patches `random`
+  globally the way `Recorder` patches `uuid.uuid4`. `find_divergence()` unwraps a
+  `DivergenceError` from the `APIConnectionError` the SDK wraps transport exceptions in —
+  **keep this; without it a real divergence looks like a network blip.**
+- `boundary_guard.py` — `BoundaryGuard`, an **opt-in** (default off) record-mode guard:
+  hard-errors on `threading.Thread.start`/`subprocess.Popen` (crossing the single-process
+  boundary) and direct `random.random`/`time.monotonic`/`time.sleep` (bypassing
+  `NondetSource`) instead of letting the tape fail replay later, mysteriously. Deliberately
+  does **not** guard `datetime.datetime.now()` (same immutable-C-type reason `recorder.py`
+  doesn't patch it) or `time.time()` (httpx's cookie-jar machinery calls it on every
+  response — guarding it would false-positive on every exchange). Pre-warms the Anthropic
+  SDK's `platform_headers()` `lru_cache` on `__enter__` so its one internal
+  `subprocess.Popen` call (uncached platform detection) doesn't trip the guard on the first
+  real API call. Wired into `Recorder`/`AsyncRecorder` via `boundary_guard=` (tri-state:
+  explicit wins over `TraceforkConfig.boundary_guard`, both default `False`).
 - `transport.py` — `TraceforkTransport` (sync) + `AsyncTraceforkTransport` (async) are the
   capture seam, streaming-SSE capable (buffer via `.read()`/`.aread()`). Record mode tees
   request+response bytes into the tape; replay mode serves recorded bytes and
@@ -68,7 +83,8 @@ The product lives in `src/tracefork/`:
   `_client._transport` seam (via `client.copy(http_client=...)`, so base_url / auth_token /
   default headers are preserved). Patches `uuid.uuid4` globally; **does not** patch
   `datetime.datetime` (immutable C type in 3.12+, and a subclass breaks the SDK's pydantic
-  schema builder) — agents needing deterministic clocks read `NondetSource` directly.
+  schema builder) — agents needing deterministic clocks/random read `NondetSource` directly.
+  Optionally wraps the recording window in a `BoundaryGuard` (see `boundary_guard.py`).
 - `fork.py` — `ForkTransport` runs three phases: prefix-replay ($0, request asserted to
   match the parent), mutation-injection (same request, swapped response), tail-record (the
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.
@@ -90,6 +106,13 @@ The product lives in `src/tracefork/`:
 - `wire.py` / `synthetic.py` — Anthropic wire-format builders and the offline
   Scripted/FaultAware fake transports, in the **package** so production never imports from
   `tests/`; `tests/fakes.py` re-exports them.
+- `replay.py` — `ReplayVerifier` (per-tape) and `run_fixture_corpus_check()`, which extends
+  the `validate --check` idea to plain replay: gates a committed tape corpus
+  (`experiments/replay_fixtures/` + its `manifest.json`) by asserting both bit-exact replay
+  and a `digest()` match per fixture — `tracefork replay --check <dir>`. `fixtures.py` holds
+  the tiny deterministic agents the corpus is built from (kept out of `validate.py` so the
+  corpus doesn't couple to fault-testing concerns); `scripts/gen_replay_fixtures.py`
+  (re)generates the corpus offline.
 - `cli.py` — Typer entry point for all seven commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
@@ -101,9 +124,12 @@ record → save → load → replay → verify + negative control, with its own 
   and the demo — no key, no network. The synthetic transports (`synthetic.py`) are the
   seam; add to them rather than reaching for the real API. (`blame` on a real run is the
   one budget-capped exception.)
-- **The agent must read time/ids only through `NondetSource`** — any direct
+- **The agent must read time/ids/random only through `NondetSource`** — any direct
   `datetime.now()` / `uuid` / `random` breaks the determinism boundary and the
-  bit-exactness claim.
+  bit-exactness claim. `BoundaryGuard` (opt-in, default off) turns a subset of these
+  violations (thread/subprocess spawn, direct `random`/`time.monotonic`/`time.sleep`) into
+  a loud record-time error instead of a mysterious later replay failure — see
+  `boundary_guard.py` for exactly which calls it can and can't intercept.
 - **The verifier proves, not asserts** — every request body is hash-checked against the
   tape; the negative control must keep failing (drift detected) or the proof is vacuous.
 - **Declared determinism boundary (v1):** single-process (sync **or** asyncio), clock +

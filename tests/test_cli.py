@@ -3,14 +3,19 @@
 and the now-enforced negative control in `validate`."""
 
 import json
+import shutil
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 from tracefork.cli import app
 from tracefork.store import TapeStore
+from tracefork.tape import Tape
 from tracefork.validate import _record_clean_tape
 
 runner = CliRunner()
+
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "experiments" / "replay_fixtures"
 
 
 def test_blame_budget_gate_blocks_overspend(tmp_path):
@@ -79,3 +84,39 @@ def test_validate_runs_and_enforces_control(tmp_path):
     data = json.loads(out.read_text())
     assert data["negative_control_max_flip"] < 0.30
     assert data["overall_top1_precision"] >= 0.7
+
+
+def test_replay_check_passes_on_committed_fixture_corpus():
+    result = runner.invoke(app, ["replay", "--check", str(FIXTURES_DIR)])
+    assert result.exit_code == 0, result.output
+    assert "fixtures passed" in result.output
+
+
+def test_replay_check_fails_on_tampered_corpus(tmp_path):
+    tamper_dir = tmp_path / "fixtures"
+    shutil.copytree(FIXTURES_DIR, tamper_dir)
+
+    manifest = json.loads((tamper_dir / "manifest.json").read_text())
+    entry = manifest[0]
+    tape_path = tamper_dir / entry["tape"]
+    tape = Tape.load(str(tape_path))
+    req, resp = tape.exchanges[0]
+    tape.exchanges[0] = (req, resp + b" ")
+    tape.save(str(tape_path))
+
+    result = runner.invoke(app, ["replay", "--check", str(tamper_dir)])
+    assert result.exit_code == 1, result.output
+    assert "FAIL" in result.output
+
+
+def test_replay_check_missing_manifest_exits_1(tmp_path):
+    empty_dir = tmp_path / "empty_fixtures"
+    empty_dir.mkdir()
+    result = runner.invoke(app, ["replay", "--check", str(empty_dir)])
+    assert result.exit_code == 1, result.output
+
+
+def test_replay_without_check_still_requires_agent_and_tape():
+    result = runner.invoke(app, ["replay"])
+    assert result.exit_code == 1
+    assert "Provide a tape path and --agent" in result.output
