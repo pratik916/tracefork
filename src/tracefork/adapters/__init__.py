@@ -5,18 +5,27 @@ The byte capture stays at the httpx transport (``transport.py``); a framework's
 callbacks/tracing are an observer-only annotation layer feeding ``StepDAG`` (see
 ``base.py``). Importing this package registers the built-in LangChain/LangGraph
 (``"langchain"``), OpenAI Agents SDK (``"openai_agents"``), CrewAI
-(``"crewai"``), and AutoGen (``"autogen"``) adapters — every framework import
-they make is guarded, so this import never requires any of those packages to be
-installed.
+(``"crewai"``), AutoGen (``"autogen"``), and Google ADK (``"adk"``) adapters —
+every framework import they make is guarded, so this import never requires any
+of those packages to be installed.
 """
 
 from __future__ import annotations
 
+from . import adk as _adk  # noqa: F401  (side effect: registers "adk")
 from . import autogen as _autogen  # noqa: F401  (side effect: registers "autogen")
 from . import crewai as _crewai  # noqa: F401  (side effect: registers "crewai")
 from . import langchain as _langchain  # noqa: F401  (side effect: registers "langchain")
 from . import (
     openai_agents as _openai_agents,  # noqa: F401  (side effect: registers "openai_agents")
+)
+from .adk import (
+    ADK_IMPORT_HINT,
+    AdkAdapter,
+    TraceforkAdkCore,
+    adk_available,
+    make_plugin,
+    require_adk,
 )
 from .autogen import (
     AUTOGEN_IMPORT_HINT,
@@ -115,4 +124,11 @@ __all__ = [
     "autogen_available",
     "make_intervention_handler",
     "require_autogen",
+    # google adk
+    "ADK_IMPORT_HINT",
+    "AdkAdapter",
+    "TraceforkAdkCore",
+    "adk_available",
+    "make_plugin",
+    "require_adk",
 ]

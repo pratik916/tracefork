@@ -175,13 +175,18 @@ The product lives in `src/tracefork/`:
   checkpointer), `openai_agents.py` (defensive client-attribute injection +
   `agents.set_default_openai_client()` + a `TracingProcessor`),
   `crewai.py` (LiteLLM's `client_session`/`aclient_session` — CrewAI's actual httpx
-  chokepoint — + a `crewai_event_bus` listener), and `autogen.py` (defensive
-  client-attribute injection + an `InterventionHandler` message-level seam) are the
-  concrete adapters, each its own optional extra with every framework import
-  guarded, so `import tracefork` and the whole offline suite work with none of
-  them installed. Where a framework's exact internal attribute names/event
-  shapes aren't a documented stable API, injection is defensive (a short
-  candidate list, never one hard-coded name) — see each module's docstring.
+  chokepoint — + a `crewai_event_bus` listener), `autogen.py` (defensive
+  client-attribute injection + an `InterventionHandler` message-level seam), and
+  `adk.py` (Google ADK: candidate-path injection into the `google-genai`
+  `BaseApiClient`'s private `_httpx_client`/`_async_httpx_client` — reached
+  through the target itself, a `genai.Client`, an ADK `Gemini` model wrapper, or
+  an `LlmAgent` — + a `BasePlugin` registered once on the `Runner` for
+  agent/model/tool before/after boundaries) are the concrete adapters, each its
+  own optional extra with every framework import guarded, so `import tracefork`
+  and the whole offline suite work with none of them installed. Where a
+  framework's exact internal attribute names/event shapes aren't a documented
+  stable API, injection is defensive (a short candidate list, never one
+  hard-coded name) — see each module's docstring.
 - `cli.py` — Typer entry point for all eleven commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):

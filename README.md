@@ -305,7 +305,7 @@ exercised against the real library when present and skipped cleanly otherwise, s
 the pinned adapter version ranges (which churn) are validated separately from the
 offline core.
 
-Three more adapters ship the same way, each its own optional extra and each
+Four more adapters ship the same way, each its own optional extra and each
 targeting the framework's actual model-call chokepoint:
 
 - **OpenAI Agents SDK** (`pip install 'tracefork[openai-agents]'`) — `bind()` injects
@@ -324,6 +324,15 @@ targeting the framework's actual model-call chokepoint:
   defensive attribute search). Step visibility is a message-level `InterventionHandler`
   (`make_intervention_handler()`) — pass-through only, so it stays an annotation
   layer, never a second capture path.
+- **Google ADK** (`pip install 'tracefork[adk]'`, Agent Development Kit) — ADK's
+  model calls go through the `google-genai` SDK, so `bind()` walks a short list of
+  candidate attribute paths (the target itself, a `genai.Client`, an ADK `Gemini`
+  model wrapper, or an `LlmAgent` whose `.model` already holds one) to find the
+  `google.genai` `BaseApiClient` and swap in tracefork's httpx clients — the same
+  Gemini `generateContent` wire format `providers/gemini.py` already parses. Step
+  visibility is a real `BasePlugin` (`make_plugin()`, installable via
+  `Runner(..., plugins=[plugin])`) over agent/model/tool before/after boundaries —
+  registered once for the whole run rather than threaded through every `LlmAgent`.
 
 Each adapter's real-framework wrapper is import-guarded and validated against a
 synthetic stand-in mimicking the framework's interface (never a live call) in the
@@ -489,7 +498,7 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     interop (OTel GenAI / OpenInference export+ingest),
                     observability (opt-in structlog + OTel self-instrumentation),
                     adapters/ (opt-in framework seam: LangChain/LangGraph, OpenAI
-                    Agents SDK, CrewAI, AutoGen),
+                    Agents SDK, CrewAI, AutoGen, Google ADK),
                     bedrock_transport (opt-in botocore before-send record/replay seam),
                     eventstream (standalone AWS event-stream binary framing codec),
                     proxy (opt-in localhost base-URL record/replay proxy for non-Python clients),

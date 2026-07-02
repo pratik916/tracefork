@@ -102,6 +102,16 @@ autogen = [
     "autogen-core>=0.7,<1",
     "autogen-ext>=0.7,<1",
 ]
+# Optional: google-adk (the Google Agent Development Kit), only needed to bind a
+# *live* ADK LlmAgent/Runner's underlying google-genai client to tracefork's
+# transport seam (`adapters/adk.py`), or to install its BasePlugin as a real
+# ADK plugin. google-adk pulls in google-genai transitively (it already pins
+# `google-genai>=2.8,<3`), so it is not pinned separately here. Both imports
+# are guarded, so `import tracefork` and the whole offline test suite work
+# with neither installed.
+adk = [
+    "google-adk>=2.3,<3",
+]
 # Optional: structlog JSON logging + OTel self-instrumentation of
 # record/replay/fork/blame (see observability.py). Export/ingest of OTel
 # GenAI / OpenInference data (interop.py) needs NEITHER of these — it produces
