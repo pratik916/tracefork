@@ -7,57 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-02
+
+Generic, multi-provider, production-hardening release. The bit-exact, $0,
+hash-verified replay substrate from 0.1.0 is the contract and is unchanged —
+everything below is additive around it: all engine internals stay byte-stable,
+`digest()` is format-stable, and every existing tape still loads and replays.
+
 ### Added
 
-- **Framework adapters** (`adapters/`, opt-in `frameworks` extra): a minimal
-  adapter protocol — `bind()` (route the framework's underlying LLM client through
-  the *existing* `TraceforkTransport` + `NondetSource`), `on_step()` (map a
-  framework callback event to a neutral `Step`), `teardown()` — plus a
-  `StepDAG`/`from_run_tree` normalizer that overlays a run's structure on the tape
-  (byte seam stays at httpx; callbacks are observer-only annotation). Ships a
-  **LangChain/LangGraph** adapter: injects the tracefork transport into
-  `ChatOpenAI` (`root_client.copy(http_client=…)`) and `ChatAnthropic` (no
-  `http_client` field — a fresh `anthropic` client seeded via `object.__setattr__`
-  before its cached-property client is built), a `BaseCallbackHandler` step
-  collector, and a **tape-backed LangGraph checkpointer** for bit-exact, $0
-  time-travel replay. Registered via the plugin registry (`tracefork.adapters`
-  entry-point group, same security gating as every other seam). `langchain-*`
-  /`langgraph` are optional and all imports are guarded — `import tracefork` and
-  the full offline suite run with none installed; the framework-facing wrappers
-  are exercised against the real library when present and skipped otherwise.
-- **Three more framework adapters**, each its own optional extra, each binding at
-  the framework's actual model-call chokepoint (never a second capture path):
-  **OpenAI Agents SDK** (`adapters/openai_agents.py`, `pip install
-  'tracefork[openai-agents]'`) — defensive attribute-search injection into a model
-  wrapper's underlying `openai` client, plus `bind_default_client()` for the SDK's
-  own documented `agents.set_default_openai_client()`, and a real `TracingProcessor`
-  (`make_tracing_processor()`) for span/trace step visibility; **CrewAI**
-  (`adapters/crewai.py`, `pip install 'tracefork[crewai]'`) — targets LiteLLM's
-  documented `client_session`/`aclient_session` custom-httpx-client surface (CrewAI
-  routes every model call through LiteLLM, never touching httpx itself), plus a
-  `crewai_event_bus` listener (`make_event_listener()`) over crew/agent/task/tool/
-  LLM-call boundaries; **AutoGen** (`adapters/autogen.py`, `pip install
-  'tracefork[autogen]'`, `autogen-core`/`autogen-ext`) — the same defensive
-  client-attribute injection for an AutoGen model client, plus a message-level
-  `InterventionHandler` (`make_intervention_handler()`) that is pass-through only
-  (never `DropMessage`), so it stays an annotation layer. All three are guarded the
-  same way as LangChain: `import tracefork` and the whole offline suite run with
-  none of them installed; each framework-neutral core is offline-tested against
-  synthetic events, and the thin real wrapper classes are only reachable — and only
-  smoke-tested — when the framework is actually installed (`pytest.importorskip`).
-- **OTel GenAI / OpenInference interop** (`interop.py`, `tracefork export`/`ingest`):
-  adopts `gen_ai.*` attribute names (pinned semconv version) for the normalized
-  provider view; exports a tape + blame report as an OTel GenAI trace (OTLP/JSON
-  spans) or an OpenInference-style dataset, both plain JSON — no `opentelemetry-sdk`
-  install required; ingests either format back into a tape's step structure for
-  **blame-by-re-execution**, explicitly **not** $0 bit-exact replay (an ingested
-  tape's `boundary` is marked `OTEL_INGESTED_BOUNDARY` and diverges on
-  `replay`/`fork` by design — proven in `tests/test_interop.py`).
-- **Opt-in observability extra** (`pip install 'tracefork[observability]'`,
-  `observability.py`): a structlog JSON logging pipeline and OTel
-  self-instrumentation of record/replay/fork/blame, off by default and double
-  opt-in even when installed — the offline/$0 core and its test suite need neither
-  package.
+- **Provider abstraction seam** (`providers/`): a `ProviderAdapter` protocol + registry
+  and a `gen_ai.*`-style `NormalizedResponse` view. Anthropic is now a *registered*
+  adapter, not a hardcoded assumption; raw request/response **bytes** stay the immutable
+  replay + hash contract. (#7)
+- **More provider backends** — **OpenAI** and **Google Gemini** (httpx-based, captured
+  through the existing transport seam, with provider-generic fault injection), and **AWS
+  Bedrock** (a separate botocore `before-send` seam, a stdlib `vnd.amazon.eventstream`
+  frame codec, and SigV4-canonical request matching so a fresh signature/timestamp is not
+  a false divergence). (#12, #21)
+- **Pluggable canonicalization / divergence matcher** (`matcher.py`): identity +
+  canonicalizing matchers so volatile material (Gemini `?key=`, Bedrock `x-amz-date`,
+  rotating auth) hashes equal while a real request-body change still diverges. (#9)
+- **Plugin & extension architecture** (`plugins.py`): entry-point registries for
+  providers, matchers, storage backends, transports, oracles, and adapters — each gated by
+  the same explicit allowlist. (#11)
+- **MCP + native tool-call record/replay** (`tools.py`, `mcp_client.py`): a JSON-RPC tee so
+  tool exchanges share the tape with LLM exchanges and replay bit-exact. (#14)
+- **Framework adapters** (`adapters/`, opt-in extras): a minimal
+  `bind()`/`on_step()`/`teardown()` protocol + a `StepDAG` normalizer, with
+  **LangChain/LangGraph** (including a tape-backed LangGraph checkpointer) plus **OpenAI
+  Agents SDK**, **CrewAI**, and **AutoGen** adapters — each binding at the framework's real
+  model-call chokepoint (never a second capture path) and each guarded so `import
+  tracefork` and the full offline suite run with none installed. (#16, #23)
+- **OTel GenAI / OpenInference interop** (`interop.py`, `tracefork export`/`ingest`): export
+  a tape (+ blame report) as OTel GenAI spans or an OpenInference dataset, and ingest either
+  back into a tape's step structure for **blame-by-re-execution** (explicitly *not* $0
+  bit-exact replay — an ingested tape diverges on `replay`/`fork` by design). Plain JSON, no
+  `opentelemetry-sdk` required. Plus an **opt-in `observability` extra** (structlog + OTel
+  self-instrumentation of record/replay/fork/blame), off by default. (#15)
+- **Deterministic asyncio concurrency replay** (`transport.py`): records the completion
+  order of concurrent fan-out (`gather`/`TaskGroup`) and re-imposes it on replay, so
+  concurrent agents replay bit-exact — not just single-call-at-a-time ones. (#17)
+- **Causal blame depth**: coalition / temporal-Shapley attribution with necessity +
+  sufficiency, and a long-tape competing-fault benchmark (`tracefork bench`) with Wilson
+  CIs. The one temporal-order Shapley limitation is documented, not hidden. (#18, #24)
+- **Oracle rigor** (`judge.py`, opt-in): an LLM-judge oracle with position-swap averaging +
+  a self-judge guard, gold-set calibration (FPR/FNR/Cohen's kappa), and Rogan-Gladen
+  flip-rate debiasing — all offline-testable via an injected judge function. (#19)
+- **Divergence diagnostics & debug UX** (`divergence.py`, web report): a structured
+  divergence diff, a report rewind panel, blame trust flags, and real-vs-tolerated
+  divergence messaging. (#20)
+- **Localhost record/replay proxy** (`tracefork proxy`): a base-URL MITM-style proxy (binds
+  127.0.0.1) for non-Python / non-httpx clients (curl, Node, Go), reusing the tape +
+  matcher. Record/replay only — outside the in-process `NondetSource` determinism
+  boundary. (#22)
+- **Hardening seams**: an opt-in record-time `BoundaryGuard` (thread/subprocess spawn,
+  direct `random`/`time` bypasses), `random_float()` virtualization through `NondetSource`,
+  a `replay --check` fixture-corpus regression gate, and opt-in secret/PII redaction on
+  record. (#10, #13)
+- **CLI**: new `bench`, `export`, `ingest`, and `proxy` commands (joining
+  `replay`/`verify`/`fork`/`report`/`serve`/`blame`/`validate`), plus a full end-to-end
+  integration suite and a single `scripts/e2e.sh` receipt. (#25)
+
+### Changed
+
+- **Versioned tape envelope** (`tape.py`): a `TAPE_MAGIC` + uint16 version header over a
+  zstd + content-addressed binary container (no base64, no pickle), with a read-time
+  upcaster chain (v1→v4). The version header is **not** part of `digest()`, so the hash
+  chain is byte-stable across format versions and legacy tapes still load and replay. (#6)
+- **Blame statistics**: three-valued trials (flip / no-flip / undefined) and pluggable CI
+  methods. (#8)
+- **SQLite persistence hardened**: WAL, `synchronous=NORMAL`, `busy_timeout`,
+  `foreign_keys=ON`, and writers take `BEGIN IMMEDIATE`. (#6)
+
+### Fixed
+
+- Wilson CI boundaries snap to analytically-exact 0/1 to avoid ~1e-17 platform float-dust
+  that differed across CI runners. (#8)
 
 ## [0.1.0] - 2026-07-02
 
@@ -93,5 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/tracefork_spike/` — the original Spike 0 that de-risked bit-exact, no-key replay
   within the declared determinism boundary.
 
-[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pratik916/tracefork/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pratik916/tracefork/releases/tag/v0.1.0
