@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (438 tests).
+# 1. The full offline test suite (539 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -281,6 +281,46 @@ as follow-ups. The framework-facing thin wrappers are exercised against the real
 library when present and skipped cleanly otherwise, so the pinned adapter version
 ranges (which churn) are validated separately from the offline core.
 
+## AWS Bedrock (opt-in)
+
+Bedrock is the outlier provider: `boto3`/`botocore` never touch httpx, so the transport
+seam above can't see them, and Bedrock signs every request (SigV4) and streams over AWS's
+own binary `application/vnd.amazon.eventstream` framing, not SSE. `bedrock_transport.py` is
+a **second, parallel seam** for exactly this: it hooks botocore's own `before-send`
+short-circuit (the mechanism botocore itself uses to skip a real network call), tees
+request+response bytes into the *same* `Tape`/`tape.py` used everywhere else, and reuses
+`matcher.py`'s existing `bedrock_matcher()` preset to canonicalize away SigV4 signing
+material (`Authorization`, `X-Amz-Date`, `X-Amz-Security-Token`) — a replay whose *only*
+difference is a fresh signature/timestamp is not a false divergence; a real body or model
+change still is.
+
+```python
+from tracefork.bedrock_transport import BedrockTransport, default_sender
+from tracefork.tape import Tape
+
+tape = Tape()
+transport = BedrockTransport("record", tape, sender=default_sender())
+transport.register(bedrock_runtime_client.meta.events)
+# ... call bedrock_runtime_client.invoke_model(...) normally; tees into `tape`.
+```
+
+`boto3`/`botocore` are **optional** (`pip install 'tracefork[bedrock]'`): the seam is
+duck-typed against whatever prepared-request/event-emitter object it's handed
+(`.method`/`.url`/`.headers`/`.body`, `.register()`/`.emit()`), so it needs **zero**
+botocore import of its own, and the offline test suite exercises it entirely through a
+synthetic botocore-shaped fake (`synthetic.py`'s `FakeAWSPreparedRequest`/
+`FakeEventEmitter`/`ScriptedBedrockSender`). `providers/bedrock.py` normalizes the
+InvokeModel response — the Anthropic Messages shape verbatim — plus a best-effort read of
+the Converse API shape; `eventstream.py` is a **standalone, dependency-free**
+encoder/decoder of the AWS event-stream binary framing, proven by its own round-trip test.
+
+**Scope**: non-streaming `InvokeModel` record/replay + SigV4 canonicalization + the
+eventstream codec are proven end-to-end. Full **streaming** response replay *through*
+botocore's own event-stream parsing machinery is not exercised — the codec round-trips
+correctly in isolation, but wiring a replayed `InvokeModelWithResponseStream` call through a
+real `bedrock-runtime` client's own parser is materially deeper than this seam's proven
+contract. See `bedrock_transport.py`'s module docstring for the precise boundary.
+
 ## Validation scope
 
 What `tracefork validate` proves, stated precisely: the blame engine is **genuinely
@@ -305,18 +345,21 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     blame, faults, validate, report, server, wire, synthetic, cli,
                     interop (OTel GenAI / OpenInference export+ingest),
                     observability (opt-in structlog + OTel self-instrumentation),
-                    adapters/ (opt-in framework seam: LangChain/LangGraph)
+                    adapters/ (opt-in framework seam: LangChain/LangGraph),
+                    bedrock_transport (opt-in botocore before-send record/replay seam),
+                    eventstream (standalone AWS event-stream binary framing codec),
+                    providers/ (anthropic, openai, gemini, bedrock adapters)
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              427 offline tests ($0, no key)
+tests/              539 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 427 offline tests
+uv run pytest -q                                   # all 539 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```

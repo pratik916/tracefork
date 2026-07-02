@@ -47,6 +47,17 @@ providers = [
     "openai>=1.0",
     "google-genai>=0.3",
 ]
+# Optional: boto3 (and its botocore dependency), only needed to record/replay
+# against a REAL AWS Bedrock client. bedrock_transport.py's seam is duck-typed
+# against whatever prepared-request/event-emitter object it's handed and never
+# imports botocore itself (one guarded, best-effort exception — see its module
+# docstring), so `import tracefork` and the whole offline test suite —
+# including the Bedrock tests — run with boto3 NOT installed. Not in the `dev`
+# extra: the offline synthetic seam (`synthetic.py`'s botocore-shaped fakes)
+# proves the contract without it.
+bedrock = [
+    "boto3>=1.34",
+]
 # Optional: the MCP (Model Context Protocol) SDK, only needed to record/replay a
 # live MCP client (stdio / Streamable-HTTP). The tool seam parses raw JSON-RPC
 # frames, so offline tests never import it — it is NOT a hard dependency.
