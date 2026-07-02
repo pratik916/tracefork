@@ -63,7 +63,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (653 tests) -- including a cross-module,
+# 1. The full offline test suite (672 tests) -- including a cross-module,
 #    whole-pipeline suite (tests/test_e2e.py) and an all-CLI-commands smoke
 #    test (tests/test_cli_smoke.py), not just per-module unit tests.
 uv run pytest -q
@@ -103,6 +103,34 @@ bash scripts/e2e.sh
   overall top-1 precision: 1.00
   negative control max flip: 0.00 (threshold 0.30)
 ```
+
+## Optional extras
+
+The core install (`pip install tracefork`) is offline/$0 and pulls in no framework or
+provider SDKs. Everything else — providers, Bedrock, MCP, observability, and each
+framework adapter — is opt-in via an extra. A curated bundle of the internally-
+consistent, stable-wire family is available in one shot:
+
+```bash
+pip install 'tracefork[all]'
+```
+
+| Extra | Installs | Note |
+|---|---|---|
+| `all` | `providers` + `bedrock` + `mcp` + `observability` | Convenience bundle. Deliberately **excludes** the framework stacks (`frameworks`, `openai-agents`, `crewai`, `autogen`, `adk`) so one framework's future version cap can't block installing everything else. |
+| `providers` | `openai`, `google-genai` SDKs | Record/replay against OpenAI or Gemini directly — not the same as `openai-agents` below. |
+| `bedrock` | `boto3` | AWS Bedrock record/replay. |
+| `mcp` | `mcp` | Model Context Protocol client record/replay. |
+| `observability` | `structlog`, `opentelemetry-*` | Self-instrumentation logging/tracing of tracefork itself. |
+| `frameworks` | `langchain-core`, `langchain-openai`, `langchain-anthropic`, `langgraph` | LangChain/LangGraph adapter. |
+| `openai-agents` | `openai-agents` (the OpenAI **Agents SDK**) | Not the plain `openai` SDK — that's `providers`. |
+| `crewai` | `crewai` | CrewAI adapter (routes through LiteLLM). |
+| `autogen` | `autogen-core`, `autogen-ext` | AutoGen adapter. |
+| `adk` | `google-adk` (Google **Agent Development Kit**) | An agent framework, not a provider SDK. |
+| `dev` | `pytest`, `ruff`, `mypy`, ... | Local development/test tooling. |
+
+Every bracketed install command in this README is single-quoted — unquoted `[...]`
+gets glob-expanded by zsh (macOS's default shell) into `no matches found`.
 
 ## The CLI
 

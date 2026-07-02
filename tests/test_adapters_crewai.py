@@ -200,8 +200,9 @@ def test_require_crewai_matches_availability():
     if crewai_available():
         require_crewai()
     else:
-        with pytest.raises(ImportError, match="crewai"):
+        with pytest.raises(ImportError, match="crewai") as excinfo:
             require_crewai()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_make_event_listener_guarded_or_builds():

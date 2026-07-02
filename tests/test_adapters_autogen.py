@@ -193,8 +193,9 @@ def test_require_autogen_matches_availability():
     if autogen_available():
         require_autogen()
     else:
-        with pytest.raises(ImportError, match="autogen"):
+        with pytest.raises(ImportError, match="autogen") as excinfo:
             require_autogen()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_make_intervention_handler_guarded_or_builds():

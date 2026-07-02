@@ -67,9 +67,17 @@ def langchain_available() -> bool:
 
 
 def require_langchain() -> None:
-    """Raise a helpful ``ImportError`` if ``langchain-core`` is missing."""
-    if not langchain_available():
-        raise ImportError(FRAMEWORKS_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if ``langchain-core`` is missing.
+
+    Attempts the import itself (rather than delegating to
+    ``langchain_available()``) and chains the real cause via ``from exc``, so an
+    installed-but-broken ``langchain-core`` surfaces its own error instead of
+    being masked as "not installed".
+    """
+    try:
+        import langchain_core  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(FRAMEWORKS_IMPORT_HINT) from exc
 
 
 def langgraph_available() -> bool:
@@ -82,9 +90,17 @@ def langgraph_available() -> bool:
 
 
 def require_langgraph() -> None:
-    """Raise a helpful ``ImportError`` if ``langgraph`` is missing."""
-    if not langgraph_available():
-        raise ImportError(FRAMEWORKS_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if ``langgraph`` is missing.
+
+    Attempts the import itself (rather than delegating to
+    ``langgraph_available()``) and chains the real cause via ``from exc``, so an
+    installed-but-broken ``langgraph`` surfaces its own error instead of being
+    masked as "not installed".
+    """
+    try:
+        import langgraph  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(FRAMEWORKS_IMPORT_HINT) from exc
 
 
 # ── defensive extractors (work on dict-or-object payloads) ─────────────────────

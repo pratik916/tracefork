@@ -282,8 +282,9 @@ def test_require_adk_matches_availability():
     if adk_available():
         require_adk()
     else:
-        with pytest.raises(ImportError, match="adk"):
+        with pytest.raises(ImportError, match="adk") as excinfo:
             require_adk()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_make_plugin_guarded_or_builds():

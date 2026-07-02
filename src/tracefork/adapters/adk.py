@@ -112,9 +112,17 @@ def adk_available() -> bool:
 
 
 def require_adk() -> None:
-    """Raise a helpful ``ImportError`` if ``google.adk`` is missing."""
-    if not adk_available():
-        raise ImportError(ADK_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if ``google.adk`` is missing.
+
+    Attempts the import itself (rather than delegating to ``adk_available()``)
+    and chains the real cause via ``from exc``, so an installed-but-broken
+    ``google.adk`` surfaces its own error instead of being masked as "not
+    installed".
+    """
+    try:
+        import google.adk  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(ADK_IMPORT_HINT) from exc
 
 
 # ── defensive extractors (work on dict-or-object payloads) ─────────────────────

@@ -329,16 +329,18 @@ def test_require_langchain_matches_availability():
     if langchain_available():
         require_langchain()
     else:
-        with pytest.raises(ImportError, match="frameworks"):
+        with pytest.raises(ImportError, match="frameworks") as excinfo:
             require_langchain()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_require_langgraph_matches_availability():
     if langgraph_available():
         require_langgraph()
     else:
-        with pytest.raises(ImportError, match="frameworks"):
+        with pytest.raises(ImportError, match="frameworks") as excinfo:
             require_langgraph()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_make_callback_handler_guarded_or_builds():
