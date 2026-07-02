@@ -10,7 +10,7 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(616 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(653 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
 classes at 1.00 top-1 precision, plus a longer competing-fault fixture that measures
@@ -29,7 +29,7 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (616 tests)
+uv run pytest -q                     # full offline suite (653 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
@@ -38,6 +38,8 @@ uv run python examples/demo_report.py   # write examples/demo_report.html (the R
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
 uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
+bash scripts/e2e.sh                  # single-receipt gate: sync, lint, type-check, tests+coverage,
+                                      # validate --check, replay --check, bench, build+twine, one PASS banner
 ```
 
 ## Architecture (the parts that span files)
@@ -184,6 +186,25 @@ The product lives in `src/tracefork/`:
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
+
+Most test files prove ONE module (or one seam) in isolation. Two are deliberately
+cross-module, added once every feature bead had merged: `tests/test_e2e.py` chains
+record → `TapeStore` save/load → replay → fork → blame → validate through the SAME
+tape at every stage (not fresh fixtures per stage), plus the negative control,
+asyncio-concurrency determinism, and every cross-feature path (MCP/tool exchanges
+sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest,
+plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
+base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
+documented scope boundaries called out explicitly, not papered over) — all
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the eleven CLI
+subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
+call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
+to a no-op (proving the CLI's own wiring without binding a socket) plus a
+`TestClient`/ASGI-transport hit against the underlying FastAPI app for actual
+serving behavior. `scripts/e2e.sh` runs the whole gate — sync, lint, format,
+mypy, tests+coverage, `validate --check`, `replay --check`, `bench`, build+twine
+— as one script with a single PASS/FAIL verdict. Both test files are additive
+only: zero-diff over `transport.py`/`tape.py`/`fork.py`/`blame.py`/`matcher.py`.
 
 ## Invariants / conventions
 

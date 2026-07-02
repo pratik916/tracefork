@@ -18,6 +18,7 @@ __pycache__/
 /report.html
 /blame_*.json
 /validation_report.json
+/bench_report.json
 /examples/demo_report.html
 
 # Build, coverage, and tool caches (regenerated on demand)
