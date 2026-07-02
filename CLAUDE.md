@@ -32,7 +32,7 @@ uv run tracefork validate            # self-validation: blame vs injected, known
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate
+uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, proxy
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 ```
 
@@ -138,7 +138,19 @@ The product lives in `src/tracefork/`:
   the tiny deterministic agents the corpus is built from (kept out of `validate.py` so the
   corpus doesn't couple to fault-testing concerns); `scripts/gen_replay_fixtures.py`
   (re)generates the corpus offline.
-- `cli.py` — Typer entry point for all seven commands.
+- `proxy.py` — `RecordProxy`/`ReplayProxy` (wired into FastAPI apps via
+  `build_record_app`/`build_replay_app`) are a **localhost base-URL record/replay proxy**
+  for clients the in-process httpx seam can't reach (curl, Node, Go, non-wrapped Python):
+  point the client's `base_url` at `http://127.0.0.1:<port>` instead of the provider.
+  Record forwards to a real (or, in tests, injected-fake) upstream and tees request+response
+  bytes into a `Tape`, streaming SSE chunk-by-chunk while forwarding; replay serves recorded
+  bytes with **no upstream**, matching each request to its recorded exchange by
+  `matcher.py`'s existing `RequestMatcher` fingerprint (an unrecorded request, or a real
+  body change, is a hard HTTP 502). Reuses `tape.py`/`matcher.py` unchanged — no in-process
+  `NondetSource` exists on this path, so a proxy-recorded tape (`Tape.boundary =
+  constants.PROXY_BOUNDARY`) sits outside the full single-process determinism boundary; see
+  the module docstring and README → Localhost record/replay proxy.
+- `cli.py` — Typer entry point for all eight commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.

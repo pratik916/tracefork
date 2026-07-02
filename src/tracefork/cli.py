@@ -584,6 +584,83 @@ def ingest(
     typer.echo("  bit-exact replay (`replay`/`fork` will diverge on this tape).\n")
 
 
+@app.command()
+def proxy(
+    mode: str = typer.Argument(..., help="record | replay"),
+    tape_path: Path = typer.Option(  # noqa: B008
+        ..., "--tape", "-t", help="Path to a .tape.sqlite file"
+    ),
+    port: int = typer.Option(8899, "--port", "-p", help="Port to listen on (binds 127.0.0.1 only)"),
+    upstream: str = typer.Option(
+        None,
+        "--upstream",
+        help="Upstream base URL, e.g. https://api.anthropic.com (record mode only)",
+    ),
+    matcher: str = typer.Option(
+        "identity",
+        "--matcher",
+        help="Registered RequestMatcher name (identity|gemini|bedrock|redacting)",
+    ),
+) -> None:
+    """Localhost base-URL record/replay proxy for non-Python / non-httpx clients
+    (curl, Node, Go, ...): point the client's base URL at
+    http://127.0.0.1:<port> instead of the provider directly.
+
+    Record mode forwards each request to --upstream over the real network and
+    tees request+response bytes into --tape (created fresh if it doesn't exist
+    yet). Replay mode serves recorded bytes from --tape with NO upstream — an
+    unrecorded request, or a real request-body change, is a hard error (HTTP
+    502).
+
+    This mode has NO in-process NondetSource (a non-Python client can't read
+    one), so it sits OUTSIDE tracefork's full determinism boundary: bit-exact
+    replay depends on the client sending a canonically-identical request each
+    time. See the README's proxy section and `proxy.py`'s module docstring.
+    """
+    import asyncio
+
+    import uvicorn
+
+    from tracefork.matcher import get_matcher
+    from tracefork.proxy import build_record_app, build_replay_app
+    from tracefork.tape import Tape
+
+    if mode not in ("record", "replay"):
+        typer.echo("mode must be 'record' or 'replay'")
+        raise typer.Exit(1)
+
+    try:
+        m = get_matcher(matcher)
+    except KeyError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if mode == "record":
+        if not upstream:
+            typer.echo("record mode requires --upstream <base_url>")
+            raise typer.Exit(1)
+        tape = Tape.load(str(tape_path)) if tape_path.exists() else Tape()
+        record_app = build_record_app(tape, upstream, matcher=m)
+
+        typer.echo(f"\n  tracefork proxy record -> http://127.0.0.1:{port} -> {upstream}")
+        typer.echo(f"  tape: {tape_path}\n")
+        try:
+            uvicorn.run(record_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
+        finally:
+            asyncio.run(record_app.state.proxy.aclose())
+            tape.save(str(tape_path))
+            typer.echo(f"\n  Tape saved to {tape_path} ({len(tape.exchanges)} exchange(s))")
+        return
+
+    if not tape_path.exists():
+        typer.echo(f"No tape found at {tape_path}")
+        raise typer.Exit(1)
+    tape = Tape.load(str(tape_path))
+    replay_app = build_replay_app(tape, matcher=m)
+    typer.echo(f"\n  tracefork proxy replay -> http://127.0.0.1:{port}")
+    typer.echo(f"  tape: {tape_path} ({len(tape.exchanges)} exchange(s))\n")
+    uvicorn.run(replay_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
+
+
 def _print_receipt(tape_path: Path, result) -> None:
     from tracefork.replay import DriftDoctor
 
