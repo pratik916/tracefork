@@ -1,7 +1,7 @@
 {
   "version": "2026-06b",
   "unit": "usd_per_million_tokens",
-  "note": "Pinned, bundled snapshot loaded OFFLINE (no network fetch). Curated subset of list prices. Anthropic rates MUST match tracefork.constants exactly (BudgetGovernor byte-identity). Update `version` when values change.",
+  "note": "Pinned, bundled snapshot loaded OFFLINE (no network fetch). Curated subset of list prices. Anthropic rates MUST match tracefork.constants exactly (BudgetGovernor byte-identity). `bedrock` entries are Claude-on-Bedrock InvokeModel model ids (see providers/bedrock.py); on-demand global-endpoint Bedrock pricing for Claude models matches the Anthropic direct API list price dollar-for-dollar (Anthropic sets the price) -- the `global.`-prefixed keys are the literal ids AWS documents as the recommended default for these models; Bedrock's optional CRIS regional endpoints (`us.`/`eu.`/`jp.`/`apac.` prefixes) carry a documented +10% premium NOT modeled here. Update `version` when values change.",
   "fallback": { "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "providers": {
     "anthropic": {
@@ -25,6 +25,14 @@
       "gemini-1.5-flash-8b": { "input": 0.0375, "output": 0.15 },
       "gemini-2.0-flash": { "input": 0.1, "output": 0.4 },
       "gemini-2.0-flash-lite": { "input": 0.075, "output": 0.3 }
+    },
+    "bedrock": {
+      "anthropic.claude-sonnet-4-6": { "input": 3.0, "output": 15.0 },
+      "global.anthropic.claude-sonnet-4-6": { "input": 3.0, "output": 15.0 },
+      "anthropic.claude-haiku-4-5-20251001-v1:0": { "input": 1.0, "output": 5.0 },
+      "global.anthropic.claude-haiku-4-5-20251001-v1:0": { "input": 1.0, "output": 5.0 },
+      "anthropic.claude-opus-4-8": { "input": 5.0, "output": 25.0 },
+      "global.anthropic.claude-opus-4-8": { "input": 5.0, "output": 25.0 }
     }
   }
 }
