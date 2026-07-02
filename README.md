@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (427 tests).
+# 1. The full offline test suite (438 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -148,12 +148,25 @@ is the contract between them.
 
 ## Determinism boundary (v1, honest scope)
 
-Bit-exact replay holds within a declared boundary: **single-process, clock + id + random
-nondeterminism, captured through `NondetSource`**. An agent that reads `datetime.now()` /
-`uuid` / `random` directly, or runs its loop across threads/subprocesses, steps outside
-that boundary — and the verifier will *detect* the resulting drift rather than paper over
-it. Forking and blame assume the agent rebuilds its prefix deterministically (the same
-property replay proves). See [`SPIKE0.md`](SPIKE0.md) for how the boundary was de-risked.
+Bit-exact replay holds within a declared boundary: **single-process (sync or asyncio),
+clock + id + random nondeterminism, captured through `NondetSource`**. An agent that reads
+`datetime.now()` / `uuid` / `random` directly, or runs its loop across threads/subprocesses,
+steps outside that boundary — and the verifier will *detect* the resulting drift rather than
+paper over it. Forking and blame assume the agent rebuilds its prefix deterministically (the
+same property replay proves). See [`SPIKE0.md`](SPIKE0.md) for how the boundary was de-risked.
+
+**Concurrency-graph determinism (asyncio).** asyncio is deterministic *except* for the
+order in which concurrent in-flight requests (an `asyncio.gather`/`TaskGroup` fan-out)
+resolve — and that order is driven by the very I/O tracefork already records. So the async
+transport records the completion order (and logs each fully-overlapping fan-out batch to the
+tape) and, on replay, **correlates each request to its recorded exchange by fingerprint and
+releases responses in the recorded completion order** — a fan-out agent replays bit-exact,
+not just a single-call-at-a-time one. A strictly-sequential async run (one `await` at a
+time — the common case) is byte-identical to before, and the sync path is untouched. The
+recorded order can also be replayed under a seeded *reordering* (`chaos_release_order`) to
+surface completion-order-dependent ("race"/ordering) bugs. Nested fan-out where a request is
+sent only *after* an earlier one in the same batch completed is replayed faithfully in the
+recorded order but is not reordered by chaos (it isn't a physically-reorderable batch).
 
 An opt-in `BoundaryGuard` (default off; `Recorder(..., boundary_guard=True)` or
 `TraceforkConfig(boundary_guard=True)`) turns *some* of these violations — thread/
