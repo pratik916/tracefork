@@ -10,7 +10,7 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(653 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(672 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
 classes at 1.00 top-1 precision, plus a longer competing-fault fixture that measures
@@ -29,7 +29,7 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (653 tests)
+uv run pytest -q                     # full offline suite (672 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json

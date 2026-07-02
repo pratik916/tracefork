@@ -78,9 +78,17 @@ def crewai_available() -> bool:
 
 
 def require_crewai() -> None:
-    """Raise a helpful ``ImportError`` if ``crewai`` is missing."""
-    if not crewai_available():
-        raise ImportError(CREWAI_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if ``crewai`` is missing.
+
+    Attempts the import itself (rather than delegating to
+    ``crewai_available()``) and chains the real cause via ``from exc``, so an
+    installed-but-broken ``crewai`` surfaces its own error instead of being
+    masked as "not installed".
+    """
+    try:
+        import crewai  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(CREWAI_IMPORT_HINT) from exc
 
 
 # ── framework-independent event core (fully offline-testable) ──────────────────

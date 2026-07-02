@@ -80,9 +80,17 @@ def openai_agents_available() -> bool:
 
 
 def require_openai_agents() -> None:
-    """Raise a helpful ``ImportError`` if the ``agents`` package is missing."""
-    if not openai_agents_available():
-        raise ImportError(OPENAI_AGENTS_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if the ``agents`` package is missing.
+
+    Attempts the import itself (rather than delegating to
+    ``openai_agents_available()``) and chains the real cause via ``from exc``,
+    so an installed-but-broken ``agents`` package surfaces its own error
+    instead of being masked as "not installed".
+    """
+    try:
+        import agents  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(OPENAI_AGENTS_IMPORT_HINT) from exc
 
 
 # ── defensive extractors (work on dict-or-object payloads) ─────────────────────

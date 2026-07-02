@@ -220,8 +220,9 @@ def test_require_openai_agents_matches_availability():
     if openai_agents_available():
         require_openai_agents()
     else:
-        with pytest.raises(ImportError, match="openai-agents"):
+        with pytest.raises(ImportError, match="openai-agents") as excinfo:
             require_openai_agents()
+        assert excinfo.value.__cause__ is not None
 
 
 def test_make_tracing_processor_guarded_or_builds():

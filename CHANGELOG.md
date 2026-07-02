@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-03
+
 ### Added
 
 - **Google ADK adapter** (`adapters/adk.py`, opt-in `adk` extra) — `bind()` routes
@@ -20,6 +22,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent/model/tool before/after callback boundaries, registered once on the
   `Runner` rather than threaded through every agent — observer-only, never a
   second capture path.
+- **Curated `all` extra** (`pip install 'tracefork[all]'`) — a self-referential
+  convenience bundle over `providers` + `bedrock` + `mcp` + `observability` (the
+  internally-consistent, stable-wire family). Deliberately excludes the five
+  independently-capped, fast-moving framework stacks (`frameworks`,
+  `openai-agents`, `crewai`, `autogen`, `adk`) so one future cap collision on any
+  single framework can't `ResolutionImpossible` the whole `all` install.
+
+### Changed
+
+- **Relaxed the `frameworks` extra's version caps to floors** — dropped the
+  speculative `<2` upper bounds on `langchain-core`/`langchain-openai`/
+  `langchain-anthropic`/`langgraph`. LangChain 1.0 GA commits to no breaking
+  changes until 2.0, so a `<2` cap was speculative and, more importantly, useless
+  against the real observed failure mode: intra-1.x patch regressions ship
+  *inside* the allowed range regardless of the cap. The remaining internal-
+  coupling caps (`openai-agents`, `crewai`, `autogen`, `adk` — each an adapter
+  injecting into private/undocumented framework internals) are kept, each now
+  with an inline "hint, not a guard" rationale and a revisit TODO.
+- **Adapter import guards now chain the root cause** (`raise ImportError(HINT)
+  from exc`) in `adapters/{langchain,openai_agents,crewai,autogen,adk}.py`'s
+  `require_*()` functions, so an installed-but-broken dependency's real
+  `ImportError` is preserved instead of being masked as "not installed".
 
 ## [0.2.0] - 2026-07-02
 
@@ -133,6 +157,7 @@ everything below is additive around it: all engine internals stay byte-stable,
 - `src/tracefork_spike/` — the original Spike 0 that de-risked bit-exact, no-key replay
   within the declared determinism boundary.
 
-[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/pratik916/tracefork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pratik916/tracefork/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pratik916/tracefork/releases/tag/v0.1.0

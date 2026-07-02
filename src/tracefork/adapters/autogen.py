@@ -74,9 +74,17 @@ def autogen_available() -> bool:
 
 
 def require_autogen() -> None:
-    """Raise a helpful ``ImportError`` if ``autogen_core`` is missing."""
-    if not autogen_available():
-        raise ImportError(AUTOGEN_IMPORT_HINT)
+    """Raise a helpful ``ImportError`` if ``autogen_core`` is missing.
+
+    Attempts the import itself (rather than delegating to
+    ``autogen_available()``) and chains the real cause via ``from exc``, so an
+    installed-but-broken ``autogen_core`` surfaces its own error instead of
+    being masked as "not installed".
+    """
+    try:
+        import autogen_core  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(AUTOGEN_IMPORT_HINT) from exc
 
 
 def _set_attr(obj: Any, name: str, value: Any) -> None:
