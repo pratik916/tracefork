@@ -75,6 +75,17 @@ class Tape:
     # byte-for-byte unchanged: an LLM-only tape has an empty tool log, so its
     # `digest()` and serialized envelope carry no tool material at all.
     tool_exchanges: list[tuple[bytes, bytes]] = field(default_factory=list)
+    # Concurrency-batch log (v4): for each genuinely-concurrent asyncio fan-out
+    # (an `asyncio.gather`/`TaskGroup` where >=2 requests were all in flight
+    # before any of them completed), the `exchanges` indices of that batch's
+    # members in the order they actually completed. `AsyncTraceforkTransport`
+    # records it; replay releases responses in this recorded completion order so
+    # a fan-out agent replays bit-exact, and chaos-mode forks reorder it (see
+    # `transport.py`). Metadata only — like `boundary`/`agent_name` it is NEVER
+    # fed into `digest()` (the completion order is already fingerprinted by the
+    # `exchanges` list ordering). A sequential or sync tape has an empty batch
+    # log, so its digest and every existing tape's digest are unchanged.
+    async_batches: list[list[int]] = field(default_factory=list)
 
     def append_exchange(self, request_body: bytes, response_body: bytes) -> None:
         self.exchanges.append((request_body, response_body))
@@ -106,7 +117,7 @@ class Tape:
         a content-addressed, zstd-compressed binary container). Shared blobs are
         stored once by sha256, and there is no base64, so the ~1.33x base64
         blow-up of the legacy format is gone. Read back with `from_bytes`."""
-        return _encode_v3(self)
+        return _encode_v4(self)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Tape:
@@ -124,6 +135,7 @@ class Tape:
         tape.draws = [tuple(pair) for pair in f["draws"]]
         tape.exchanges = f["exchanges"]
         tape.tool_exchanges = f["tool_exchanges"]
+        tape.async_batches = [list(b) for b in f.get("async_batches", [])]
         return tape
 
     def save(self, path: str) -> None:
@@ -168,6 +180,12 @@ class Tape:
                 "INSERT INTO meta VALUES ('content_redacted', ?)",
                 (str(int(self.content_redacted)),),
             )
+            # Concurrency-batch log as a JSON meta value (structural, not an event
+            # stream). Absent on legacy DBs -> loads as empty (see `load`).
+            con.execute(
+                "INSERT INTO meta VALUES ('async_batches', ?)",
+                (json.dumps(self.async_batches),),
+            )
             con.execute("COMMIT")
         finally:
             con.close()
@@ -184,6 +202,7 @@ class Tape:
                 agent_name=meta.get("agent_name", ""),
                 content_redacted=bool(int(meta.get("content_redacted", "0"))),
             )
+            tape.async_batches = [list(b) for b in json.loads(meta.get("async_batches", "[]"))]
             for kind, a, b in con.execute("SELECT kind, a, b FROM events ORDER BY seq").fetchall():
                 if kind == "draw":
                     tape.draws.append((a, b))
@@ -206,14 +225,16 @@ class Tape:
 _Fields = dict[str, Any]
 
 
-def _encode_v3(tape: Tape) -> bytes:
-    """Version-3 body: a JSON header (boundary, agent_name, draws, the LLM
-    exchange hash pairs, the tool-exchange hash pairs, and the dedup'd blob-hash
-    order) followed by, for each unique blob in order, a uint32 length + its
-    zstd-compressed bytes. Content-addressed (each distinct request/response
-    stored once, LLM and tool blobs sharing one store) and base64-free. LLM
-    blobs are ordered first, so an LLM-only tape's blob layout is identical to
-    the v2 format that preceded the tool log."""
+def _encode_v4(tape: Tape) -> bytes:
+    """Version-4 body: a JSON header (boundary, agent_name, draws, the LLM
+    exchange hash pairs, the tool-exchange hash pairs, the concurrency-batch log,
+    and the dedup'd blob-hash order) followed by, for each unique blob in order, a
+    uint32 length + its zstd-compressed bytes. Content-addressed (each distinct
+    request/response stored once, LLM and tool blobs sharing one store) and
+    base64-free. LLM blobs are ordered first, so an LLM-only tape's blob layout
+    is identical to the v2 format that preceded the tool log. `async_batches` is
+    the only addition over v3: a plain list of index lists, empty (and so
+    absent-in-effect) for every sequential or sync tape."""
     order: list[str] = []
     seen: dict[str, bytes] = {}
     for req, resp in (*tape.exchanges, *tape.tool_exchanges):
@@ -230,6 +251,7 @@ def _encode_v3(tape: Tape) -> bytes:
         "tool_exchanges": [
             [sha256_hex(req), sha256_hex(resp)] for req, resp in tape.tool_exchanges
         ],
+        "async_batches": tape.async_batches,
         "blob_hashes": order,
         "content_redacted": tape.content_redacted,
     }
@@ -289,7 +311,8 @@ def _decode_v2_binary(body: bytes) -> _Fields:
 
 
 def _decode_v3_binary(body: bytes) -> _Fields:
-    """Content-addressed zstd container written by `_encode_v3` (adds the tool log)."""
+    """Content-addressed zstd container with a tool log but no concurrency-batch
+    log (the pre-v4 encoding). Upcasts to an empty `async_batches`."""
     header, blobs = _read_blob_container(body)
     return {
         "boundary": header["boundary"],
@@ -299,6 +322,23 @@ def _decode_v3_binary(body: bytes) -> _Fields:
         "tool_exchanges": [
             (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
         ],
+        "content_redacted": header.get("content_redacted", False),
+    }
+
+
+def _decode_v4_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container written by `_encode_v4` (adds the
+    concurrency-batch log `async_batches` over v3)."""
+    header, blobs = _read_blob_container(body)
+    return {
+        "boundary": header["boundary"],
+        "agent_name": header["agent_name"],
+        "draws": [tuple(pair) for pair in header["draws"]],
+        "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "tool_exchanges": [
+            (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
+        ],
+        "async_batches": [list(b) for b in header.get("async_batches", [])],
         "content_redacted": header.get("content_redacted", False),
     }
 
@@ -318,14 +358,24 @@ def _upcast_v2_to_v3(fields: _Fields) -> _Fields:
     return fields
 
 
+def _upcast_v3_to_v4(fields: _Fields) -> _Fields:
+    """v3 -> v4 adds the concurrency-batch log; a pre-v4 tape has none, so it
+    defaults to empty. `async_batches` is never hashed into `digest()`, so this
+    leaves every existing tape's content digest and replay behavior unchanged."""
+    fields.setdefault("async_batches", [])
+    return fields
+
+
 _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     1: _decode_v1_json,
     2: _decode_v2_binary,
     3: _decode_v3_binary,
+    4: _decode_v4_binary,
 }
 _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     1: _upcast_v1_to_v2,
     2: _upcast_v2_to_v3,
+    3: _upcast_v3_to_v4,
 }
 
 

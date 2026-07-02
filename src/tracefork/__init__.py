@@ -48,6 +48,7 @@ from .tools import (
     make_result_frame,
     make_tool_call_frame,
 )
+from .transport import chaos_release_order
 
 __all__ = [
     "Recorder",
@@ -66,6 +67,7 @@ __all__ = [
     "NativeToolSeam",
     "make_tool_call_frame",
     "make_result_frame",
+    "chaos_release_order",
     "RecordingMCPSession",
     "mcp_available",
     "require_mcp",

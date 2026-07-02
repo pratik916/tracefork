@@ -11,8 +11,13 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # upcaster entry; existing blobs keep loading via the read-time upcaster chain.
 # v3 adds the JSON-RPC tool-exchange log (MCP / native tool frames); v2 and v1
 # tapes upcast to an empty tool log, so their content digest is unchanged.
+# v4 adds the concurrency-batch log (`async_batches`): the recorded completion
+# order of genuinely-concurrent asyncio fan-out (see transport.py). It is
+# envelope/metadata only — like `boundary`/`agent_name`, it is NOT fed into
+# `digest()` — so every existing (and every sequential) tape's content digest
+# is byte-identical, and v1/v2/v3 tapes upcast to an empty batch log.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 3
+TAPE_FORMAT_VERSION = 4
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"
