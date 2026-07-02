@@ -63,7 +63,9 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (616 tests).
+# 1. The full offline test suite (653 tests) -- including a cross-module,
+#    whole-pipeline suite (tests/test_e2e.py) and an all-CLI-commands smoke
+#    test (tests/test_cli_smoke.py), not just per-module unit tests.
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -78,6 +80,15 @@ open examples/demo_report.html      # macOS; or just open the file
 
 # 4. The original Spike 0 receipt: record → persist → replay → prove bit-exact.
 uv run python -m tracefork_spike
+```
+
+Run the full E2E receipt — sync, lint, format, type-check, tests+coverage, the
+self-validation and replay-fixture-corpus regression gates, the competing-fault
+benchmark, and a package build/twine check, as one script with a single
+PASS/FAIL verdict:
+
+```bash
+bash scripts/e2e.sh
 ```
 
 `tracefork validate` prints:

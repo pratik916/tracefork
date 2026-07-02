@@ -162,4 +162,8 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 75
+# 75 -> 80: the cross-module E2E suite (tests/test_e2e.py, tests/test_cli_smoke.py)
+# lifted measured coverage to ~91% (was ~88.5%) -- comfortably clearing 80, with
+# headroom left deliberately unclaimed rather than pinning a floor we're not sure
+# to keep clearing as the codebase grows.
+fail_under = 80
