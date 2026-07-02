@@ -2,17 +2,17 @@
 
 ``TraceforkConfig()`` reproduces every current default exactly (zero behavior
 change): no redaction, ``store.db``, a $5 blame budget, ``RecordMode.ONCE``,
-plain-text CLI output. ``TraceforkConfig.from_env()`` layers ``TRACEFORK_*``
-environment variables on top for operators who want to tune these without
-touching code.
+plain-text CLI output, boundary guard off. ``TraceforkConfig.from_env()`` layers
+``TRACEFORK_*`` environment variables on top for operators who want to tune
+these without touching code.
 
 Nothing in tracefork calls ``from_env()`` implicitly except the handful of
 CLI option defaults documented at their call sites (``cli.py``'s ``--store``
 and ``--budget`` defaults) and ``Recorder``/``AsyncRecorder``'s optional
 ``config=`` parameter (only consulted when the caller passes one, and only to
-fill in a redactor the caller didn't already supply explicitly) — every other
-call site keeps constructing its own explicit values exactly as it did before
-this module existed.
+fill in a redactor or ``boundary_guard`` flag the caller didn't already supply
+explicitly) — every other call site keeps constructing its own explicit values
+exactly as it did before this module existed.
 """
 
 from __future__ import annotations
@@ -72,6 +72,9 @@ class TraceforkConfig:
     capture_message_content: bool | None = None
     record_mode: RecordMode = RecordMode.ONCE
     log_format: LogFormat = LogFormat.TEXT
+    #: Opt-in `BoundaryGuard` (see `boundary_guard.py`) around `Recorder`'s
+    #: recording window. Default False is byte-identical to pre-guard behavior.
+    boundary_guard: bool = False
 
     @classmethod
     def from_env(cls, *, prefix: str = ENV_PREFIX) -> TraceforkConfig:
@@ -90,6 +93,7 @@ class TraceforkConfig:
 
         capture_raw = _raw("CAPTURE_MESSAGE_CONTENT")
         budget_raw = _raw("BUDGET_USD")
+        guard_raw = _raw("BOUNDARY_GUARD")
         default_capture = defaults.capture_message_content
         return cls(
             db_path=_raw("DB_PATH") or defaults.db_path,
@@ -100,6 +104,9 @@ class TraceforkConfig:
             ),
             record_mode=RecordMode(_raw("RECORD_MODE") or defaults.record_mode),
             log_format=LogFormat(_raw("LOG_FORMAT") or defaults.log_format),
+            boundary_guard=(
+                _truthy(guard_raw) if guard_raw is not None else defaults.boundary_guard
+            ),
         )
 
     def build_redactor(self) -> Redactor | None:
