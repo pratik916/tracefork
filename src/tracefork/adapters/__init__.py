@@ -4,13 +4,28 @@ seam and overlay a neutral step-DAG.
 The byte capture stays at the httpx transport (``transport.py``); a framework's
 callbacks/tracing are an observer-only annotation layer feeding ``StepDAG`` (see
 ``base.py``). Importing this package registers the built-in LangChain/LangGraph
-adapter under ``"langchain"`` — its framework imports are guarded, so this import
-never requires ``langchain``/``langgraph`` to be installed.
+(``"langchain"``), OpenAI Agents SDK (``"openai_agents"``), CrewAI
+(``"crewai"``), and AutoGen (``"autogen"``) adapters — every framework import
+they make is guarded, so this import never requires any of those packages to be
+installed.
 """
 
 from __future__ import annotations
 
+from . import autogen as _autogen  # noqa: F401  (side effect: registers "autogen")
+from . import crewai as _crewai  # noqa: F401  (side effect: registers "crewai")
 from . import langchain as _langchain  # noqa: F401  (side effect: registers "langchain")
+from . import (
+    openai_agents as _openai_agents,  # noqa: F401  (side effect: registers "openai_agents")
+)
+from .autogen import (
+    AUTOGEN_IMPORT_HINT,
+    AutoGenAdapter,
+    TraceforkInterventionCore,
+    autogen_available,
+    make_intervention_handler,
+    require_autogen,
+)
 from .base import (
     BaseFrameworkAdapter,
     BindResult,
@@ -24,6 +39,14 @@ from .base import (
     register_framework_adapter,
     registered_framework_adapters,
 )
+from .crewai import (
+    CREWAI_IMPORT_HINT,
+    CrewAIAdapter,
+    TraceforkCrewEventCore,
+    crewai_available,
+    make_event_listener,
+    require_crewai,
+)
 from .langchain import (
     CheckpointRecord,
     LangChainAdapter,
@@ -35,6 +58,15 @@ from .langchain import (
     make_tape_backed_checkpointer,
     require_langchain,
     require_langgraph,
+)
+from .openai_agents import (
+    OPENAI_AGENTS_IMPORT_HINT,
+    OpenAIAgentsAdapter,
+    TraceforkTracingCore,
+    bind_default_client,
+    make_tracing_processor,
+    openai_agents_available,
+    require_openai_agents,
 )
 
 __all__ = [
@@ -61,4 +93,26 @@ __all__ = [
     "require_langchain",
     "langgraph_available",
     "require_langgraph",
+    # openai agents sdk
+    "OPENAI_AGENTS_IMPORT_HINT",
+    "OpenAIAgentsAdapter",
+    "TraceforkTracingCore",
+    "bind_default_client",
+    "make_tracing_processor",
+    "openai_agents_available",
+    "require_openai_agents",
+    # crewai
+    "CREWAI_IMPORT_HINT",
+    "CrewAIAdapter",
+    "TraceforkCrewEventCore",
+    "crewai_available",
+    "make_event_listener",
+    "require_crewai",
+    # autogen
+    "AUTOGEN_IMPORT_HINT",
+    "AutoGenAdapter",
+    "TraceforkInterventionCore",
+    "autogen_available",
+    "make_intervention_handler",
+    "require_autogen",
 ]

@@ -25,7 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /`langgraph` are optional and all imports are guarded — `import tracefork` and
   the full offline suite run with none installed; the framework-facing wrappers
   are exercised against the real library when present and skipped otherwise.
-  (OpenAI Agents SDK / CrewAI / AutoGen are tracked as follow-ups.)
+- **Three more framework adapters**, each its own optional extra, each binding at
+  the framework's actual model-call chokepoint (never a second capture path):
+  **OpenAI Agents SDK** (`adapters/openai_agents.py`, `pip install
+  'tracefork[openai-agents]'`) — defensive attribute-search injection into a model
+  wrapper's underlying `openai` client, plus `bind_default_client()` for the SDK's
+  own documented `agents.set_default_openai_client()`, and a real `TracingProcessor`
+  (`make_tracing_processor()`) for span/trace step visibility; **CrewAI**
+  (`adapters/crewai.py`, `pip install 'tracefork[crewai]'`) — targets LiteLLM's
+  documented `client_session`/`aclient_session` custom-httpx-client surface (CrewAI
+  routes every model call through LiteLLM, never touching httpx itself), plus a
+  `crewai_event_bus` listener (`make_event_listener()`) over crew/agent/task/tool/
+  LLM-call boundaries; **AutoGen** (`adapters/autogen.py`, `pip install
+  'tracefork[autogen]'`, `autogen-core`/`autogen-ext`) — the same defensive
+  client-attribute injection for an AutoGen model client, plus a message-level
+  `InterventionHandler` (`make_intervention_handler()`) that is pass-through only
+  (never `DropMessage`), so it stays an annotation layer. All three are guarded the
+  same way as LangChain: `import tracefork` and the whole offline suite run with
+  none of them installed; each framework-neutral core is offline-tested against
+  synthetic events, and the thin real wrapper classes are only reachable — and only
+  smoke-tested — when the framework is actually installed (`pytest.importorskip`).
 - **OTel GenAI / OpenInference interop** (`interop.py`, `tracefork export`/`ingest`):
   adopts `gen_ai.*` attribute names (pinned semconv version) for the normalized
   provider view; exports a tape + blame report as an OTel GenAI trace (OTLP/JSON
