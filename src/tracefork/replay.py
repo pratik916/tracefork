@@ -20,10 +20,12 @@ import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import anthropic
 import httpx
 
+from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
 from .matcher import RequestMatcher
 from .nondet import DivergenceError, find_divergence
 from .observability import instrument
@@ -42,6 +44,10 @@ class DivergenceReport:
     step_index: int
     cause_hint: str  # raw message from DivergenceError
     error: DivergenceError
+    # Structured request diff (see `divergence.py`), best-effort: `None` when
+    # there's no corresponding recorded exchange to diff against (e.g. the
+    # live run made an unrecorded request past the end of the tape).
+    diag: DivergenceDiagnostic | None = None
 
 
 @dataclass
@@ -53,6 +59,24 @@ class VerificationResult:
     recorded_fingerprint: str
     replayed_fingerprint: str
     divergence: DivergenceReport | None = None
+
+
+class _LastRequestTransport(httpx.BaseTransport):
+    """Captures the most recent live `httpx.Request` before delegating to
+    `inner`, so a `DivergenceError` raised from inside `handle_request` can
+    still be paired with the request that triggered it — `TraceforkTransport`
+    itself doesn't retain that request after raising it. Purely observational:
+    every call is delegated unchanged, so this introduces no behavior
+    difference in what is sent, returned, or raised.
+    """
+
+    def __init__(self, inner: TraceforkTransport) -> None:
+        self._inner = inner
+        self.last_request: httpx.Request | None = None
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.last_request = request
+        return self._inner.handle_request(request)
 
 
 class ReplayVerifier:
@@ -73,7 +97,8 @@ class ReplayVerifier:
 
     @instrument("tracefork.replay.verify")
     def verify(self) -> VerificationResult:
-        transport = TraceforkTransport("replay", self._tape, matcher=self._matcher)
+        inner = TraceforkTransport("replay", self._tape, matcher=self._matcher)
+        transport = _LastRequestTransport(inner)
         client = anthropic.Anthropic(
             api_key=self._api_key,
             http_client=httpx.Client(transport=transport),
@@ -85,17 +110,19 @@ class ReplayVerifier:
             self._agent_fn(client)
         except DivergenceError as e:
             divergence = DivergenceReport(
-                step_index=transport._i,
+                step_index=inner._i,
                 cause_hint=str(e),
                 error=e,
+                diag=self._diagnose(inner._i, transport.last_request),
             )
         except Exception as e:
             div = find_divergence(e)
             if div is not None:
                 divergence = DivergenceReport(
-                    step_index=transport._i,
+                    step_index=inner._i,
                     cause_hint=str(div),
                     error=div,
+                    diag=self._diagnose(inner._i, transport.last_request),
                 )
             else:
                 raise
@@ -104,20 +131,33 @@ class ReplayVerifier:
 
         # Build a tape from what was replayed so far for fingerprint comparison
         # Full replay — fingerprints should match
-        replayed_fp = recorded_fp if divergence is None and transport.fully_consumed() else ""
+        replayed_fp = recorded_fp if divergence is None and inner.fully_consumed() else ""
 
-        bit_exact = divergence is None and transport.fully_consumed()
+        bit_exact = divergence is None and inner.fully_consumed()
         fingerprints_match = bit_exact and recorded_fp == replayed_fp
 
         return VerificationResult(
             bit_exact=bit_exact,
-            matched=transport.matched,
+            matched=inner.matched,
             total=len(self._tape.exchanges),
             fingerprints_match=fingerprints_match,
             recorded_fingerprint=recorded_fp,
             replayed_fingerprint=replayed_fp,
             divergence=divergence,
         )
+
+    def _diagnose(
+        self, step_index: int, live_request: httpx.Request | None
+    ) -> DivergenceDiagnostic | None:
+        """Best-effort structured diff for the divergence at `step_index`.
+        `None` when there's no live request captured (defensive only — every
+        `DivergenceError` caught above is raised from inside
+        `_LastRequestTransport.handle_request`, which always sets
+        `last_request` first) or no corresponding recorded exchange (see
+        `divergence.diagnose`)."""
+        if live_request is None:
+            return None
+        return diagnose(self._tape, step_index, live_request, matcher=self._matcher)
 
 
 class DriftDoctor:
@@ -132,6 +172,32 @@ class DriftDoctor:
             return DriftCause.BOUNDARY_VIOLATION
         # Default: request bytes diverged — agent code changed
         return DriftCause.CODE_CHANGE
+
+
+def verification_result_to_dict(result: VerificationResult) -> dict[str, Any]:
+    """JSON-safe view of a `VerificationResult` for the web report / CLI —
+    the replay-report data `report.py`'s `_tape_to_data` embeds as
+    `data["replay"]`."""
+    divergence: dict[str, Any] | None = None
+    if result.divergence is not None:
+        cause = DriftDoctor.classify(result.divergence)
+        divergence = {
+            "step_index": result.divergence.step_index,
+            "cause": cause.value,
+            "message": result.divergence.cause_hint,
+            "diag": (
+                diagnostic_to_dict(result.divergence.diag)
+                if result.divergence.diag is not None
+                else None
+            ),
+        }
+    return {
+        "bit_exact": result.bit_exact,
+        "matched": result.matched,
+        "total": result.total,
+        "fingerprints_match": result.fingerprints_match,
+        "divergence": divergence,
+    }
 
 
 @dataclass

@@ -180,8 +180,24 @@ def report(
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
+    agent: str = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this tape "
+        "(pkg.mod:fn); replays it and embeds a bit-exactness receipt — with a "
+        "structured divergence diagnostic on drift — in the report",
+    ),
+    blame_report: Path = typer.Option(  # noqa: B008
+        None,
+        "--blame-report",
+        help="Optional blame_<run_id>.json (from `tracefork blame`) to embed "
+        "per-step trust flags (divergence rate, UNDEFINED trial counts) in the report",
+    ),
 ) -> None:
     """Generate a self-contained HTML report from a tape."""
+    import json as _json
+
     from tracefork.report import generate_report
     from tracefork.tape import Tape
 
@@ -196,7 +212,23 @@ def report(
         typer.echo("Provide a run_id or --tape path")
         raise typer.Exit(1)
 
-    generate_report(tape, output)
+    replay_data = None
+    if agent:
+        import importlib
+
+        from tracefork.replay import ReplayVerifier, verification_result_to_dict
+
+        module_path, fn_name = agent.rsplit(":", 1)
+        agent_fn = getattr(importlib.import_module(module_path), fn_name)
+        result = ReplayVerifier(tape, agent_fn).verify()
+        replay_data = verification_result_to_dict(result)
+
+    blame_dict = None
+    if blame_report is not None:
+        blame_data = _json.loads(blame_report.read_text())
+        blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
+
+    generate_report(tape, output, blame=blame_dict, replay=replay_data)
     typer.echo(f"Report written to {output}")
 
 

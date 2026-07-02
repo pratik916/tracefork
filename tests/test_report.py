@@ -114,3 +114,124 @@ def test_report_includes_blame_when_provided():
         data = _extract_data(out.read_text())
         # JSON object keys are strings after round-trip
         assert data["blame"]["0"]["flip_rate"] == 0.8
+
+
+def test_report_blame_includes_trust_flags():
+    """Per-step divergence rate / UNDEFINED counts (FlipRateResult's trust
+    flags) must round-trip into the embedded report data."""
+    tape = _make_tape()
+    blame = {
+        0: {
+            "flip_rate": 0.8,
+            "ci_lo": 0.6,
+            "ci_hi": 0.95,
+            "divergence_rate": 0.3,
+            "undefined": 3,
+            "trials": 10,
+            "valid_trials": 7,
+            "trustworthy": False,
+        }
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, blame=blame)
+        data = _extract_data(out.read_text())
+        step0 = data["blame"]["0"]
+        assert step0["divergence_rate"] == 0.3
+        assert step0["undefined"] == 3
+        assert step0["trustworthy"] is False
+
+
+def test_report_defaults_replay_to_empty_dict_when_not_provided():
+    tape = _make_tape()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        data = _extract_data(out.read_text())
+        assert data["replay"] == {}
+
+
+def test_report_includes_replay_diagnostics_when_provided():
+    """`replay=` (from `verification_result_to_dict`) must embed the
+    bit-exactness receipt and, on divergence, the structured field diff."""
+    tape = _make_tape()
+    replay = {
+        "bit_exact": False,
+        "matched": 0,
+        "total": 1,
+        "fingerprints_match": False,
+        "divergence": {
+            "step_index": 0,
+            "cause": "code_change",
+            "message": "request #0 diverged from tape (recorded abc123, replay def456)",
+            "diag": {
+                "step_index": 0,
+                "recorded_fingerprint": "abc123",
+                "live_fingerprint": "def456",
+                "matcher_name": "identity",
+                "normalized_fields": [],
+                "is_real_divergence": True,
+                "message": "1 field(s) differ from the recorded request",
+                "field_diffs": [
+                    {"path": "$.messages[0].content", "recorded": "Hello", "live": "Goodbye"}
+                ],
+            },
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, replay=replay)
+        data = _extract_data(out.read_text())
+        assert data["replay"]["bit_exact"] is False
+        diag = data["replay"]["divergence"]["diag"]
+        assert diag["is_real_divergence"] is True
+        assert diag["field_diffs"][0]["path"] == "$.messages[0].content"
+        assert diag["field_diffs"][0]["recorded"] == "Hello"
+        assert diag["field_diffs"][0]["live"] == "Goodbye"
+
+
+def test_report_escapes_script_breakout_in_divergence_diff():
+    """A divergence diff whose recorded/live values contain </script> must not
+    break out of the inline script either — the same escaping that protects
+    tape content (`test_report_escapes_script_breakout`) covers the whole
+    injected data blob, diagnostics included."""
+    tape = _make_tape()
+    replay = {
+        "bit_exact": False,
+        "matched": 0,
+        "total": 1,
+        "fingerprints_match": False,
+        "divergence": {
+            "step_index": 0,
+            "cause": "code_change",
+            "message": "diverged",
+            "diag": {
+                "step_index": 0,
+                "recorded_fingerprint": "abc",
+                "live_fingerprint": "def",
+                "matcher_name": "identity",
+                "normalized_fields": [],
+                "is_real_divergence": True,
+                "message": "diverged",
+                "field_diffs": [
+                    {
+                        "path": "$.messages[0].content",
+                        "recorded": "hi",
+                        "live": "</script><img src=x onerror=alert(1)>",
+                    }
+                ],
+            },
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, replay=replay)
+        content = out.read_text()
+        marker = "window.__TRACEFORK_DATA__ = "
+        start = content.find(marker)
+        end = content.find(";\n", start)
+        injected = content[start:end]
+        assert "</script" not in injected
+        data = _extract_data(content)
+        live_value = data["replay"]["divergence"]["diag"]["field_diffs"][0]["live"]
+        assert live_value == "</script><img src=x onerror=alert(1)>"
