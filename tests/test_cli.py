@@ -9,6 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from tracefork.cli import app
+from tracefork.constants import OTEL_INGESTED_BOUNDARY
 from tracefork.store import TapeStore
 from tracefork.tape import Tape
 from tracefork.validate import _record_clean_tape
@@ -120,3 +121,91 @@ def test_replay_without_check_still_requires_agent_and_tape():
     result = runner.invoke(app, ["replay"])
     assert result.exit_code == 1
     assert "Provide a tape path and --agent" in result.output
+
+
+# ── export / ingest (OTel GenAI / OpenInference interop) ────────────────────
+
+
+def test_export_requires_exactly_one_format_flag(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+
+    for extra_flags in ([], ["--otel", "--openinference"]):
+        result = runner.invoke(app, ["export", run_id, "--store", str(db), *extra_flags])
+        assert result.exit_code == 1, result.output
+        assert "exactly one" in result.output
+
+
+def test_export_otel_writes_gen_ai_attributes(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    out = tmp_path / "trace.json"
+
+    result = runner.invoke(app, ["export", run_id, "--store", str(db), "--otel", "-o", str(out)])
+    assert result.exit_code == 0, result.output
+
+    data = json.loads(out.read_text())
+    spans = data["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    keys = {kv["key"] for span in spans for kv in span["attributes"]}
+    assert "gen_ai.system" in keys
+    assert "gen_ai.request.model" in keys
+
+
+def test_export_openinference_writes_llm_attributes(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    out = tmp_path / "dataset.json"
+
+    result = runner.invoke(
+        app, ["export", run_id, "--store", str(db), "--openinference", "-o", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+
+    data = json.loads(out.read_text())
+    assert len(data["examples"]) == 2
+    assert data["examples"][0]["metadata"]["openinference.span.kind"] == "LLM"
+
+
+def test_export_without_run_id_or_tape_fails(tmp_path):
+    db = tmp_path / "store.db"
+    TapeStore(str(db)).close()
+    result = runner.invoke(app, ["export", "--store", str(db), "--otel"])
+    assert result.exit_code == 1
+    assert "Provide a run_id or --tape" in result.output
+
+
+def test_ingest_requires_exactly_one_format_flag(tmp_path):
+    input_file = tmp_path / "trace.json"
+    input_file.write_text("{}")
+    for extra_flags in ([], ["--otel", "--openinference"]):
+        result = runner.invoke(app, ["ingest", str(input_file), *extra_flags])
+        assert result.exit_code == 1, result.output
+        assert "exactly one" in result.output
+
+
+def test_ingest_otel_builds_step_structure_and_warns_not_bit_exact(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    trace_path = tmp_path / "trace.json"
+    export_result = runner.invoke(
+        app, ["export", run_id, "--store", str(db), "--otel", "-o", str(trace_path)]
+    )
+    assert export_result.exit_code == 0, export_result.output
+
+    out_tape = tmp_path / "ingested.tape.sqlite"
+    result = runner.invoke(app, ["ingest", str(trace_path), "--otel", "-o", str(out_tape)])
+    assert result.exit_code == 0, result.output
+    assert "NOT $0" in result.output
+    assert "blame-by-re-execution" in result.output
+
+    ingested = Tape.load(str(out_tape))
+    assert ingested.boundary == OTEL_INGESTED_BOUNDARY
+    assert len(ingested.exchanges) == 2

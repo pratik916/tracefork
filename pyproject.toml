@@ -53,6 +53,15 @@ providers = [
 mcp = [
     "mcp>=1.0",
 ]
+# Optional: structlog JSON logging + OTel self-instrumentation of
+# record/replay/fork/blame (see observability.py). Export/ingest of OTel
+# GenAI / OpenInference data (interop.py) needs NEITHER of these — it produces
+# and consumes plain JSON dicts, so that path works with the core install.
+observability = [
+    "structlog>=24.1",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+]
 
 [project.scripts]
 tracefork = "tracefork.cli:app"

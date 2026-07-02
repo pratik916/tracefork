@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OTel GenAI / OpenInference interop** (`interop.py`, `tracefork export`/`ingest`):
+  adopts `gen_ai.*` attribute names (pinned semconv version) for the normalized
+  provider view; exports a tape + blame report as an OTel GenAI trace (OTLP/JSON
+  spans) or an OpenInference-style dataset, both plain JSON — no `opentelemetry-sdk`
+  install required; ingests either format back into a tape's step structure for
+  **blame-by-re-execution**, explicitly **not** $0 bit-exact replay (an ingested
+  tape's `boundary` is marked `OTEL_INGESTED_BOUNDARY` and diverges on
+  `replay`/`fork` by design — proven in `tests/test_interop.py`).
+- **Opt-in observability extra** (`pip install 'tracefork[observability]'`,
+  `observability.py`): a structlog JSON logging pipeline and OTel
+  self-instrumentation of record/replay/fork/blame, off by default and double
+  opt-in even when installed — the offline/$0 core and its test suite need neither
+  package.
+
 ## [0.1.0] - 2026-07-02
 
 ### Added

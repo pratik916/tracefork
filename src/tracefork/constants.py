@@ -34,3 +34,23 @@ HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
 HAIKU_OUTPUT_PER_TOKEN = 5.00 / 1_000_000
 OPUS_INPUT_PER_TOKEN = 5.00 / 1_000_000
 OPUS_OUTPUT_PER_TOKEN = 25.00 / 1_000_000
+
+# ── OTel GenAI / OpenInference interop (see interop.py) ─────────────────────
+#
+# Pinned OpenTelemetry semantic-conventions release the `gen_ai.*` attribute
+# names in `interop.py` target — https://opentelemetry.io/docs/specs/semconv/gen-ai/.
+# Bump deliberately (it is not auto-detected) if a future attribute rename
+# lands upstream; nothing here is byte-hashed, so bumping never touches
+# `Tape.digest()`.
+GENAI_SEMCONV_VERSION = "1.29.0"
+
+# Boundary marker for a `Tape` whose step structure was reconstructed from an
+# ingested OTel/OpenInference trace (`interop.ingest_otel_trace` /
+# `ingest_openinference_dataset`) rather than recorded by tracefork's own
+# transport. Deliberately distinct from `BOUNDARY_V1` so such a tape is never
+# mistaken for a bit-exact-replayable one: its exchange bytes are synthesized
+# from span attributes, not raw recorded bytes, so `ReplayVerifier` /
+# `ForkEngine`'s prefix-replay phase will correctly diverge against a real
+# agent. It supports blame-by-re-execution at the step-structure level only —
+# see `interop.py`'s module docstring for the precise scope.
+OTEL_INGESTED_BOUNDARY = "otel-ingested-blame-only-v1"
