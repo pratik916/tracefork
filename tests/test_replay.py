@@ -1,12 +1,17 @@
 """Replay + DriftDoctor tests — all offline, no API keys."""
 
+import json
+from pathlib import Path
+
 import anthropic
 import httpx
 
 from tests.fakes import ScriptedFakeLLM, make_text_response, make_tool_use_response
-from tracefork.replay import DriftCause, DriftDoctor, ReplayVerifier
+from tracefork.replay import DriftCause, DriftDoctor, ReplayVerifier, run_fixture_corpus_check
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
+
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "experiments" / "replay_fixtures"
 
 TEXT_RESP = make_text_response("Done.")
 TOOL_RESP = make_tool_use_response("book_flight", {"destination": "Tokyo", "seats": 1})
@@ -122,3 +127,68 @@ def test_fingerprints_match_on_exact_replay():
     result = ReplayVerifier(tape, _agent_fn).verify()
     assert result.fingerprints_match is True
     assert result.recorded_fingerprint == result.replayed_fingerprint
+
+
+# ── run_fixture_corpus_check — replay --check's library-level gate ─────────
+
+
+def test_fixture_corpus_check_passes_on_committed_corpus():
+    result = run_fixture_corpus_check(FIXTURES_DIR)
+    assert result.fixtures, "expected at least one committed fixture"
+    assert result.all_passed, [f.reason for f in result.fixtures if not f.passed]
+    for f in result.fixtures:
+        assert f.reason == ""
+        assert len(f.digest) == 64  # sha256 hex
+
+
+def test_fixture_corpus_check_fails_on_tampered_tape(tmp_path):
+    """Corrupting a committed tape's exchange bytes must fail the gate — either
+    because replay is no longer bit-exact, or because the digest no longer
+    matches the manifest's pinned value."""
+    manifest = json.loads((FIXTURES_DIR / "manifest.json").read_text())
+    entry = manifest[0]
+
+    tamper_dir = tmp_path / "fixtures"
+    tamper_dir.mkdir()
+    tampered_tape_path = tamper_dir / entry["tape"]
+
+    tape = Tape.load(str(FIXTURES_DIR / entry["tape"]))
+    req, resp = tape.exchanges[0]
+    tape.exchanges[0] = (req, resp + b" ")  # corrupt the recorded response bytes
+    tape.save(str(tampered_tape_path))
+
+    # Manifest keeps the ORIGINAL (now-stale) digest — exactly what a real
+    # regression (or a corrupted commit) would look like.
+    (tamper_dir / "manifest.json").write_text(json.dumps([entry]))
+
+    result = run_fixture_corpus_check(tamper_dir)
+    assert result.all_passed is False
+    assert result.fixtures[0].passed is False
+    assert result.fixtures[0].reason != ""
+
+
+def test_fixture_corpus_check_passes_after_regenerating_manifest_digest(tmp_path):
+    """Sanity check on the tamper test above: if the manifest digest is
+    updated to match the (tampered) tape, but the agent-produced request no
+    longer matches what's on the tampered tape, the bit-exactness check alone
+    must still catch it."""
+    manifest = json.loads((FIXTURES_DIR / "manifest.json").read_text())
+    entry = manifest[0]
+
+    tamper_dir = tmp_path / "fixtures"
+    tamper_dir.mkdir()
+    tampered_tape_path = tamper_dir / entry["tape"]
+
+    tape = Tape.load(str(FIXTURES_DIR / entry["tape"]))
+    req, resp = tape.exchanges[0]
+    tape.exchanges[0] = (req + b" ", resp)  # corrupt the recorded REQUEST bytes
+    tape.save(str(tampered_tape_path))
+
+    tampered_entry = dict(entry)
+    tampered_entry["digest"] = tape.digest()  # digest matches the tampered tape...
+    (tamper_dir / "manifest.json").write_text(json.dumps([tampered_entry]))
+
+    result = run_fixture_corpus_check(tamper_dir)
+    # ...but the fixture agent no longer reproduces the (corrupted) request,
+    # so replay still isn't bit-exact.
+    assert result.all_passed is False

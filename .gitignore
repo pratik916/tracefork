@@ -9,6 +9,10 @@ __pycache__/
 *.tape.sqlite
 /tmp_tapes/
 
+# Exception: the committed replay-fixture corpus (replay --check regression
+# gate) — these tapes are checked in, not regenerated per-run.
+!/experiments/replay_fixtures/*.tape.sqlite
+
 # Runtime artifacts (CLI output, regenerated on demand)
 /store.db
 /report.html
