@@ -2,7 +2,7 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, validate.
+Commands: replay, verify, fork, report, serve, blame, validate, export, ingest.
 """
 
 from __future__ import annotations
@@ -440,6 +440,116 @@ def validate(
                 typer.echo(f"    {r_str}")
             raise typer.Exit(1)
         typer.echo("  No regressions vs committed report.")
+
+
+@app.command()
+def export(
+    run_id: str = typer.Argument(None, help="run_id to export (from store)"),
+    tape_path: Path = typer.Option(  # noqa: B008
+        None, "--tape", "-t", help="Path to a .tape.sqlite file"
+    ),
+    otel: bool = typer.Option(
+        False, "--otel", help="Emit an OTel GenAI trace (OTLP/JSON spans, gen_ai.* attributes)"
+    ),
+    openinference: bool = typer.Option(
+        False, "--openinference", help="Emit an OpenInference-style dataset JSON (llm.* attributes)"
+    ),
+    blame_report: Path = typer.Option(  # noqa: B008
+        None,
+        "--blame-report",
+        help="Optional blame_<run_id>.json (from `tracefork blame`) to attach "
+        "flip-rate/CI as tracefork.blame.* attributes",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        Path("export.json"), "--output", "-o", help="Output JSON file"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Export a tape (+ optional blame report) for external observability tooling.
+
+    Exactly one of --otel / --openinference is required. This is a pure data
+    export (gen_ai.*/llm.* attributes as plain JSON) — no opentelemetry-sdk
+    install needed to produce or consume it. See `tracefork ingest` for the
+    reverse direction and its blame-only, not-bit-exact-replay caveat.
+    """
+    import json as _json
+
+    from tracefork.interop import (
+        blame_report_from_json,
+        build_openinference_dataset,
+        build_otel_trace,
+    )
+    from tracefork.tape import Tape
+
+    if otel == openinference:
+        typer.echo("Pass exactly one of --otel or --openinference")
+        raise typer.Exit(1)
+
+    if tape_path:
+        tape = Tape.load(str(tape_path))
+    elif run_id:
+        from tracefork.store import TapeStore
+
+        db = TapeStore(str(store))
+        tape = db.load_tape(run_id)
+    else:
+        typer.echo("Provide a run_id or --tape path")
+        raise typer.Exit(1)
+
+    blame = None
+    if blame_report is not None:
+        blame = blame_report_from_json(_json.loads(blame_report.read_text()))
+
+    data = (
+        build_otel_trace(tape, blame=blame)
+        if otel
+        else build_openinference_dataset(tape, blame=blame)
+    )
+    output.write_text(_json.dumps(data, indent=2))
+    kind = "OTel GenAI trace" if otel else "OpenInference dataset"
+    typer.echo(f"  {kind} written to {output} ({len(tape.exchanges)} exchange(s))")
+
+
+@app.command()
+def ingest(
+    input_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Path to an OTel OTLP/JSON trace or OpenInference dataset JSON"
+    ),
+    otel: bool = typer.Option(False, "--otel", help="Input is an OTel OTLP/JSON trace export"),
+    openinference: bool = typer.Option(
+        False, "--openinference", help="Input is an OpenInference-style dataset JSON"
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        Path("ingested.tape.sqlite"), "--output", "-o", help="Output tape file"
+    ),
+) -> None:
+    """Build a tape's STEP STRUCTURE from an externally-produced OTel/OpenInference
+    trace — for blame-by-re-execution only.
+
+    IMPORTANT: the resulting tape is NOT bit-exact replayable. Its request
+    bytes are synthesized placeholders (model id only — span attributes don't
+    carry the original prompt), so `tracefork replay`/`fork` against a real
+    agent will correctly diverge on the very first step. See `interop.py`'s
+    module docstring for the precise scope of what an ingested tape supports.
+    """
+    import json as _json
+
+    from tracefork.interop import ingest_openinference_dataset, ingest_otel_trace
+
+    if otel == openinference:
+        typer.echo("Pass exactly one of --otel or --openinference")
+        raise typer.Exit(1)
+
+    data = _json.loads(input_path.read_text())
+    tape = ingest_otel_trace(data) if otel else ingest_openinference_dataset(data)
+    tape.save(str(output))
+
+    typer.echo(f"\n  Ingested {len(tape.exchanges)} exchange(s) -> {output}")
+    typer.echo("  NOTE: step structure only, reconstructed from span attributes — NOT")
+    typer.echo("  tracefork's own recorded bytes. Supports blame-by-re-execution, NOT $0")
+    typer.echo("  bit-exact replay (`replay`/`fork` will diverge on this tape).\n")
 
 
 def _print_receipt(tape_path: Path, result) -> None:

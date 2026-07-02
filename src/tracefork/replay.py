@@ -26,6 +26,7 @@ import httpx
 
 from .matcher import RequestMatcher
 from .nondet import DivergenceError, find_divergence
+from .observability import instrument
 from .tape import Tape
 from .transport import TraceforkTransport
 
@@ -70,6 +71,7 @@ class ReplayVerifier:
         self._api_key = api_key
         self._matcher = matcher
 
+    @instrument("tracefork.replay.verify")
     def verify(self) -> VerificationResult:
         transport = TraceforkTransport("replay", self._tape, matcher=self._matcher)
         client = anthropic.Anthropic(

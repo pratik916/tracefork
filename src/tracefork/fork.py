@@ -26,6 +26,7 @@ import anthropic
 import httpx
 
 from .nondet import DivergenceError
+from .observability import instrument
 from .tape import Tape, sha256_hex
 
 
@@ -125,6 +126,7 @@ class ForkEngine:
     """Creates counterfactual branches from a recorded tape."""
 
     @staticmethod
+    @instrument("tracefork.fork")
     def fork(
         parent_tape: Tape,
         spec: BranchSpec,

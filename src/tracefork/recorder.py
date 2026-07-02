@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import uuid as _uuid_module
 from collections.abc import Callable
+from typing import Any
 
 import anthropic
 import httpx
@@ -39,6 +40,7 @@ from .boundary_guard import BoundaryGuard
 from .config import TraceforkConfig
 from .matcher import RequestMatcher
 from .nondet import RecordingNondet
+from .observability import traced_span
 from .redact import Redactor
 from .tape import Tape
 from .transport import AsyncTraceforkTransport, TraceforkTransport
@@ -95,6 +97,7 @@ class Recorder:
         self._wrapped_client: anthropic.Anthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
         self._guard: BoundaryGuard | None = None
+        self._span_cm: Any = None
 
     @property
     def client(self) -> anthropic.Anthropic:
@@ -109,6 +112,10 @@ class Recorder:
         return self._tape
 
     def __enter__(self) -> Recorder:
+        # No-op unless OTel self-instrumentation is explicitly enabled (see
+        # observability.py) — covers the whole recording window, enter to exit.
+        self._span_cm = traced_span("tracefork.record", agent_name=self._agent_name)
+        self._span_cm.__enter__()
         # RecordingNondet captures the real datetime.now and uuid.uuid4 in __init__
         # before we patch uuid.uuid4 below. Order matters.
         self._nondet = RecordingNondet()
@@ -163,6 +170,9 @@ class Recorder:
             self._guard.__exit__(*args)
             self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]
+        if self._span_cm is not None:
+            self._span_cm.__exit__(*args)
+            self._span_cm = None
 
 
 class AsyncRecorder:
@@ -193,6 +203,7 @@ class AsyncRecorder:
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
         self._guard: BoundaryGuard | None = None
+        self._span_cm: Any = None
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -207,6 +218,10 @@ class AsyncRecorder:
         return self._tape
 
     async def __aenter__(self) -> AsyncRecorder:
+        # No-op unless OTel self-instrumentation is explicitly enabled (see
+        # observability.py) — covers the whole recording window, enter to exit.
+        self._span_cm = traced_span("tracefork.record", agent_name=self._agent_name)
+        self._span_cm.__enter__()
         self._nondet = RecordingNondet()
         self._tape = Tape(agent_name=self._agent_name)
         self._tape.draws = self._nondet.draws
@@ -250,3 +265,6 @@ class AsyncRecorder:
             self._guard.__exit__(*args)
             self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]
+        if self._span_cm is not None:
+            self._span_cm.__exit__(*args)
+            self._span_cm = None

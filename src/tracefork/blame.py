@@ -49,6 +49,7 @@ from . import pricing
 from .constants import SONNET
 from .fork import BranchSpec, ForkEngine
 from .nondet import find_divergence
+from .observability import instrument
 from .plugins import ORACLE_GROUP, Registry
 from .providers import get_adapter
 from .tape import Tape
@@ -484,6 +485,7 @@ class BlameEngine:
     """Ranks exchanges by causal flip-rate."""
 
     @staticmethod
+    @instrument("tracefork.blame.rank")
     def rank(
         tape: Tape,
         agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent

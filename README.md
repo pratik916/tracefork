@@ -54,7 +54,7 @@ makes no network calls.
 ```bash
 uv sync --extra dev
 
-# 1. The full offline test suite (336 tests).
+# 1. The full offline test suite (387 tests).
 uv run pytest -q
 
 # 2. The instrument validates itself against injected, known-root-cause faults.
@@ -97,6 +97,8 @@ uv run tracefork --help
 | `report  <run_id> \| --tape <tape> -o out.html` | Render the self-contained three-panel HTML report. |
 | `serve   [--store store.db] [--port 7777]` | Serve the live web UI (same-origin, 127.0.0.1). |
 | `validate [--k 3] [--n-runs 5] [--check]` | Run the fault-injection suite; `--check` gates against the committed report. |
+| `export  <run_id> --otel\|--openinference -o out.json` | Export a tape (+ optional `--blame-report`) as an OTel GenAI trace or an OpenInference dataset. |
+| `ingest  <trace.json> --otel\|--openinference -o out.tape.sqlite` | Build a tape's step structure from an externally-produced trace — blame-by-re-execution only, **not** bit-exact replayable. |
 
 Replay, verify, fork, and the offline demos need no key. `blame` against a *real* run
 re-runs the agent's counterfactual tails against the live API, which is why it's
@@ -137,6 +139,12 @@ is the contract between them.
   ground truth entirely offline.
 - **`report.py` / `server.py` / `web/report.html`** — a single, dependency-free HTML file
   (vanilla JS, no npm) rendered statically by `report` or served live by `serve`.
+- **`interop.py`** — `gen_ai.*`/OpenInference export (`export`) and ingest (`ingest`); see
+  [OTel / OpenInference interop](#otel--openinference-interop-opt-in) for the precise,
+  blame-only-not-bit-exact scope of the ingest direction.
+- **`observability.py`** — opt-in (`observability` extra) structlog JSON logging and OTel
+  self-instrumentation of record/replay/fork/blame; a no-op until explicitly enabled, so
+  installing the extra alone changes nothing.
 
 ## Determinism boundary (v1, honest scope)
 
@@ -185,6 +193,48 @@ Redactors never affect what the live agent sees during recording — only what l
 tape. See `redact.py` for the full pipeline (ordered `RedactorFn` callbacks, `regex_redactor`,
 `secret_value_redactor`, the header-redaction rules).
 
+## OTel / OpenInference interop (opt-in)
+
+tracefork's provider-neutral seam (`NormalizedResponse` in `providers/base.py`) already
+names fields after the OpenTelemetry **GenAI** semantic conventions (`model`,
+`input_tokens`/`output_tokens`, `finish_reason`). `interop.py` builds on that to move data
+in and out of the two conventions every observability stack actually speaks — OTel GenAI
+(`gen_ai.*` span attributes) and OpenInference (`llm.*`/`openinference.*`, used by Arize
+Phoenix and friends) — the pinned semconv release is `GENAI_SEMCONV_VERSION` in
+`constants.py`.
+
+```bash
+# Export a recorded run (+ optional blame_<run_id>.json) as plain JSON —
+# gen_ai.* spans or an OpenInference-style dataset. No opentelemetry-sdk
+# install needed to produce or consume either; they're just dicts.
+uv run tracefork export <run_id> --otel -o trace.json
+uv run tracefork export <run_id> --openinference --blame-report blame_<run_id>.json -o dataset.json
+
+# Ingest a trace exported by ANY system that speaks these attributes —
+# not just tracefork's own export — into a tape's STEP STRUCTURE.
+uv run tracefork ingest trace.json --otel -o ingested.tape.sqlite
+```
+
+**Ingest is blame-by-re-execution, NOT $0 bit-exact replay — read this before reaching
+for it.** Bit-exact replay depends on the exact request/response bytes tracefork itself
+recorded, plus every `NondetSource` draw that produced them; an externally-produced trace
+carries neither — span attributes don't include the original prompt, so an ingested
+exchange's request is a synthesized placeholder (`{"model": ..., "messages": []}`). An
+ingested tape's `boundary` is set to `OTEL_INGESTED_BOUNDARY` precisely so it's never
+mistaken for a recorded one: feeding it to `replay`/`fork` against a real agent correctly
+diverges on the very first step (proven, not just asserted, in `tests/test_interop.py`).
+What it's for instead: recovering step count, per-step model, token usage, and — if the
+source attached tracefork's own `tracefork.blame.*` attributes — flip-rate/CI, for
+inspection or to drive a live re-execution blame strategy.
+
+Two more pieces are opt-in via the `observability` extra (`pip install
+'tracefork[observability]'`; the core stays offline/$0 and dependency-free without it):
+a **structlog JSON** logging pipeline (`observability.configure_structlog_json()` +
+`get_logger()`, falling back to stdlib `logging` when `structlog` isn't installed), and
+**OTel self-instrumentation** of `record`/`replay`/`fork`/`blame` — off by default, and
+double opt-in even when installed (`enable_otel_instrumentation()` or
+`TRACEFORK_OTEL_ENABLED=1`), so merely installing the extra changes nothing.
+
 ## Validation scope
 
 What `tracefork validate` proves, stated precisely: the blame engine is **genuinely
@@ -206,18 +256,20 @@ iteration; until then, read 1.00 as "the instrument reliably finds the planted c
 
 ```
 src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, store,
-                    blame, faults, validate, report, server, wire, synthetic, cli
+                    blame, faults, validate, report, server, wire, synthetic, cli,
+                    interop (OTel GenAI / OpenInference export+ingest),
+                    observability (opt-in structlog + OTel self-instrumentation)
 src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html     the single-file three-panel UI
 examples/           runnable demo that produces the report above
-tests/              336 offline tests ($0, no key)
+tests/              387 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                                   # all 336 offline tests
+uv run pytest -q                                   # all 387 offline tests
 uv run pytest tests/test_faults.py -q              # the self-validation chain
 uv run tracefork validate --check                  # regression-gate vs committed report
 ```
