@@ -4,9 +4,10 @@ import anthropic
 import httpx
 import pytest
 
-from tests.fakes import ScriptedFakeLLM, make_text_response
+from tests.fakes import FaultAwareFakeLLM, ScriptedFakeLLM, make_text_response
 from tracefork.blame import (
     BlameEngine,
+    BudgetExceededError,
     BudgetGovernor,
     CIMethod,
     StringMatchOracle,
@@ -16,6 +17,7 @@ from tracefork.blame import (
     wilson_ci,
     z_from_confidence,
 )
+from tracefork.faults import FAULT_MARKER, FAULT_MARKER_BYTES
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -383,3 +385,187 @@ def test_responsible_set_fingers_causal_step():
     assert [r.step_index for r in report.responsible()] == [1]
     # top() stays a back-compat argmax accessor.
     assert report.top().step_index == 1
+
+
+# ── temporal (order-restricted) Shapley blame ─────────────────────────────────
+
+
+def test_shapley_rank_basic_shape():
+    """Two-step tape, both steps flip-capable: shapley values are within [-1, 1],
+    each CI brackets its point estimate, and the run reports correct bookkeeping."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.shapley_rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=3, m_samples=2
+    )
+
+    assert report.parent_outcome is True
+    assert report.n_permutation_samples == 2
+    assert len(report.results) == 2
+    for r in report.results:
+        assert -1.0 <= r.ci_lo <= r.shapley_value <= r.ci_hi <= 1.0
+        assert r.n_samples == 2
+    # step1 (the flip-decisive final step) should have the highest shapley value.
+    assert report.top().step_index == 1
+
+
+def test_shapley_rank_efficiency_axiom():
+    """sum(shapley values) == v(full coalition) - v(empty coalition) == v(full),
+    since v(empty) is definitionally 0 (no perturbation == the parent run)."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.shapley_rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=3, m_samples=1
+    )
+    total = sum(r.shapley_value for r in report.results)
+    last = next(r for r in report.results if r.step_index == 1)
+    assert abs(total - last.coalition_flip_rate) < 1e-9
+
+
+def test_shapley_rank_total_forks_matches_budget_formula():
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    k, m_samples = 4, 3
+    report = BlameEngine.shapley_rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=k, m_samples=m_samples
+    )
+    # n_candidates * k * (1 + m_samples): one rank() pass (sufficiency) + m_samples
+    # coalition-walk passes, each costing exactly as much as one rank() pass.
+    assert report.total_forks == 2 * k * (1 + m_samples)
+
+
+def test_shapley_rank_budget_exceeded_raises():
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    with pytest.raises(BudgetExceededError):
+        BlameEngine.shapley_rank(
+            tape,
+            _booking_agent,
+            oracle,
+            perturb_factory=perturb_factory,
+            k=100,
+            m_samples=50,
+            budget_usd=0.0,
+        )
+
+
+def test_budget_governor_coalition_samples_multiplies_estimate():
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    base = BudgetGovernor.estimate(tape, k=10, cost_per_fork_usd=0.01)
+    with_coalitions = BudgetGovernor.estimate(
+        tape, k=10, cost_per_fork_usd=0.01, coalition_samples=3
+    )
+    assert with_coalitions.n_forks == base.n_forks * 4  # 1 + 3
+    assert abs(with_coalitions.est_usd - base.est_usd * 4) < 1e-9
+    # coalition_samples=0 is byte-for-byte the pre-existing estimate (back-compat).
+    default = BudgetGovernor.estimate(tape, k=10, cost_per_fork_usd=0.01, coalition_samples=0)
+    assert default == base
+
+
+# ── the echo-fault discrimination test (the point of this PR) ────────────────
+#
+# Independent single-step flip-rate cannot separate a true root cause from a
+# downstream step that merely re-expresses it: forking step 0 (the root fault)
+# alone flips the outcome via the agent's own echo mechanism, but forking step 1
+# alone — with step 0 left CLEAN — flips it too, because step 1's own forced
+# response is itself gradeable as the flipped outcome. Both look equally causal
+# under `rank()`. Coalition/Shapley asks the joint question instead: once step
+# 0's perturbation is already in the coalition, does ALSO forcing step 1 raise
+# the flip-rate any further? It does not (both alone already saturate at a full
+# flip), so step 1's marginal contribution collapses to ~0 while step 0's stays
+# at the full flip-rate — the temporal-Shapley value strictly discriminates the
+# root cause from its downstream echo where single-step flip-rate ties them.
+
+
+FAULT_RESP = make_text_response(f"FAIL — cancelled {FAULT_MARKER}")
+
+
+def _echo_fault_perturb_factory(step_idx: int) -> tuple[bytes, object]:
+    """Every candidate step's perturbation is *independently* flip-capable: the
+    forced response is directly gradeable as FAIL (if it's the terminal
+    exchange) AND carries FAULT_MARKER (if it's echoed into a later request,
+    the fault-aware tail detects the marker and fails too). This is what makes
+    steps 0 and 1 TIE under single-step flip-rate — the fixture proving the
+    problem the coalition/Shapley engine exists to solve.
+    """
+    return FAULT_RESP, FaultAwareFakeLLM(
+        normal_responses=[SUCCESS_RESP] * 10,
+        fault_responses=[FAIL_RESP] * 10,
+        fault_marker=FAULT_MARKER_BYTES,
+    )
+
+
+def test_single_step_flip_rate_ties_root_and_downstream_echo():
+    """Ground truth for the fixture: `rank()` blames step0 (the root) and step1
+    (which merely re-expresses it) with an IDENTICAL flip-rate — the tie."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    report = BlameEngine.rank(
+        tape,
+        _booking_agent,
+        oracle,
+        perturb_factory=_echo_fault_perturb_factory,
+        k=3,
+        budget_usd=100.0,
+    )
+    step0 = next(r for r in report.results if r.step_index == 0)
+    step1 = next(r for r in report.results if r.step_index == 1)
+    assert step0.flip_rate == 1.0
+    assert step1.flip_rate == 1.0
+    assert step0.flip_rate == step1.flip_rate  # the tie single-step blame cannot break
+
+
+def test_temporal_shapley_discriminates_root_from_echo():
+    """The fix: coalition/temporal-Shapley credits step0 strictly higher than
+    step1, even though `rank()` ties them (previous test)."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    report = BlameEngine.shapley_rank(
+        tape,
+        _booking_agent,
+        oracle,
+        perturb_factory=_echo_fault_perturb_factory,
+        k=3,
+        m_samples=2,
+        budget_usd=100.0,
+    )
+    step0 = next(r for r in report.results if r.step_index == 0)
+    step1 = next(r for r in report.results if r.step_index == 1)
+
+    # The root cause (step0) is fully credited; the downstream echo (step1)'s
+    # marginal contribution collapses to ~0 once step0 is already perturbed.
+    assert step0.shapley_value == 1.0
+    assert step1.shapley_value == 0.0
+    assert step0.shapley_value > step1.shapley_value  # the strict discrimination
+
+    # Sufficiency alone does NOT discriminate (both are independently
+    # flip-capable, matching the single-step tie) — only necessity does.
+    assert step0.sufficiency is True
+    assert step1.sufficiency is True
+    assert step0.sufficiency_score == step1.sufficiency_score == 1.0
+
+    # Necessity DOES discriminate: reverting step0 (dropping {0} back to {})
+    # would undo the flip; reverting step1 (dropping {0,1} back to {0}) would not,
+    # since step0 alone already saturates the flip-rate.
+    assert step0.necessity is True
+    assert step1.necessity is False
+
+    assert report.top().step_index == 0

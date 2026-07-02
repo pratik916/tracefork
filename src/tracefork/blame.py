@@ -47,7 +47,7 @@ import httpx
 
 from . import pricing
 from .constants import SONNET
-from .fork import BranchSpec, ForkEngine
+from .fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from .nondet import find_divergence
 from .observability import instrument
 from .plugins import ORACLE_GROUP, Registry
@@ -247,6 +247,29 @@ def proportion_ci(
     return (lo, hi)
 
 
+def _normal_ci(values: list[float], confidence: float) -> tuple[float, float]:
+    """Mean ± z·(sample standard error) confidence interval over repeated
+    estimates of a quantity bounded to ``[-1, 1]`` (a Shapley marginal
+    contribution is the difference of two flip-rate proportions, each in
+    ``[0, 1]``). Degenerates to a point interval at ``[mean, mean]`` when there
+    are fewer than two samples or the samples have zero variance — an honest
+    reflection of a deterministic estimator (e.g. a fully-scripted offline
+    trial), not a bug.
+    """
+    n = len(values)
+    if n == 0:
+        return (0.0, 0.0)
+    mean = sum(values) / n
+    if n < 2:
+        return (max(-1.0, mean), min(1.0, mean))
+    variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+    stderr = math.sqrt(variance / n)
+    if stderr == 0.0:
+        return (max(-1.0, mean), min(1.0, mean))
+    z = z_from_confidence(confidence)
+    return (max(-1.0, mean - z * stderr), min(1.0, mean + z * stderr))
+
+
 # ── Oracle protocol ─────────────────────────────────────────────────────────
 
 
@@ -370,6 +393,50 @@ class BlameReport:
 
 
 @dataclass
+class ShapleyResult:
+    """One step's temporal-Shapley causal credit, plus necessity/sufficiency."""
+
+    step_index: int
+    shapley_value: float
+    ci_lo: float
+    ci_hi: float
+    n_samples: int
+    # v({0..i}) and v({0..i-1}) — the "full"/"base" coalition flip-rates the
+    # marginal contribution is the difference of (averaged over n_samples).
+    coalition_flip_rate: float = 0.0
+    base_flip_rate: float = 0.0
+    interpretation: str = ""
+    # Necessity: would reverting step i's perturbation (dropping the coalition
+    # back to the smaller prefix) restore the parent outcome? Read off the same
+    # marginal jump: necessity_score IS the shapley_value (how much the
+    # coalition's flip-rate falls if step i is reverted).
+    necessity: bool = False
+    necessity_score: float = 0.0
+    # Sufficiency: does injecting ONLY step i into an otherwise-clean run flip
+    # it? This is exactly the classic single-step flip-rate (`rank()`'s
+    # per-step trial, reused rather than recomputed).
+    sufficiency: bool = False
+    sufficiency_score: float = 0.0
+
+
+@dataclass
+class ShapleyReport:
+    results: list[ShapleyResult]
+    n_permutation_samples: int
+    k: int
+    total_forks: int
+    parent_outcome: bool | None = None
+    est_cost_usd: float = 0.0
+    confidence: float = 0.95
+
+    def top(self) -> ShapleyResult | None:
+        """Highest-Shapley-value step (argmax accessor, mirrors BlameReport.top())."""
+        if not self.results:
+            return None
+        return max(self.results, key=lambda r: r.shapley_value)
+
+
+@dataclass
 class BlameEstimate:
     n_candidates: int
     n_forks: int
@@ -421,6 +488,7 @@ class BudgetGovernor:
         k: int,
         model: str | None = None,
         cost_per_fork_usd: float | None = None,
+        coalition_samples: int = 0,
     ) -> BlameEstimate:
         """Estimate the dollar cost of a blame run.
 
@@ -430,13 +498,22 @@ class BudgetGovernor:
         with the model's real per-token rates (``pricing.get_rates``, backed by the
         bundled offline snapshot) against the tape's recorded token usage. Pass
         ``cost_per_fork_usd`` to override with a flat per-fork figure instead.
+
+        ``coalition_samples`` prices ``BlameEngine.shapley_rank``'s temporal
+        Shapley walk: each of its ``m_samples`` repeats re-evaluates a prefix
+        coalition ``{0..i}`` for every step ``i`` — the SAME ``sum_i (n-1-i)``
+        tail-cost shape as a single-step ``rank()`` pass — plus one more pass for
+        the single-step sufficiency check, so the total multiplies the base
+        estimate by ``(1 + coalition_samples)``. The default ``0`` reproduces the
+        exact pre-existing estimate (``rank()``'s callers are unaffected).
         """
         n_candidates = len(tape.exchanges)
-        n_forks = n_candidates * k
+        multiplier = 1 + max(0, coalition_samples)
+        n_forks = n_candidates * k * multiplier
         if cost_per_fork_usd is not None:
             est_usd = n_forks * cost_per_fork_usd
         else:
-            billed_calls = sum(n_candidates - 1 - i for i in range(n_candidates)) * k
+            billed_calls = sum(n_candidates - 1 - i for i in range(n_candidates)) * k * multiplier
             in_rate, out_rate = pricing.get_rates(model or _detect_model(tape))
             avg_in, avg_out = _avg_tokens(tape)
             est_usd = billed_calls * (avg_in * in_rate + avg_out * out_rate)
@@ -636,3 +713,205 @@ class BlameEngine:
             return TrialOutcome.UNDEFINED, False
         outcome = TrialOutcome.FLIP if graded != parent_outcome else TrialOutcome.NO_FLIP
         return outcome, False
+
+    @staticmethod
+    def _run_coalition_trials(
+        tape: Tape,
+        steps: tuple[int, ...],
+        perturb_factory: Callable[[int], tuple[bytes, object]],
+        agent_fn,
+        oracle: Oracle,
+        parent_outcome: bool | None,
+        api_key: str,
+        k: int,
+    ) -> _StepTally:
+        """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
+        set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
+        generalized to a coalition — this is what computes ``v(S)``.
+
+        ``perturb_factory`` is called once per coalition member per trial (the
+        same one-call-per-trial contract ``_run_trial`` uses for a single step),
+        so stateful factories (e.g. a counter-based script) see exactly the calls
+        they would for an equivalent sequence of single-step trials. The tail
+        transport is the one associated with the *highest-indexed* coalition
+        member — for a one-element coalition this reduces to exactly
+        ``_run_trial``'s behaviour.
+        """
+        tally = _StepTally()
+        ordered = tuple(sorted(steps))
+        top_step = ordered[-1]
+        for _trial in range(k):
+            per_step = {s: perturb_factory(s) for s in ordered}
+            interventions = tuple(StepIntervention(s, per_step[s][0]) for s in ordered)
+            tail_transport = cast("httpx.BaseTransport | None", per_step[top_step][1])
+            spec = CoalitionSpec(interventions=interventions)
+            try:
+                branch = ForkEngine.fork_coalition(
+                    tape, spec, agent_fn, post_fork_transport=tail_transport, api_key=api_key
+                )
+            except Exception as exc:
+                tally.undefined += 1
+                if find_divergence(exc) is not None:
+                    tally.divergences += 1
+                continue
+
+            if branch.delta_tape.exchanges:
+                graded = oracle.grade(_outcome_text(branch.delta_tape.exchanges[-1][1]))
+            else:
+                graded = None
+            if graded is None or parent_outcome is None:
+                tally.undefined += 1
+                continue
+            if graded != parent_outcome:
+                tally.flips += 1
+            else:
+                tally.no_flips += 1
+        return tally
+
+    @staticmethod
+    @instrument("tracefork.blame.shapley_rank")
+    def shapley_rank(
+        tape: Tape,
+        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        oracle: Oracle,
+        *,
+        perturb_factory: Callable[[int], tuple[bytes, object]],
+        k: int = 5,
+        m_samples: int = 3,
+        budget_usd: float = 5.0,
+        api_key: str = "sk-ant-shapley",
+        confidence: float = 0.95,
+        necessity_threshold: float = 0.5,
+        sufficiency_threshold: float = 0.5,
+    ) -> ShapleyReport:
+        """Temporal (order-restricted) Shapley blame — additive to `rank()`.
+
+        Independent single-step flip-rate can't separate a true root cause from
+        a downstream step that merely re-expresses it: if step *i*'s fault
+        echoes forward, forking *i+1* alone (with an unperturbed prefix) can look
+        just as causal as forking *i*, because removing *either* one breaks the
+        propagation chain. Coalition/Shapley attribution fixes this by asking a
+        joint question instead: given that step *i*'s perturbation is ALREADY in
+        play, how much MORE does the outcome flip when step *i+1* is added?
+
+        Each step's Shapley value is its expected marginal contribution
+        `v(S∪{i}) − v(S)` to the coalition flip-rate, estimated by PERMUTATION
+        SAMPLING but restricted to orderings consistent with temporal order (a
+        step is only added after its predecessors — asymmetric/causal Shapley,
+        Frye et al. 2020) so a downstream echo isn't credited for its upstream
+        cause. Because every tape step's predecessor set is exactly the full
+        prefix before it (the tape is a total causal chain: any earlier response
+        can in principle be echoed into any later request), that restriction
+        admits exactly ONE valid ordering — `(0, 1, ..., n-1)` — collapsing the
+        usual multi-permutation Monte-Carlo estimator to a telescoping walk:
+        `phi_i = v({0..i}) − v({0..i-1})`. `m_samples` repeats that walk
+        independently (a fresh k-trial estimate of every `v(S)` each time) to
+        build a genuine permutation-sampling confidence interval on each step's
+        value from real trial-to-trial noise, rather than reporting one point
+        estimate. (`sum_i phi_i = v({0..n-1}) − v(∅) = v(full) − 0`, the Shapley
+        efficiency axiom, since `v(∅)` is defined to be `0` — no intervention
+        anywhere is definitionally the parent run.)
+
+        Necessity ("would reverting step i's perturbation restore the parent
+        outcome?") is read off the SAME walk: it's exactly the marginal jump
+        `phi_i`, since dropping the coalition from `{0..i}` back to `{0..i-1}`
+        *is* reverting step i specifically (steps `0..i-1` are held fixed either
+        way). Sufficiency ("does injecting only step i into an otherwise-clean
+        run flip it?") reuses `rank()`'s existing, independently-tested
+        single-step trial — computed once, shared across every step, rather than
+        re-derived.
+
+        Cost is `(1 + m_samples)` times a single `rank()` pass (one pass for
+        sufficiency, `m_samples` for the coalition walk); `BudgetGovernor.estimate(
+        ..., coalition_samples=m_samples)` prices the whole run before any spend,
+        and this raises the same `BudgetExceededError` `rank()` does if it's over
+        `budget_usd`.
+        """
+        n = len(tape.exchanges)
+        if n == 0:
+            return ShapleyReport(results=[], n_permutation_samples=m_samples, k=k, total_forks=0)
+
+        est = BudgetGovernor.estimate(tape, k=k, coalition_samples=m_samples)
+        if est.est_usd > budget_usd:
+            raise BudgetExceededError(
+                f"estimated shapley blame cost ${est.est_usd:.2f} exceeds budget "
+                f"${budget_usd:.2f} ({est.n_forks} forks at k={k}, m_samples={m_samples}); "
+                f"raise the budget or lower k/m_samples"
+            )
+
+        # Sufficiency reuses the existing, independently-tested single-step path.
+        # budget_usd=inf: the combined cost was already cleared above, so this
+        # inner call must not re-raise on its own (smaller) slice of the budget.
+        single_step = BlameEngine.rank(
+            tape,
+            agent_fn,
+            oracle,
+            perturb_factory=perturb_factory,
+            k=k,
+            budget_usd=math.inf,
+            api_key=f"{api_key}-sufficiency",
+        )
+        sufficiency_by_step = {r.step_index: r for r in single_step.results}
+        parent_outcome = single_step.parent_outcome
+
+        marginal_samples: list[list[float]] = [[] for _ in range(n)]
+        full_samples: list[list[float]] = [[] for _ in range(n)]
+        base_samples: list[list[float]] = [[] for _ in range(n)]
+        coalition_forks = 0
+
+        for _repeat in range(m_samples):
+            base_flip_rate = 0.0  # v(∅) — no intervention, axiomatically the parent
+            for i in range(n):
+                steps = tuple(range(i + 1))
+                tally = BlameEngine._run_coalition_trials(
+                    tape, steps, perturb_factory, agent_fn, oracle, parent_outcome, api_key, k
+                )
+                coalition_forks += k
+                valid = tally.valid
+                # An all-UNDEFINED coalition trial carries no information about
+                # this repeat's marginal step; hold the walk at its prior value
+                # rather than injecting a spurious 0-flip-rate reading.
+                full_flip_rate = tally.flips / valid if valid > 0 else base_flip_rate
+                marginal_samples[i].append(full_flip_rate - base_flip_rate)
+                full_samples[i].append(full_flip_rate)
+                base_samples[i].append(base_flip_rate)
+                base_flip_rate = full_flip_rate
+
+        results: list[ShapleyResult] = []
+        for i in range(n):
+            m_vals = marginal_samples[i]
+            shapley_value = sum(m_vals) / len(m_vals) if m_vals else 0.0
+            ci_lo, ci_hi = _normal_ci(m_vals, confidence)
+            suff = sufficiency_by_step.get(i)
+            sufficiency_score = suff.flip_rate if suff is not None else 0.0
+            results.append(
+                ShapleyResult(
+                    step_index=i,
+                    shapley_value=shapley_value,
+                    ci_lo=ci_lo,
+                    ci_hi=ci_hi,
+                    n_samples=len(m_vals),
+                    coalition_flip_rate=(
+                        sum(full_samples[i]) / len(full_samples[i]) if full_samples[i] else 0.0
+                    ),
+                    base_flip_rate=(
+                        sum(base_samples[i]) / len(base_samples[i]) if base_samples[i] else 0.0
+                    ),
+                    interpretation=_interpret(shapley_value),
+                    necessity=shapley_value >= necessity_threshold,
+                    necessity_score=shapley_value,
+                    sufficiency=sufficiency_score >= sufficiency_threshold,
+                    sufficiency_score=sufficiency_score,
+                )
+            )
+
+        results.sort(key=lambda r: (-r.shapley_value, r.step_index))
+        return ShapleyReport(
+            results=results,
+            n_permutation_samples=m_samples,
+            k=k,
+            total_forks=single_step.total_forks + coalition_forks,
+            parent_outcome=parent_outcome,
+            est_cost_usd=est.est_usd,
+            confidence=confidence,
+        )
