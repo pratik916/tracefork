@@ -288,6 +288,22 @@ class TapeStore:
         ).fetchall()
         return [{"run_id": r[0], "agent_name": r[1], "created_at": r[2]} for r in rows]
 
+    def stored_digest(self, run_id: str) -> str | None:
+        """The ``tapes.digest`` column's value for ``run_id``, or ``None`` if
+        that column doesn't exist in this schema yet (a future bead's
+        addition) or ``run_id`` isn't found. Gates on ``PRAGMA table_info``
+        rather than assuming the column, so callers like ``fsck.py`` can
+        treat a stronger digest-recompute check as opportunistic — never a
+        hard dependency on a column this schema may not have. ``TapeStore``-
+        only for now (see ``prune()``'s docstring for the same precedent of
+        not extending ``StorageBackend`` with every maintenance/diagnostic
+        helper)."""
+        cols = {row[1] for row in self._con.execute("PRAGMA table_info(tapes)").fetchall()}
+        if "digest" not in cols:
+            return None
+        row = self._con.execute("SELECT digest FROM tapes WHERE run_id=?", (run_id,)).fetchone()
+        return None if row is None else row[0]
+
     # ── branches ────────────────────────────────────────────────────────────
 
     def save_branch(
@@ -345,6 +361,19 @@ class TapeStore:
             {"branch_id": r[0], "divergence_step": r[1], "mutation_desc": r[2], "created_at": r[3]}
             for r in rows
         ]
+
+    def all_branch_parents(self) -> list[tuple[str, str]]:
+        """``(branch_id, parent_run_id)`` for every branch row in the live
+        ``branches`` table, regardless of whether ``parent_run_id`` still
+        resolves to a live tape. Distinct from ``list_branches(parent_run_id)``,
+        which only ever returns branches under a known-live parent — a branch
+        whose parent tape row was force-deleted directly (e.g. with
+        ``foreign_keys=OFF``, bypassing the FK this schema normally enforces)
+        would never surface through that method. Enables ``fsck.py``'s
+        orphaned-parent check. ``TapeStore``-only for now, same precedent as
+        ``stored_digest``/``prune()``."""
+        rows = self._con.execute("SELECT branch_id, parent_run_id FROM branches").fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     # ── causal graph (persistent blame/Shapley edges) ───────────────────────
 

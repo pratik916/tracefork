@@ -89,13 +89,30 @@ def verify(
     corpus: bool = typer.Option(
         False, "--corpus", help="Verify all tapes in experiments/validation_tapes/"
     ),
+    store: Path = typer.Option(  # noqa: B008
+        None,
+        "--store",
+        help="Path to a store.db: run a read-only structural fsck (every tape/"
+        "branch decodes, every branch's parent resolves) instead of replay-"
+        "verifying a single tape. Mutually exclusive with --corpus.",
+    ),
 ) -> None:
-    """Verify bit-exact replay. Exit 1 on drift."""
+    """Verify bit-exact replay (single tape or --corpus), or run a read-only
+    structural fsck over a store with --store <db path>. Exit 1 on drift, on
+    any fsck row failure, or if both --corpus and --store are passed."""
     import importlib
 
     from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
+
+    if corpus and store is not None:
+        typer.echo("Pass at most one of --corpus or --store")
+        raise typer.Exit(1)
+
+    if store is not None:
+        _run_store_fsck(store)
+        return
 
     if corpus:
         corpus_dir = Path("experiments/validation_tapes")
@@ -109,7 +126,7 @@ def verify(
         raise typer.Exit(0)
 
     if tape_path is None or agent is None:
-        typer.echo("Provide --agent and a tape path, or use --corpus")
+        typer.echo("Provide --agent and a tape path, or use --corpus/--store")
         raise typer.Exit(1)
 
     tape = Tape.load(str(tape_path))
@@ -120,6 +137,36 @@ def verify(
     result.certificate = certificate_from_verification(result, tape)
     _print_receipt(tape_path, result, tape)
     raise typer.Exit(0 if result.bit_exact else 1)
+
+
+def _run_store_fsck(store_path: Path) -> None:
+    """`verify --store` body: a read-only structural fsck over a `TapeStore`
+    database (see `fsck.store_fsck`). Exits 1 if any tape/branch fails to
+    decode or a branch's parent can't resolve (orphaned parent); never
+    mutates the store."""
+    from tracefork.fsck import store_fsck
+    from tracefork.store import TapeStore
+
+    if not store_path.exists():
+        typer.echo(f"No store found at {store_path}")
+        raise typer.Exit(1)
+
+    db = TapeStore(str(store_path))
+    try:
+        result = store_fsck(db)
+    finally:
+        db.close()
+
+    typer.echo(f"\n  tracefork verify --store {store_path}")
+    typer.echo(f"  {'─' * 60}")
+    if not result.rows:
+        typer.echo("  (store is empty — nothing to check)")
+    for row in result.rows:
+        status = "PASS" if row.passed else "FAIL"
+        typer.echo(f"  [{status}] {row.kind:<7} {row.id:<14} {row.reason}")
+    n_pass = sum(1 for r in result.rows if r.passed)
+    typer.echo(f"\n  {n_pass}/{len(result.rows)} row(s) passed\n")
+    raise typer.Exit(0 if result.all_ok else 1)
 
 
 @app.command()

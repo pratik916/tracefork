@@ -147,7 +147,25 @@ The product lives in `src/tracefork/`:
   signatures; `causal_edges` has no FK to `tapes` (unlike `branches`,
   `prune()` doesn't need to know about it) and is never fed into
   `Tape.digest()`. `cli.py`'s `blame` command calls `save_blame_report`
-  additively after its existing JSON write.
+  additively after its existing JSON write. `stored_digest`/`all_branch_parents`
+  are two small `TapeStore`-only read helpers (same "not on `StorageBackend`
+  yet" precedent as `prune`) for `fsck.py`: `stored_digest` gates on `PRAGMA
+  table_info(tapes)` so a future `digest` column is an opportunistic stronger
+  check, never a hard dependency; `all_branch_parents` returns every
+  `(branch_id, parent_run_id)` pair regardless of parent liveness, since
+  `list_branches(parent_run_id)` alone can never surface a branch whose parent
+  tape row was force-deleted directly (`foreign_keys=OFF`).
+- `fsck.py` — `store_fsck()` is a read-only, git-fsck-style STRUCTURAL check
+  over a `TapeStore` (distinct from `replay.py`'s replay-FIDELITY
+  verification): every tape must decode via `load_tape`, every branch under a
+  still-live parent must decode via `load_branch` (a decode error is reported
+  as a `FsckRow` failure, never raised, so one bad row doesn't abort the
+  scan), and every branch's `parent_run_id` must resolve to a live tape — an
+  orphaned-parent failure reported even when `load_branch` alone would still
+  succeed. Mirrors `replay.py`'s `CorpusCheckResult` dataclass-list-plus-
+  `all_passed` shape (`StoreFsckResult.rows` / `.all_ok`). Never mutates the
+  store. `tracefork verify --store <db>` is the CLI surface, mutually
+  exclusive with `--corpus`.
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and

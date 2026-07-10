@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Store-level fsck** (`fsck.py`, new; `store.py`, `cli.py`) — `tracefork
+  verify --store <db>` runs a read-only, git-fsck-style structural check over
+  a `TapeStore` database, distinct from replay-fidelity verification: every
+  tape must decode via the existing public `load_tape`, every branch under a
+  still-live parent must decode via `load_branch` (a decode error is a
+  per-row failure, never a crash — one bad row doesn't abort the scan of the
+  rest of the store), and every branch's `parent_run_id` must resolve to a
+  live tape — an orphaned-parent failure reported even when `load_branch`
+  alone would still succeed (e.g. after a parent tape row was force-deleted
+  with `foreign_keys=OFF`). `store.py` gains two small `TapeStore`-only read
+  helpers: `stored_digest` (gated on `PRAGMA table_info(tapes)`, so a future
+  `digest` column is an opportunistic stronger check, never a hard
+  dependency) and `all_branch_parents` (every `(branch_id, parent_run_id)`
+  pair regardless of parent liveness, since `list_branches` alone can't
+  surface an orphan). `--store` is mutually exclusive with the existing
+  `--corpus` option on `verify`. Read-only: never mutates the store, unlike
+  `prune()`.
+
 - **Boundary/provenance/redaction trust badge in report + CLI** (`report.py`,
   `cli.py`, `web/report.html`) — `Tape.boundary` and `Tape.content_redacted`
   were persisted but never surfaced, so a forensic-only or content-redacted

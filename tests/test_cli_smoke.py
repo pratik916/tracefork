@@ -114,6 +114,40 @@ def test_cli_verify_corpus_no_tapes_is_the_documented_nonzero_exit():
     assert "No tapes found" in result.output
 
 
+def test_cli_verify_store_healthy_exits_zero_and_prints_run_id(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    result = runner.invoke(app, ["verify", "--store", str(db)])
+    assert result.exit_code == 0, result.output
+    assert run_id in result.output
+    assert "FAIL" not in result.output
+
+
+def test_cli_verify_store_corrupted_row_is_nonzero_exit_and_names_run_id(tmp_path):
+    import sqlite3
+
+    db, run_id = _seeded_store(tmp_path)
+    con = sqlite3.connect(str(db))
+    con.execute("UPDATE tapes SET tape_bytes=? WHERE run_id=?", (b"\x00not-a-tape", run_id))
+    con.commit()
+    con.close()
+
+    result = runner.invoke(app, ["verify", "--store", str(db)])
+    assert result.exit_code == 1
+    assert run_id in result.output
+    assert "FAIL" in result.output
+
+
+def test_cli_verify_store_missing_db_is_nonzero_exit(tmp_path):
+    result = runner.invoke(app, ["verify", "--store", str(tmp_path / "nope.db")])
+    assert result.exit_code == 1
+
+
+def test_cli_verify_store_and_corpus_are_mutually_exclusive(tmp_path):
+    db, _ = _seeded_store(tmp_path)
+    result = runner.invoke(app, ["verify", "--store", str(db), "--corpus"])
+    assert result.exit_code == 1
+
+
 def test_cli_verify_receipt_includes_boundary_and_redaction_lines(tmp_path):
     """Same receipt lines as `replay` (tracefork-bge.20) — `_print_receipt` has
     exactly two call sites (replay, verify) and both must carry them."""
