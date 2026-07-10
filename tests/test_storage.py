@@ -329,6 +329,30 @@ def test_save_branch_persists_branch_digest_and_load_branch_returns_it(tmp_path)
         store.close()
 
 
+def test_list_branches_includes_branch_digest(tmp_path):
+    """`list_branches` (the no-`delta_tape`-fetch summary `report.py`'s
+    fork-tree panel embeds in static mode, see tracefork-bge.15) must carry
+    `branch_digest` alongside the pre-existing summary fields, so a branch
+    edge can be labeled without a full `load_branch` round trip."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=2,
+            delta_tape=_small_tape(b"branch"),
+            mutation_desc="test",
+            branch_digest="deadbeef",
+        )
+        summaries = store.list_branches(run_id)
+        matching = [b for b in summaries if b["branch_id"] == branch_id]
+        assert len(matching) == 1
+        assert matching[0]["branch_digest"] == "deadbeef"
+        assert matching[0]["divergence_step"] == 2
+    finally:
+        store.close()
+
+
 def test_save_branch_default_branch_digest_is_empty_string(tmp_path):
     """Existing callers that omit branch_digest keep working — default ''."""
     store = TapeStore(str(tmp_path / "store.db"))

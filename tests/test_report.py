@@ -283,3 +283,87 @@ def test_report_html_boundary_badge_wiring_present_for_forensic_boundary():
         data = _extract_data(content := out.read_text())
         assert data["boundary"] == PROXY_BOUNDARY
         assert "renderProvenanceBadges" in content
+
+
+# ── fork-tree panel data (tracefork-bge.15) ────────────────────────────────
+
+
+def test_tape_to_data_defaults_branches_to_empty_list():
+    """No `branches=` passed must still yield a falsy `[]`, the same neutral
+    empty-state pattern `replay={}` already establishes."""
+    tape = _make_tape()
+    data = _tape_to_data(tape)
+    assert data["branches"] == []
+
+
+def test_tape_to_data_includes_populated_branches_list():
+    """A populated `branches=` list (the shape `TapeStore.list_branches`
+    returns) round-trips into the data dict unchanged."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 3,
+            "mutation_desc": "swapped tool result",
+            "created_at": "2026-01-01T00:00:00",
+            "branch_digest": "abc123def456",
+        },
+        {
+            "branch_id": "b2",
+            "divergence_step": 0,
+            "mutation_desc": "swapped assistant text",
+            "created_at": "2026-01-02T00:00:00",
+            "branch_digest": "def456abc123",
+        },
+    ]
+    data = _tape_to_data(tape, branches=branches)
+    assert data["branches"] == branches
+
+
+def test_report_embeds_populated_branches_list():
+    """`generate_report`'s injected data blob carries the branches list end to
+    end, and the single-file template ships the fork-tree render wiring."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 0,
+            "mutation_desc": "mutated response",
+            "created_at": "2026-01-01T00:00:00",
+            "branch_digest": "abc123",
+        }
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branches=branches)
+        content = out.read_text()
+        data = _extract_data(content)
+        assert data["branches"] == branches
+        assert "renderForkTree" in content
+
+
+def test_report_escapes_script_breakout_in_branch_mutation_desc():
+    """A branch's `mutation_desc` containing `</script>` must not break out of
+    the inline script either — the same escaping that protects tape content
+    and replay diagnostics covers branch metadata too."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 0,
+            "mutation_desc": "</script><img src=x onerror=alert(1)>",
+            "created_at": "",
+            "branch_digest": "abc123",
+        }
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branches=branches)
+        content = out.read_text()
+        marker = "window.__TRACEFORK_DATA__ = "
+        start = content.find(marker)
+        end = content.find(";\n", start)
+        injected = content[start:end]
+        assert "</script" not in injected
+        data = _extract_data(content)
+        assert data["branches"][0]["mutation_desc"] == "</script><img src=x onerror=alert(1)>"

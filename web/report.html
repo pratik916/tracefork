@@ -16,7 +16,7 @@
   header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   header h1 { font-size: 15px; color: var(--green); }
   header .run-meta { color: var(--muted); font-size: 11px; }
-  .layout { display: grid; grid-template-columns: 280px 1fr 320px; height: calc(100vh - 45px); }
+  .layout { display: grid; grid-template-columns: 280px 1fr 320px 260px; height: calc(100vh - 45px); }
   .panel { border-right: 1px solid var(--border); overflow-y: auto; }
   .panel:last-child { border-right: none; }
   .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
@@ -91,6 +91,17 @@
   .diff-live { color: var(--green); }
   .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .trust-warn { color: var(--yellow); }
+
+  /* Panel 4 — Fork Tree (tracefork-bge.15) */
+  .forktree-empty { padding: 40px; color: var(--muted); text-align: center; }
+  .forktree-svg { display: block; margin: 12px auto; }
+  .forktree-node { fill: var(--blue); cursor: pointer; }
+  .forktree-node:hover { fill: var(--orange); }
+  .forktree-node.forktree-root { fill: var(--green); cursor: default; }
+  .forktree-edge { stroke: var(--border); stroke-width: 2; }
+  .forktree-label { fill: var(--text); font-size: 11px; font-family: ui-monospace, monospace; }
+  .forktree-root-label { fill: var(--green); }
+  .forktree-desc { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
 </style>
 </head>
 <body>
@@ -114,6 +125,10 @@
   <div class="panel" id="blame-panel">
     <div class="panel-header">Blame</div>
     <div id="blame-content"><div class="blame-empty">run tracefork blame to populate</div></div>
+  </div>
+  <div class="panel" id="forktree-panel">
+    <div class="panel-header">Fork Tree</div>
+    <div id="forktree-content"><div class="loading">loading…</div></div>
   </div>
 </div>
 
@@ -336,6 +351,78 @@ function syntaxHighlight(json) {
 
 function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// Same escaping as `escape()` plus `"` — required when the value lands inside
+// a double-quoted HTML attribute (e.g. `data-branch-id="..."`) rather than
+// text content, so a branch_id/digest containing a quote can't break out of
+// the attribute.
+function escapeAttr(s) { return escape(String(s)).replace(/"/g, '&quot;'); }
+
+// ── Panel 4 — Fork Tree (tracefork-bge.15) ──────────────────────────────────
+// Git-graph-style row layout: one row per branch, ranked by divergence_step,
+// each edging straight up to the root run. `branches` is the flat summary
+// `TapeStore.list_branches` returns (branch_id/divergence_step/mutation_desc/
+// created_at/branch_digest) -- a true DAG (parent_id + extra caused_by edges,
+// multi-level fork-of-fork chains) is future scope; this data shape is one
+// run's direct branches, so a single-level star is the honest rendering of
+// what's actually available today.
+function renderForkTree(data) {
+  const el = document.getElementById('forktree-content');
+  const branches = data.branches || [];
+  if (branches.length === 0) {
+    el.innerHTML = '<div class="forktree-empty">no forked branches</div>';
+    return;
+  }
+  const sorted = [...branches].sort((a, b) => (a.divergence_step ?? 0) - (b.divergence_step ?? 0));
+  const rowH = 48;
+  const width = 240;
+  const rootX = 26, rootY = 22;
+  const height = rootY + rowH * sorted.length + 24;
+  let svg = `<svg width="${width}" height="${height}" class="forktree-svg">`;
+  svg += `<circle cx="${rootX}" cy="${rootY}" r="6" class="forktree-node forktree-root"></circle>`;
+  svg += `<text x="${rootX + 14}" y="${rootY + 4}" class="forktree-label forktree-root-label">run</text>`;
+  sorted.forEach((b, i) => {
+    const y = rootY + rowH * (i + 1);
+    const digestShort = (b.branch_digest || '').slice(0, 8);
+    const step = b.divergence_step !== undefined && b.divergence_step !== null ? b.divergence_step : '?';
+    svg += `<line x1="${rootX}" y1="${rootY}" x2="${rootX}" y2="${y}" class="forktree-edge"></line>`;
+    svg += `<circle cx="${rootX}" cy="${y}" r="5" class="forktree-node" data-branch-id="${escapeAttr(b.branch_id)}"></circle>`;
+    svg += `<text x="${rootX + 14}" y="${y - 6}" class="forktree-label">step ${escape(String(step))}${digestShort ? ' · ' + escape(digestShort) : ''}</text>`;
+    svg += `<text x="${rootX + 14}" y="${y + 10}" class="forktree-desc">${escape(b.mutation_desc || '')}</text>`;
+  });
+  svg += '</svg>';
+  el.innerHTML = svg;
+  el.querySelectorAll('[data-branch-id]').forEach(node => {
+    node.addEventListener('click', () => onForkNodeClick(node.getAttribute('data-branch-id')));
+  });
+}
+
+function onForkNodeClick(branchId) {
+  const detailEl = document.getElementById('detail-content');
+  if (window.__TRACEFORK_SERVER_URL__ === undefined) {
+    // Static mode: no server to fetch the branch's delta tape from -- an
+    // honest 'live-mode-only' affordance rather than a silently-empty click.
+    detailEl.innerHTML = `<div class="detail-empty">branch ${escape(branchId)} — live-mode-only: open via 'tracefork serve' to inspect its delta tape</div>`;
+    return;
+  }
+  const url = window.__TRACEFORK_SERVER_URL__;
+  fetch(`${url}/api/branch/${branchId}`)
+    .then(resp => {
+      if (!resp.ok) throw new Error(`server ${resp.status}: branch not found`);
+      return resp.json();
+    })
+    .then(branch => {
+      detailEl.innerHTML = `<div class="detail-section">
+        <h3>Branch ${escape(branchId)}</h3>
+        <p>diverged at step ${escape(String(branch.divergence_step))}</p>
+        <p>${escape(branch.mutation_desc || '')}</p>
+        <p class="trust-flags">digest ${escape(branch.branch_digest || '')}</p>
+      </div>`;
+    })
+    .catch(e => {
+      detailEl.innerHTML = `<div class="error">${escape(e.message)}</div>`;
+    });
+}
+
 // ── boot ───────────────────────────────────────────────────────────────────
 (async () => {
   try {
@@ -346,6 +433,7 @@ function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
     renderBlame(DATA);
     renderReplayBadge(DATA);
     renderProvenanceBadges(DATA);
+    renderForkTree(DATA);
     if (DATA.exchanges.length > 0) selectExchange(0);
   } catch (e) {
     document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;

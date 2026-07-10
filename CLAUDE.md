@@ -386,12 +386,29 @@ The product lives in `src/tracefork/`:
   CLI surface (new command only; `report.py`/`server.py` untouched — a
   tournament result is a new artifact, not yet wired into the report UI).
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
-  three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
+  four-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).
   `server.py` also exposes an additive `GET /api/session/{session_id}`
   (`store.py`'s `sessions`/`spawn_edges`, mirroring `get_run`'s
   404-on-`KeyError` pattern) — explicitly out of scope for `report.html`'s
-  UI itself (tracefork-bge.12), a JSON-only surface for now.
+  UI itself (tracefork-bge.12), a JSON-only surface for now. The fourth
+  panel is a fork-tree view (tracefork-bge.15) built on the now-landed
+  `branch_digest`/DAG metadata (tracefork-bge.21) and `store.py`'s
+  already-persisted branch fields: `_tape_to_data`/`generate_report` gain an
+  optional `branches: list[dict] | None = None` parameter defaulting to `[]`
+  (the same falsy empty-state pattern `replay={}` already establishes);
+  `cli.py`'s `report` command threads `store.list_branches(run_id)` through
+  when loading via `run_id`, leaving `branches=None` (documented scope
+  limit, no store to query) on the `--tape` path; `server.py`'s `get_run`
+  adds `data["branches"] = store.list_branches(run_id)` additively.
+  `web/report.html`'s `renderForkTree` draws a git-graph-style row layout
+  (branches ranked by `divergence_step`, edge-labeled with `mutation_desc`/
+  `branch_digest`) as inline SVG — no new JS library, no CDN — following
+  `renderTimeline`'s existing vanilla-JS pattern; a live-mode node click
+  fetches `/api/branch/{id}`, a static report shows an honest
+  'live-mode-only' affordance instead. The panel renders one level (a run's
+  direct branches) — a full multi-level fork-of-fork DAG render is future
+  scope (see `store.py`'s `branches_forked_from`).
 - `wire.py` / `synthetic.py` — Anthropic wire-format builders and the offline
   Scripted/FaultAware fake transports, in the **package** so production never imports from
   `tests/`; `tests/fakes.py` re-exports them.

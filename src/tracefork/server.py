@@ -56,6 +56,11 @@ async def get_run(run_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found") from None
     data = _tape_to_data(tape)
     data["run_id"] = run_id
+    # Additive: the run's saved branches (tracefork-bge.15's fork-tree panel
+    # data) — `list_branches` is the no-`delta_tape`-fetch summary shape, so
+    # this costs no extra `load_branch` round trips. Existing `/api/run`
+    # consumers that ignore the new key are unaffected.
+    data["branches"] = store.list_branches(run_id)
     return JSONResponse(data)
 
 

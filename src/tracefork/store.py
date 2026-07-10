@@ -718,13 +718,26 @@ class TapeStore:
         return [r[0] for r in rows]
 
     def list_branches(self, parent_run_id: str) -> list[dict]:
+        """Summary rows for every branch of ``parent_run_id`` — ``branch_id``,
+        ``divergence_step``, ``mutation_desc``, ``created_at``, and
+        ``branch_digest`` — with no ``delta_tape`` decode, unlike
+        :meth:`load_branch`. This is the shape ``report.py``'s fork-tree panel
+        (tracefork-bge.15) embeds directly: enough to sort/label every branch
+        edge without a per-branch ``load_branch`` round trip.
+        """
         rows = self._con.execute(
-            """SELECT branch_id, divergence_step, mutation_desc, created_at
+            """SELECT branch_id, divergence_step, mutation_desc, created_at, branch_digest
                FROM branches WHERE parent_run_id=? ORDER BY created_at DESC""",
             (parent_run_id,),
         ).fetchall()
         return [
-            {"branch_id": r[0], "divergence_step": r[1], "mutation_desc": r[2], "created_at": r[3]}
+            {
+                "branch_id": r[0],
+                "divergence_step": r[1],
+                "mutation_desc": r[2],
+                "created_at": r[3],
+                "branch_digest": r[4],
+            }
             for r in rows
         ]
 

@@ -403,6 +403,55 @@ def test_cli_report_terminal_echo_includes_boundary_and_redaction_lines(tmp_path
     assert "content_redacted" in result.output
 
 
+def test_cli_report_with_run_id_embeds_saved_branches(tmp_path):
+    """`report <run_id>` (loaded from the store) must thread the run's
+    saved branches into the generated report (tracefork-bge.15's fork-tree
+    panel data) -- two branches here to prove the whole list round-trips,
+    not just a single row."""
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    parent_tape = store.load_tape(run_id)
+    store.save_branch(
+        parent_run_id=run_id,
+        divergence_step=0,
+        delta_tape=parent_tape,
+        mutation_desc="first mutation",
+    )
+    store.save_branch(
+        parent_run_id=run_id,
+        divergence_step=1,
+        delta_tape=parent_tape,
+        mutation_desc="second mutation",
+    )
+    store.close()
+
+    out = tmp_path / "report.html"
+    result = runner.invoke(app, ["report", run_id, "--store", str(db), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    assert len(data["branches"]) == 2
+    mutation_descs = {b["mutation_desc"] for b in data["branches"]}
+    assert mutation_descs == {"first mutation", "second mutation"}
+
+
+def test_cli_report_with_tape_path_leaves_branches_empty(tmp_path):
+    """`report --tape <path>` has no store to look branches up in -- an
+    honest, documented scope limit (see report command's docstring), not a
+    silent stand-in for a populated list."""
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    tape = store.load_tape(run_id)
+    tape_path = tmp_path / "run.tape.sqlite"
+    tape.save(str(tape_path))
+    store.close()
+
+    out = tmp_path / "report.html"
+    result = runner.invoke(app, ["report", "--tape", str(tape_path), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    assert data["branches"] == []
+
+
 # ── serve ────────────────────────────────────────────────────────────────
 
 
@@ -517,6 +566,38 @@ def test_server_get_branch_maps_fork_point_drift_to_409(tmp_path):
 
     resp = client.get(f"/api/branch/{branch_id}")
     assert resp.status_code == 409
+
+
+def test_server_get_run_includes_branches(tmp_path):
+    """`/api/run/{run_id}` must additively surface the run's saved branches
+    (tracefork-bge.15's fork-tree panel data) alongside the existing
+    exchange/blame/replay fields -- pre-existing `/api/run` consumers that
+    ignore the new key are unaffected."""
+    from fastapi.testclient import TestClient
+
+    from tracefork.server import app as fastapi_app
+    from tracefork.server import init_store
+
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    parent_tape = store.load_tape(run_id)
+    branch_id = store.save_branch(
+        parent_run_id=run_id,
+        divergence_step=0,
+        delta_tape=parent_tape,
+        mutation_desc="swapped response",
+    )
+    store.close()
+
+    init_store(str(db))
+    client = TestClient(fastapi_app)
+
+    resp = client.get(f"/api/run/{run_id}")
+    assert resp.status_code == 200
+    branches = resp.json()["branches"]
+    assert len(branches) == 1
+    assert branches[0]["branch_id"] == branch_id
+    assert branches[0]["mutation_desc"] == "swapped response"
 
 
 # ── blame (offline pre-flight gate only — see module docstring) ───────────

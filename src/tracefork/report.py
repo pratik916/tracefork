@@ -31,7 +31,12 @@ def _template_path() -> Path:
     raise FileNotFoundError("web/report.html not found (looked in the package and the repo root)")
 
 
-def _tape_to_data(tape, blame: dict | None = None, replay: dict | None = None) -> dict:
+def _tape_to_data(
+    tape,
+    blame: dict | None = None,
+    replay: dict | None = None,
+    branches: list[dict] | None = None,
+) -> dict:
     """Convert a Tape to the JSON shape expected by the web UI."""
     adapter = get_adapter("anthropic")
     exchanges = []
@@ -102,6 +107,12 @@ def _tape_to_data(tape, blame: dict | None = None, replay: dict | None = None) -
         # `renderProvenanceBadges`).
         "boundary": tape.boundary,
         "content_redacted": tape.content_redacted,
+        # Fork-tree panel data (see `store.list_branches`) — the run's
+        # branch summaries (branch_id/divergence_step/mutation_desc/
+        # created_at/branch_digest), no `delta_tape` fetch needed to render
+        # the tree. `[]` (falsy) when none were passed, the same neutral
+        # empty-state pattern `replay={}` already establishes.
+        "branches": branches or [],
     }
 
 
@@ -127,6 +138,7 @@ def generate_report(
     *,
     blame: dict | None = None,
     replay: dict | None = None,
+    branches: list[dict] | None = None,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
@@ -134,9 +146,13 @@ def generate_report(
     `replay` (optional) is the JSON-safe dict from
     `tracefork.replay.verification_result_to_dict` — a bit-exactness receipt
     plus a structured divergence diagnostic when the replay drifted.
+    `branches` (optional) is the run's branch summaries — the shape
+    `tracefork.store.TapeStore.list_branches` returns — rendered as the
+    fork-tree panel; `None`/omitted embeds an empty list (see
+    `web/report.html`'s `renderForkTree`).
     """
     html = _template_path().read_text()
-    data = _tape_to_data(tape, blame, replay)
+    data = _tape_to_data(tape, blame, replay, branches)
     inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)

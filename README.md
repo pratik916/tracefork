@@ -201,7 +201,10 @@ is the contract between them.
   fault-aware tail and flips the outcome — letting the blame engine be scored against
   ground truth entirely offline.
 - **`report.py` / `server.py` / `web/report.html`** — a single, dependency-free HTML file
-  (vanilla JS, no npm) rendered statically by `report` or served live by `serve`.
+  (vanilla JS, no npm) rendered statically by `report` or served live by `serve`; a
+  fourth panel renders the run's fork tree (branches ranked by divergence step,
+  edge-labeled with each branch's mutation and content-addressed digest), live-clickable
+  to fetch `/api/branch/{id}` when served, metadata-only in a static report.
 - **`interop.py`** — `gen_ai.*`/OpenInference export (`export`) and ingest (`ingest`); see
   [OTel / OpenInference interop](#otel--openinference-interop-opt-in) for the precise,
   blame-only-not-bit-exact scope of the ingest direction.
@@ -576,7 +579,7 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     proxy (opt-in localhost base-URL record/replay proxy for non-Python clients),
                     providers/ (anthropic, openai, gemini, bedrock adapters)
 src/tracefork_spike/  the original bit-exact record/replay spike
-web/report.html     the single-file three-panel UI
+web/report.html     the single-file four-panel UI (timeline, detail, blame, fork tree)
 examples/           runnable demo that produces the report above
 tests/              616 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`

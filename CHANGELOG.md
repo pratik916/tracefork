@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fork-tree panel in the report UI** (`report.py`, `cli.py`, `server.py`,
+  `web/report.html`) — a fourth panel renders a run's saved branches as a
+  git-graph-style row layout (inline SVG, no new JS library/CDN), ranked by
+  `divergence_step` and edge-labeled with each branch's `mutation_desc` and
+  content-addressed `branch_digest` (`tracefork-bge.21`). `_tape_to_data`/
+  `generate_report` gain an optional `branches: list[dict] | None = None`
+  parameter defaulting to `[]` (the same falsy empty-state pattern
+  `replay={}` already establishes); `cli.py`'s `report` command threads
+  `TapeStore.list_branches(run_id)` through when loading via `run_id` (the
+  `--tape` path has no store to query — a documented scope limit, not a
+  silently-empty stand-in); `server.py`'s `GET /api/run/{run_id}` gains an
+  additive `branches` key. `TapeStore.list_branches` now also returns
+  `branch_digest`. A live-mode node click fetches the existing
+  `/api/branch/{id}`; a static report shows an honest 'live-mode-only'
+  affordance instead of a dead click. Renders one level (a run's direct
+  branches) — a full multi-level fork-of-fork DAG render is future scope.
+
 - **DAG-aware (async-batch) Shapley estimator** (`blame.py`,
   `competing_faults.py`, `bench.py`) — `shapley_rank`/`BudgetGovernor.estimate`
   gain an optional `async_batches: list[list[int]] | None = None` parameter

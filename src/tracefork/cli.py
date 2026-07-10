@@ -411,12 +411,20 @@ def report(
         "per-step trust flags (divergence rate, UNDEFINED trial counts) in the report",
     ),
 ) -> None:
-    """Generate a self-contained HTML report from a tape."""
+    """Generate a self-contained HTML report from a tape.
+
+    When loaded via `run_id` (from `store`), the run's saved branches are
+    looked up and embedded as the report's fork-tree panel data
+    (tracefork-bge.15). The `--tape` path has no store to look branches up
+    in — an honest, documented scope limit: those reports render an empty
+    fork tree rather than a silently-populated one.
+    """
     import json as _json
 
     from tracefork.report import generate_report
     from tracefork.tape import Tape
 
+    branches: list[dict] | None = None
     if tape_path:
         tape = Tape.load(str(tape_path))
     elif run_id:
@@ -424,6 +432,7 @@ def report(
 
         db = TapeStore(str(store))
         tape = db.load_tape(run_id)
+        branches = db.list_branches(run_id)
     else:
         typer.echo("Provide a run_id or --tape path")
         raise typer.Exit(1)
@@ -444,7 +453,7 @@ def report(
         blame_data = _json.loads(blame_report.read_text())
         blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
 
-    generate_report(tape, output, blame=blame_dict, replay=replay_data)
+    generate_report(tape, output, blame=blame_dict, replay=replay_data, branches=branches)
     typer.echo(f"Report written to {output}")
     _print_trust_lines(tape)
 
