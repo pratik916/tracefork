@@ -144,6 +144,7 @@ uv run tracefork --help
 | `replay  --check <fixtures dir>` | Replay-as-regression gate: assert every fixture in a committed tape corpus replays bit-exact and its `digest()` matches. |
 | `verify  <tape> --agent pkg.mod:fn` | Verify replay; exit non-zero on drift (CI gate). |
 | `fork    <run_id> --step N --response f --agent pkg.mod:fn` | Fork a run at step N with a mutated response; record the counterfactual branch. |
+| `coalition-fork <run_id> --intervene N:f [--intervene M:g ...] --agent pkg.mod:fn` | Fork a run at a SET of steps forced jointly (`do(S)`) — the public what-if DSL over the already-tested `CoalitionSpec`/`fork_coalition`. |
 | `blame   <run_id> --agent pkg.mod:fn [--k 10] [--budget 5.0]` | Rank every step by causal flip-rate with 95% CIs (re-runs the agent; budget-capped). |
 | `report  <run_id> \| --tape <tape> -o out.html` | Render the self-contained three-panel HTML report. |
 | `serve   [--store store.db] [--port 7777]` | Serve the live web UI (same-origin, 127.0.0.1). |

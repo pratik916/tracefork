@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tracefork coalition-fork`: coalition-forking as a public what-if CLI DSL**
+  (`cli.py`, new command; zero new engine code) — promotes the already-tested
+  `CoalitionSpec`/`ForkEngine.fork_coalition` to a documented CLI surface: a
+  repeatable `--intervene step:response_file` pins one intervention locus per
+  flag, jointly forced in a single pass (the coalition/Shapley `do(S)`
+  primitive's pinned-locus + same-policy-resampling guarantee, vs. a naive
+  "fork anywhere and diff"). Persists through the existing
+  `TapeStore.save_branch` unchanged — no schema change — by JSON-encoding the
+  coalition's step list and description into the existing free-text
+  `mutation_desc` column. Malformed `--intervene` syntax, an out-of-range
+  step, or duplicate step indices (`CoalitionSpec.__post_init__`'s existing
+  `ValueError`) all surface as a clean `typer.BadParameter`, never a raw
+  traceback. The existing single-step `fork` command is untouched.
+
 - **Tournament API: rank N candidate continuations at one fixed step**
   (`tournament.py`, new) — `TournamentEngine.run()` forks each `Variant` `k`
   times at the same `step_index` (best-of-N argmax, but statistically

@@ -191,6 +191,162 @@ def test_cli_fork_at_last_step_is_offline_and_exits_zero(tmp_path):
     assert "Fork created" in result.output
 
 
+# ── coalition-fork ───────────────────────────────────────────────────────
+
+
+def test_cli_coalition_fork_two_steps_is_offline_and_exits_zero(tmp_path):
+    """Coalition-fork BOTH exchanges of the 2-exchange seeded tape (steps 0
+    and 1 — the tape's last step): fully offline like the classic-fork test
+    above, and the saved branch's `intervened_steps` (round-tripped through
+    `mutation_desc`) covers both intervened steps."""
+    db, run_id = _seeded_store(tmp_path)
+    resp0 = tmp_path / "mutated0.bytes"
+    resp0.write_bytes(make_text_response("intervened turn 1"))
+    resp1 = tmp_path / "mutated1.bytes"
+    resp1.write_bytes(make_text_response("FAIL — intervened turn 2"))
+
+    result = runner.invoke(
+        app,
+        [
+            "coalition-fork",
+            run_id,
+            "--intervene",
+            f"0:{resp0}",
+            "--intervene",
+            f"1:{resp1}",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db),
+            "--desc",
+            "joint what-if",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Coalition fork created" in result.output
+
+    store = TapeStore(str(db))
+    branches = store.list_branches(run_id)
+    assert len(branches) == 1
+    loaded = store.load_branch(branches[0]["branch_id"])
+    mutation_desc = json.loads(loaded["mutation_desc"])
+    assert mutation_desc["coalition_steps"] == [0, 1]
+    assert mutation_desc["desc"] == "joint what-if"
+    store.close()
+
+
+def test_cli_coalition_fork_mutation_desc_round_trips_through_save_load(tmp_path):
+    """`mutation_desc`'s JSON encoding survives a full save_branch/load_branch
+    round trip byte-for-byte (not just structurally)."""
+    db, run_id = _seeded_store(tmp_path)
+    resp0 = tmp_path / "mutated0.bytes"
+    resp0.write_bytes(make_text_response("intervened turn 1"))
+    resp1 = tmp_path / "mutated1.bytes"
+    resp1.write_bytes(make_text_response("intervened turn 2"))
+
+    result = runner.invoke(
+        app,
+        [
+            "coalition-fork",
+            run_id,
+            "--intervene",
+            f"0:{resp0}",
+            "--intervene",
+            f"1:{resp1}",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    store = TapeStore(str(db))
+    branches = store.list_branches(run_id)
+    branch_id = branches[0]["branch_id"]
+    first_load = store.load_branch(branch_id)["mutation_desc"]
+    second_load = store.load_branch(branch_id)["mutation_desc"]
+    assert first_load == second_load
+    assert json.loads(first_load)["coalition_steps"] == [0, 1]
+    store.close()
+
+
+def test_cli_coalition_fork_bad_syntax_intervene_is_a_clean_error(tmp_path):
+    """A malformed `--intervene` (missing ':') surfaces a clean usage error,
+    never a raw traceback."""
+    db, run_id = _seeded_store(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "coalition-fork",
+            run_id,
+            "--intervene",
+            "not-a-valid-spec",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_cli_coalition_fork_duplicate_steps_is_a_clean_error(tmp_path):
+    """Duplicate step indices across `--intervene` flags surface a clean
+    usage error (`CoalitionSpec.__post_init__`'s ValueError, translated),
+    never a raw traceback."""
+    db, run_id = _seeded_store(tmp_path)
+    resp0 = tmp_path / "mutated0.bytes"
+    resp0.write_bytes(make_text_response("first"))
+    resp1 = tmp_path / "mutated1.bytes"
+    resp1.write_bytes(make_text_response("second"))
+
+    result = runner.invoke(
+        app,
+        [
+            "coalition-fork",
+            run_id,
+            "--intervene",
+            f"0:{resp0}",
+            "--intervene",
+            f"0:{resp1}",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_cli_coalition_fork_out_of_range_step_is_a_clean_error(tmp_path):
+    """A step index beyond the tape's exchange count surfaces a clean usage
+    error (`ForkEngine.fork_coalition`'s ValueError, translated), never a raw
+    traceback."""
+    db, run_id = _seeded_store(tmp_path)
+    resp = tmp_path / "mutated.bytes"
+    resp.write_bytes(make_text_response("out of range"))
+
+    result = runner.invoke(
+        app,
+        [
+            "coalition-fork",
+            run_id,
+            "--intervene",
+            f"99:{resp}",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
 # ── report ───────────────────────────────────────────────────────────────
 
 

@@ -2,8 +2,9 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, tournament, validate,
-bench, export, ingest, prune, proxy, coverage, bundle-export, bundle-import.
+Commands: replay, verify, fork, coalition-fork, report, serve, blame,
+tournament, validate, bench, export, ingest, prune, proxy, coverage,
+bundle-export, bundle-import.
 """
 
 from __future__ import annotations
@@ -218,6 +219,99 @@ def fork(
     typer.echo(f"  divergence_step {step}")
     typer.echo(f"  delta_exchanges {len(branch.delta_tape.exchanges)}")
     typer.echo(f"  description     {desc or '(none)'}\n")
+
+
+@app.command()
+def coalition_fork(
+    run_id: str = typer.Argument(..., help="Parent run_id to coalition-fork from"),
+    intervene: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--intervene",
+        help="A 'step:response_file' intervention, repeatable (>=1 required) -- "
+        "every step is forced to its response_file's bytes JOINTLY with every "
+        "other --intervene (the coalition/Shapley do(S) primitive)",
+    ),
+    agent: str = typer.Option(..., "--agent", "-a", help="Import path of post-fork agent fn"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    desc: str = typer.Option("", "--desc", "-d", help="Human description of the coalition"),
+) -> None:
+    """Fork a run at a SET of steps forced jointly, record the new branch.
+
+    Generalizes `fork` (one divergence step) to a public what-if DSL: each
+    `--intervene step:response_file` pins one intervention locus; every
+    locus is resampled under the same forced-response policy in a single
+    joint pass. Only the coalition's first (lowest-index) intervention is
+    request-matched against the parent tape -- the genuine point of first
+    divergence; every later intervention is forced unconditionally, since
+    the agent's requests have already diverged by then. This pinned-locus +
+    same-policy-resampling discipline is what a coalition/Shapley blame
+    computation needs from its intervention primitive -- distinct from a
+    naive "fork anywhere and diff", where the intervention point and the
+    resampling policy are both ad hoc.
+    """
+    import importlib
+    import json
+
+    from tracefork.fork import CoalitionSpec, ForkEngine, StepIntervention
+    from tracefork.store import TapeStore
+
+    interventions = []
+    for spec in intervene:
+        step_str, sep, response_path = spec.partition(":")
+        if not sep or not step_str or not response_path:
+            raise typer.BadParameter(f"--intervene must be 'step:response_file', got {spec!r}")
+        try:
+            step = int(step_str)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--intervene step must be an integer, got {step_str!r}"
+            ) from exc
+        response_file = Path(response_path)
+        if not response_file.is_file():
+            raise typer.BadParameter(f"--intervene response file not found: {response_path!r}")
+        interventions.append(
+            StepIntervention(step=step, mutated_response=response_file.read_bytes())
+        )
+
+    try:
+        spec_obj = CoalitionSpec(interventions=tuple(interventions), mutation_desc=desc)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    db = TapeStore(str(store))
+    parent_tape = db.load_tape(run_id)
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    mod = importlib.import_module(module_path)
+    agent_fn = getattr(mod, fn_name)
+
+    try:
+        branch = ForkEngine.fork_coalition(parent_tape, spec_obj, agent_fn)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    # Coalition step list + description round-trip through the existing
+    # free-text `mutation_desc` column (no store.py schema change) -- see
+    # `store.py`'s `save_branch`/`load_branch`.
+    mutation_desc_json = json.dumps(
+        {"coalition_steps": list(branch.intervened_steps), "desc": desc}
+    )
+
+    branch_id = db.save_branch(
+        parent_run_id=run_id,
+        divergence_step=branch.divergence_step,
+        delta_tape=branch.delta_tape,
+        mutation_desc=mutation_desc_json,
+    )
+
+    typer.echo("\n  Coalition fork created")
+    typer.echo(f"  branch_id        {branch_id}")
+    typer.echo(f"  parent_run_id    {run_id}")
+    typer.echo(f"  intervened_steps {list(branch.intervened_steps)}")
+    typer.echo(f"  delta_exchanges  {len(branch.delta_tape.exchanges)}")
+    typer.echo(f"  description      {desc or '(none)'}\n")
 
 
 @app.command()
