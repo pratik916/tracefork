@@ -415,6 +415,29 @@ synthetic stand-in mimicking the framework's interface (never a live call) in th
 offline test suite; the thin real subclasses are only reachable — and only
 smoke-tested — when the framework is actually installed (`pytest.importorskip`).
 
+## Plugin / extension API (opt-in)
+
+Every pluggable seam in tracefork — provider adapters, blame oracles, tape
+serializers, request matchers, and the framework adapters above — is backed
+by one generic mechanism: `tracefork.plugins.Registry`, a dict-backed
+registry plus an opt-in `importlib.metadata` entry-point loader, so a
+third-party package can ship (say) a custom request matcher or a Bedrock
+provider adapter without forking tracefork.
+
+**Nothing loads automatically.** A package on `sys.path` advertising a
+`tracefork.matchers` (or `.providers`/`.oracles`/`.serializers`/`.adapters`)
+entry point does nothing until a caller explicitly allowlists it via
+`Registry.load_entry_points(allow={...})`/`allow_all=True`, or an operator
+sets the `TRACEFORK_ALLOW_PLUGINS` environment variable. Merely installing a
+dependency is never enough, by itself, to inject code into tracefork's
+record/replay/fork/blame path.
+
+Full contract — the five groups, each protocol, the security model, and a
+stability policy for what's public API versus internal — is documented in
+[`docs/plugin-api.md`](docs/plugin-api.md); `examples/plugin_example/` is a
+complete, standalone example package (its own `pyproject.toml`, its own
+declared entry point) implementing a custom `RequestMatcher` end to end.
+
 ## AWS Bedrock (opt-in)
 
 Bedrock is the outlier provider: `boto3`/`botocore` never touch httpx, so the transport

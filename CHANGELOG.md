@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Public plugin/extension API docs + stability policy**
+  (`docs/plugin-api.md`, `examples/plugin_example/`) — the entry-point
+  plugin registry behind provider adapters, blame oracles, tape serializers,
+  request matchers, and framework adapters (`plugins.py`'s `Registry`) has
+  worked and been tested since it landed, but was documented only in that
+  module's docstring. `docs/plugin-api.md` makes it a citable public API:
+  the five groups and their protocols, the security model verbatim (nothing
+  auto-loads; explicit `allow=`/`allow_all=`/`TRACEFORK_ALLOW_PLUGINS`
+  opt-in required), and a stability policy (`Registry` + the group constants
+  are public/SemVer-covered API; built-in registrations are internal).
+  `examples/plugin_example/` is a complete, standalone third-party package
+  (its own `pyproject.toml` declaring a `tracefork.matchers` entry point)
+  implementing `NonceStrippingMatcher`, a `RequestMatcher` that genuinely
+  satisfies the `stored_fingerprint(stored_request(R)) ==
+  live_fingerprint(R)` round-trip invariant. README gets a linking "Plugin /
+  extension API" section. Zero engine-code diff under `src/tracefork` — docs
+  and one example package only.
+
 ### Fixed
 
 - **`verify --corpus` is now a real fixture-corpus regression gate**

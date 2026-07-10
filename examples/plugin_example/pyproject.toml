@@ -1,0 +1,24 @@
+[project]
+name = "tracefork-plugin-example"
+version = "0.1.0"
+description = "Example third-party tracefork RequestMatcher plugin (see tracefork's docs/plugin-api.md)."
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.27"]
+readme = "README.md"
+
+# The extension point tracefork's `Registry.load_entry_points()` discovers.
+# Group name matches `tracefork.plugins.MATCHER_GROUP`. Installing this
+# package does NOT, by itself, register the matcher with tracefork — see
+# ../../docs/plugin-api.md's security model: the caller/operator must still
+# explicitly allowlist `example_nonce_stripping` via
+# `Registry.load_entry_points(allow=...)`/`allow_all=True` or the
+# `TRACEFORK_ALLOW_PLUGINS` environment variable.
+[project.entry-points."tracefork.matchers"]
+example_nonce_stripping = "plugin_example.matcher:NonceStrippingMatcher"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["plugin_example*"]
