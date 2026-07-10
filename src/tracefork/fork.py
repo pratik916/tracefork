@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 import anthropic
 import httpx
 
+from .boundary_guard import BoundaryGuard
 from .nondet import DivergenceError
 from .observability import instrument
 from .tape import Tape, sha256_hex
@@ -279,6 +280,7 @@ class ForkEngine:
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
+        boundary_guard: bool = False,
     ) -> Branch:
         """Fork `parent_tape` at `spec.divergence_step`.
 
@@ -287,6 +289,12 @@ class ForkEngine:
         response at the divergence step swapped for `spec.mutated_response`,
         and the counterfactual tail recorded via `post_fork_transport` (or the
         real Anthropic API if None).
+
+        `boundary_guard` (default `False`, byte-identical to before when left
+        off) wraps *only* the `agent_fn(client)` call in a fresh `BoundaryGuard`
+        (see `boundary_guard.py`) — confining the re-executed agent's own
+        tool-call/thread/random/subprocess surface for this fork, without
+        touching the prefix-replay/mutation-injection transport logic above.
 
         Returns a `Branch` whose `delta_tape` holds only the exchanges from the
         divergence step onward.
@@ -308,7 +316,11 @@ class ForkEngine:
             http_client=httpx.Client(transport=fork_transport),
             max_retries=0,
         )
-        agent_fn(client)
+        if boundary_guard:
+            with BoundaryGuard():
+                agent_fn(client)
+        else:
+            agent_fn(client)
 
         return Branch(
             parent_tape=parent_tape,
@@ -329,6 +341,7 @@ class ForkEngine:
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
+        boundary_guard: bool = False,
     ) -> Branch:
         """Fork `parent_tape` at a coalition of steps, forcing each to its own response.
 
@@ -339,6 +352,10 @@ class ForkEngine:
         `post_fork_transport` (or the real Anthropic API if `None`).
         `Branch.divergence_step` is the coalition's first step;
         `Branch.intervened_steps` holds the full coalition.
+
+        `boundary_guard` (default `False`, byte-identical to before when left
+        off) wraps *only* the `agent_fn(client)` call in a fresh `BoundaryGuard`,
+        same as `fork()`.
         """
         n = len(parent_tape.exchanges)
         for step in spec.steps:
@@ -357,7 +374,11 @@ class ForkEngine:
             http_client=httpx.Client(transport=fork_transport),
             max_retries=0,
         )
-        agent_fn(client)
+        if boundary_guard:
+            with BoundaryGuard():
+                agent_fn(client)
+        else:
+            agent_fn(client)
 
         return Branch(
             parent_tape=parent_tape,

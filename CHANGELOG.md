@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Confined fork/blame execution via `boundary_guard=` on `ForkEngine`/
+  `BlameEngine`** (`fork.py`, `blame.py`) — `ForkEngine.fork()` and
+  `fork_coalition()` gain an opt-in `boundary_guard: bool = False` kwarg that
+  wraps *only* the re-executed `agent_fn(client)` call in a fresh
+  `BoundaryGuard` (see `boundary_guard.py`), confining that one trial's own
+  tool-call/thread/random/subprocess surface without touching the
+  prefix-replay/mutation-injection transport logic. `BlameEngine.rank()` and
+  `shapley_rank()` thread the same flag down through `_run_trial()`/
+  `_run_coalition_trials()` — including `shapley_rank()`'s internal
+  sufficiency pass (a `rank()` call sharing the same `agent_fn`) — into every
+  `ForkEngine` call they issue. A trial that trips the guard is caught by the
+  existing broad exception handling and counted `UNDEFINED`, never a silent
+  `NO_FLIP`. Default `False` leaves every existing call byte-identical;
+  `cli.py`'s `fork` command and `faults.py`/`validate.py`/
+  `competing_faults.py`/`bench.py` pass no kwarg and are unaffected.
+
 - **Typed `ReplayCertificate` / proof envelope** (new `certificate.py`) — a
   frozen dataclass whose `strength` (`UNVERIFIED` / `HASH_MATCHED` /
   `BIT_EXACT_FULL_REPLAY`) is checked against its own `matched`/`total`/

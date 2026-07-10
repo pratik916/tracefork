@@ -6,10 +6,15 @@ an early step changes the downstream request bytes — exactly the counterfactua
 behaviour a fork must capture.
 """
 
+import random
+import threading
+
 import anthropic
 import httpx
+import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
+from tracefork.boundary_guard import BoundaryViolationError
 from tracefork.fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from tracefork.nondet import find_divergence
 from tracefork.tape import Tape
@@ -311,3 +316,76 @@ def test_fork_coalition_out_of_range_step_raises():
         raise AssertionError("expected ValueError")
     except ValueError as e:
         assert "out of range" in str(e)
+
+
+# ── boundary_guard confinement (tracefork-bge.1) ────────────────────────────
+
+
+def _thread_spawning_agent(client: anthropic.Anthropic) -> str:
+    """Spawns a thread before doing anything else — a boundary violation."""
+    threading.Thread(target=lambda: None).start()
+    return _conversation_agent(client)
+
+
+def _random_calling_agent(client: anthropic.Anthropic) -> str:
+    """Reads `random.random()` directly, bypassing NondetSource — a violation."""
+    random.random()
+    return _three_turn_agent(client)
+
+
+def test_fork_boundary_guard_true_raises_on_thread_spawn():
+    """boundary_guard=True must trip on a thread spawned anywhere inside
+    agent_fn (here, before the prefix is even replayed)."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    with pytest.raises(BoundaryViolationError, match="Thread"):
+        ForkEngine.fork(
+            parent_tape,
+            spec,
+            _thread_spawning_agent,
+            post_fork_transport=ScriptedFakeLLM([]),
+            boundary_guard=True,
+        )
+
+
+def test_fork_boundary_guard_false_default_does_not_raise_on_thread_spawn():
+    """Default off: the exact same violating agent must NOT raise — zero
+    behavior change unless a caller explicitly opts in."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _thread_spawning_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    assert branch.divergence_step == 1
+
+
+def test_fork_coalition_boundary_guard_true_raises_on_random_call():
+    """boundary_guard=True on fork_coalition must trip on a direct
+    random.random() call by the agent."""
+    parent_tape = _build_three_turn_tape()
+    spec = CoalitionSpec(interventions=(StepIntervention(0, RESP_B),))
+
+    with pytest.raises(BoundaryViolationError, match="random"):
+        ForkEngine.fork_coalition(
+            parent_tape,
+            spec,
+            _random_calling_agent,
+            post_fork_transport=ScriptedFakeLLM([RESP_C, RESP_E]),
+            boundary_guard=True,
+        )
+
+
+def test_fork_coalition_boundary_guard_false_default_does_not_raise_on_random_call():
+    """Default off for fork_coalition: same violating agent, no exception."""
+    parent_tape = _build_three_turn_tape()
+    spec = CoalitionSpec(interventions=(StepIntervention(0, RESP_B),))
+
+    branch = ForkEngine.fork_coalition(
+        parent_tape,
+        spec,
+        _random_calling_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_C, RESP_E]),
+    )
+    assert branch.divergence_step == 0

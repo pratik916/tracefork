@@ -182,10 +182,16 @@ is the contract between them.
   parent tape for $0, request asserted to match — the agent must be deterministic up to
   the fork point), **mutation-injection** (same request, swapped response), and
   **tail-record** (the counterfactual continuation recorded fresh). A `Branch` carries
-  `prefix_replayed`/`tail_recorded` counters that quantify the savings.
+  `prefix_replayed`/`tail_recorded` counters that quantify the savings. `ForkEngine.fork()`/
+  `fork_coalition()` take an opt-in `boundary_guard=` (default `False`) that wraps just the
+  re-executed `agent_fn(client)` call in a fresh `BoundaryGuard`, confining that fork trial's
+  own tool-call/thread/random/subprocess surface.
 - **`blame.py`** — forks each step `k` times, re-runs the agent, grades the outcome via an
   `Oracle`, and counts flips vs. the parent outcome. `wilson_ci()` gives the interval;
-  `BudgetGovernor` estimates fork count and dollar cost before any spend.
+  `BudgetGovernor` estimates fork count and dollar cost before any spend. `rank()`/
+  `shapley_rank()` forward the same `boundary_guard=` flag into every fork they issue (including
+  `shapley_rank()`'s internal sufficiency pass); a trial that trips the guard is counted
+  `UNDEFINED`, never a silent non-flip.
 - **`faults.py` / `validate.py`** — five fault classes, each producing *valid* Anthropic
   JSON with a marker embedded inside a content field. A synthetic agent echoes each
   response into its next request, so an injected fault propagates through a fork to a

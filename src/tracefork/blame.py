@@ -578,6 +578,7 @@ class BlameEngine:
         null_flip_rate: float = 0.05,
         fdr_q: float = 0.10,
         min_valid_fraction: float = 0.5,
+        boundary_guard: bool = False,
     ) -> BlameReport:
         """Fork each exchange `k` times with a perturbed response and measure how
         often the graded outcome flips relative to the parent run.
@@ -592,6 +593,13 @@ class BlameEngine:
         backend and level. The FDR-controlled responsible set is chosen by a
         one-sided binomial test of each step's flip-rate against
         ``null_flip_rate`` at false-discovery-rate ``fdr_q``.
+
+        `boundary_guard` (default `False`, byte-identical to before when left
+        off) is forwarded to every `ForkEngine.fork()` trial call — confining
+        each re-executed agent trial's own tool-call/thread/random/subprocess
+        surface (see `boundary_guard.py`). A trial that trips the guard raises
+        and is counted UNDEFINED by `_run_trial`'s existing exception handling,
+        never a silent NO_FLIP.
         """
         est = BudgetGovernor.estimate(tape, k=k)
         if est.est_usd > budget_usd:
@@ -612,7 +620,14 @@ class BlameEngine:
             tally = _StepTally()
             for _trial in range(k):
                 outcome, diverged = BlameEngine._run_trial(
-                    tape, step_idx, perturb_factory, agent_fn, oracle, parent_outcome, api_key
+                    tape,
+                    step_idx,
+                    perturb_factory,
+                    agent_fn,
+                    oracle,
+                    parent_outcome,
+                    api_key,
+                    boundary_guard,
                 )
                 total_forks += 1
                 if outcome is TrialOutcome.FLIP:
@@ -679,13 +694,18 @@ class BlameEngine:
         oracle: Oracle,
         parent_outcome: bool | None,
         api_key: str,
+        boundary_guard: bool = False,
     ) -> tuple[TrialOutcome, bool]:
         """Run one fork trial; return ``(outcome, diverged)``.
 
         A diverged or errored fork is UNDEFINED (not a silent non-flip); the
         caller counts it. ``diverged`` is True only when the failure is a genuine
         `DivergenceError` (recovered from the SDK's exception wrapping), so the
-        per-step divergence rate is surfaced rather than swallowed.
+        per-step divergence rate is surfaced rather than swallowed. A
+        `BoundaryViolationError` (raised only when `boundary_guard=True`) is
+        caught by the same broad ``except Exception`` below and counted
+        UNDEFINED — never a silent NO_FLIP — but is not itself a `DivergenceError`,
+        so ``diverged`` stays False for it.
         """
         mutated_resp, tail_transport_obj = perturb_factory(step_idx)
         tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
@@ -697,6 +717,7 @@ class BlameEngine:
                 agent_fn,
                 post_fork_transport=tail_transport,
                 api_key=api_key,
+                boundary_guard=boundary_guard,
             )
         except Exception as exc:
             # A diverged (agent not deterministic up to the step) or otherwise
@@ -724,6 +745,7 @@ class BlameEngine:
         parent_outcome: bool | None,
         api_key: str,
         k: int,
+        boundary_guard: bool = False,
     ) -> _StepTally:
         """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
         set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
@@ -735,7 +757,9 @@ class BlameEngine:
         they would for an equivalent sequence of single-step trials. The tail
         transport is the one associated with the *highest-indexed* coalition
         member — for a one-element coalition this reduces to exactly
-        ``_run_trial``'s behaviour.
+        ``_run_trial``'s behaviour. ``boundary_guard`` is forwarded to
+        `ForkEngine.fork_coalition()` exactly like ``_run_trial`` forwards it to
+        `ForkEngine.fork()`; a violation is caught below and counted UNDEFINED.
         """
         tally = _StepTally()
         ordered = tuple(sorted(steps))
@@ -747,7 +771,12 @@ class BlameEngine:
             spec = CoalitionSpec(interventions=interventions)
             try:
                 branch = ForkEngine.fork_coalition(
-                    tape, spec, agent_fn, post_fork_transport=tail_transport, api_key=api_key
+                    tape,
+                    spec,
+                    agent_fn,
+                    post_fork_transport=tail_transport,
+                    api_key=api_key,
+                    boundary_guard=boundary_guard,
                 )
             except Exception as exc:
                 tally.undefined += 1
@@ -783,6 +812,7 @@ class BlameEngine:
         confidence: float = 0.95,
         necessity_threshold: float = 0.5,
         sufficiency_threshold: float = 0.5,
+        boundary_guard: bool = False,
     ) -> ShapleyReport:
         """Temporal (order-restricted) Shapley blame — additive to `rank()`.
 
@@ -826,6 +856,11 @@ class BlameEngine:
         ..., coalition_samples=m_samples)` prices the whole run before any spend,
         and this raises the same `BudgetExceededError` `rank()` does if it's over
         `budget_usd`.
+
+        `boundary_guard` (default `False`) is forwarded both to the internal
+        sufficiency pass (the `rank()` call below) and to every coalition-walk
+        trial (`_run_coalition_trials`), so it confines the re-executed agent's
+        surface across every fork this method issues, not just some of them.
         """
         n = len(tape.exchanges)
         if n == 0:
@@ -850,6 +885,7 @@ class BlameEngine:
             k=k,
             budget_usd=math.inf,
             api_key=f"{api_key}-sufficiency",
+            boundary_guard=boundary_guard,
         )
         sufficiency_by_step = {r.step_index: r for r in single_step.results}
         parent_outcome = single_step.parent_outcome
@@ -864,7 +900,15 @@ class BlameEngine:
             for i in range(n):
                 steps = tuple(range(i + 1))
                 tally = BlameEngine._run_coalition_trials(
-                    tape, steps, perturb_factory, agent_fn, oracle, parent_outcome, api_key, k
+                    tape,
+                    steps,
+                    perturb_factory,
+                    agent_fn,
+                    oracle,
+                    parent_outcome,
+                    api_key,
+                    k,
+                    boundary_guard,
                 )
                 coalition_forks += k
                 valid = tally.valid

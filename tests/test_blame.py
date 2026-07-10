@@ -1,5 +1,7 @@
 """Blame engine tests — all offline, zero API spend."""
 
+import threading
+
 import anthropic
 import httpx
 import pytest
@@ -569,3 +571,109 @@ def test_temporal_shapley_discriminates_root_from_echo():
     assert step1.necessity is False
 
     assert report.top().step_index == 0
+
+
+# ── boundary_guard confinement (tracefork-bge.1) ────────────────────────────
+
+
+def _thread_spawning_agent(client: anthropic.Anthropic) -> str:
+    """Spawns a thread before making any request — a boundary violation that
+    trips only when `boundary_guard=True` is threaded down into ForkEngine."""
+    threading.Thread(target=lambda: None).start()
+    return _booking_agent(client)
+
+
+def test_blame_rank_default_off_matches_existing_flip_rate_results():
+    """Leaving boundary_guard at its default (False) must reproduce the exact
+    flip-rate result `test_blame_engine_ranks_causal_step_highest` asserts —
+    zero behavior change for existing callers that never pass the kwarg."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape,
+        _booking_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=3,
+        budget_usd=100.0,
+    )
+    top = max(report.results, key=lambda r: r.flip_rate)
+    assert top.step_index == 1
+    assert top.flip_rate == 1.0
+    step0 = next(r for r in report.results if r.step_index == 0)
+    assert step0.flip_rate == 0.0
+
+
+def test_blame_rank_boundary_guard_true_counts_violation_as_undefined():
+    """A trial whose agent trips BoundaryGuard must be tallied UNDEFINED, never
+    a silent NO_FLIP: every trial for every step is a violation here, so every
+    step's flip_rate is 0.0 with zero valid trials (not a false "no effect")."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape,
+        _thread_spawning_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=3,
+        budget_usd=100.0,
+        boundary_guard=True,
+    )
+    assert report.total_forks == 2 * 3
+    for r in report.results:
+        assert r.valid_trials == 0
+        assert r.undefined == r.trials == 3
+        assert r.flip_rate == 0.0
+
+
+def _stray_thread_booking_agent(client: anthropic.Anthropic) -> str:
+    """Spawns a harmless stray thread, then behaves exactly like
+    `_booking_agent` — unguarded, the thread spawn changes nothing observable."""
+    threading.Thread(target=lambda: None).start()
+    return _booking_agent(client)
+
+
+def test_shapley_rank_forwards_boundary_guard_to_sufficiency_pass():
+    """`shapley_rank`'s internal sufficiency pass is a `rank()` call on the
+    SAME agent_fn as the coalition walk; boundary_guard must reach both. An
+    unguarded run with a stray-thread agent reproduces the normal (nonzero)
+    sufficiency_score baseline; the guarded run must drive it to 0.0 for every
+    step, proving the sufficiency pass — not just the coalition walk — is
+    actually guarded."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    baseline = BlameEngine.shapley_rank(
+        tape,
+        _stray_thread_booking_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=2,
+        m_samples=1,
+    )
+    step1_baseline = next(r for r in baseline.results if r.step_index == 1)
+    assert step1_baseline.sufficiency_score == 1.0  # unguarded: the stray thread is harmless
+
+    guarded = BlameEngine.shapley_rank(
+        tape,
+        _stray_thread_booking_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=2,
+        m_samples=1,
+        boundary_guard=True,
+    )
+    for r in guarded.results:
+        assert r.sufficiency_score == 0.0
+        assert r.shapley_value == 0.0
