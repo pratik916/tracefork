@@ -231,6 +231,59 @@ def test_blame_report_from_json_round_trips_cli_output_shape():
     assert r.responsible is True
 
 
+def test_blame_report_from_json_recomputes_q_value_from_p_value_not_forged_fields():
+    """`blame_report_from_json` must recompute q_value/responsible/responsible_set
+    via `benjamini_hochberg` on the decoded p_values, rather than trusting the
+    JSON's own (potentially forged, independently of p_value) fields — the one
+    boundary where those could be forged without touching p_value."""
+    data = {
+        "k": 5,
+        "ci_method": "wilson",
+        "confidence": 0.95,
+        "null_flip_rate": 0.05,
+        "fdr_q": 0.10,
+        # Forged: claims step 5 (not step 0) is the responsible one.
+        "responsible_set": [5],
+        "results": [
+            {
+                # Genuinely significant (tiny p_value) but the JSON's own
+                # q_value/responsible forge the OPPOSITE conclusion.
+                "step_index": 0,
+                "flip_rate": 0.9,
+                "ci_lo": 0.5,
+                "ci_hi": 1.0,
+                "valid_trials": 10,
+                "trustworthy": True,
+                "p_value": 0.001,
+                "q_value": 0.9,
+                "responsible": False,
+            },
+            {
+                # NOT significant (p_value == 1.0) but the JSON's own
+                # q_value/responsible forge a false-positive "responsible" claim.
+                "step_index": 5,
+                "flip_rate": 0.05,
+                "ci_lo": 0.0,
+                "ci_hi": 0.3,
+                "valid_trials": 10,
+                "trustworthy": True,
+                "p_value": 1.0,
+                "q_value": 0.001,
+                "responsible": True,
+            },
+        ],
+    }
+    report = blame_report_from_json(data)
+    r0 = next(r for r in report.results if r.step_index == 0)
+    r5 = next(r for r in report.results if r.step_index == 5)
+
+    assert r0.responsible is True
+    assert r0.q_value < 0.01
+    assert r5.responsible is False
+    assert r5.q_value == 1.0
+    assert report.responsible_set == [0]
+
+
 # ── ingest: step-structure only, blame-by-re-execution ──────────────────────
 
 

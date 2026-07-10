@@ -16,8 +16,12 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # envelope/metadata only — like `boundary`/`agent_name`, it is NOT fed into
 # `digest()` — so every existing (and every sequential) tape's content digest
 # is byte-identical, and v1/v2/v3 tapes upcast to an empty batch log.
+# v5 adds the `provenance` witness block (matcher_name/boundary_guard/
+# nondet_mode recorded by `Recorder`/`AsyncRecorder`). Like `async_batches`,
+# it is envelope/metadata only — NOT fed into `digest()` — so every existing
+# tape's content digest is unchanged, and v1-v4 tapes upcast to `provenance={}`.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 4
+TAPE_FORMAT_VERSION = 5
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"

@@ -23,7 +23,12 @@ Confidence intervals for the flip-rate proportion are pluggable
 Agresti-Coull, all with correct 0-flip / all-flip boundary handling and a
 configurable confidence level. Instead of a raw argmax over noisy proportions,
 the "responsible set" is chosen by a Benjamini-Hochberg FDR-controlled,
-one-sided binomial test of each step's flip-rate against a chance-flip null.
+one-sided binomial test of each step's flip-rate against a chance-flip null —
+run only over TRUSTWORTHY steps' p-values (BH's FDR guarantee requires a
+fixed candidate set; an untrustworthy step, with too few valid trials to be a
+meaningful estimate, never occupies a correction slot and keeps
+`q_value=1.0`/`responsible=False` unconditionally, however low its raw
+p-value happens to be).
 
 `BudgetGovernor` estimates the fork count and dollar cost before any spend.
 
@@ -36,6 +41,7 @@ counterfactual tail hits the real API under the budget cap.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -489,6 +495,7 @@ class BudgetGovernor:
         model: str | None = None,
         cost_per_fork_usd: float | None = None,
         coalition_samples: int = 0,
+        async_batches: list[list[int]] | None = None,
     ) -> BlameEstimate:
         """Estimate the dollar cost of a blame run.
 
@@ -506,9 +513,23 @@ class BudgetGovernor:
         the single-step sufficiency check, so the total multiplies the base
         estimate by ``(1 + coalition_samples)``. The default ``0`` reproduces the
         exact pre-existing estimate (``rank()``'s callers are unaffected).
+
+        ``async_batches`` (default ``None``, pass ``shapley_rank``'s own
+        parameter of the same name straight through) prices its exact-average
+        walk over an unordered batch (see ``_block_orderings``): a batch of
+        size ``b`` is walked ``b!`` times instead of once, inflating JUST that
+        batch's own positions' billed cost by ``b!``. `_block_cost_factor`
+        returns the largest such factor across every batch (``1`` if
+        `async_batches` is falsy); multiplying the WHOLE existing
+        ``(1 + coalition_samples)`` estimate by it is a safe, if loose, upper
+        bound on the true per-position-varying total — every individual
+        position's own inflation is at most this maximum, so the true total
+        (a sum of individually-inflated terms) is never larger than this
+        formula's own (uniformly-inflated) sum. Real spend never outruns this
+        pre-flight estimate.
         """
         n_candidates = len(tape.exchanges)
-        multiplier = 1 + max(0, coalition_samples)
+        multiplier = 1 + max(0, coalition_samples) * _block_cost_factor(async_batches)
         n_forks = n_candidates * k * multiplier
         if cost_per_fork_usd is not None:
             est_usd = n_forks * cost_per_fork_usd
@@ -539,6 +560,110 @@ def _interpret(flip_rate: float) -> str:
     if flip_rate >= 0.3:
         return "suggestive"
     return "diffuse — not the cause"
+
+
+# ── async_batches-aware coalition ordering ──────────────────────────────────
+#
+# `shapley_rank`'s temporal-Shapley walk collapses to one valid permutation
+# `(0, 1, ..., n-1)` when the tape is a strict causal chain (every step's
+# predecessor set is exactly its full prefix). `tape.async_batches` (see
+# `transport.py`) records the ONE place that assumption is too strong: a
+# genuinely-concurrent, fully-overlapping asyncio fan-out, whose members have
+# no causal order relative to EACH OTHER (though every one of them still
+# causally follows everything strictly before the batch, and precedes
+# everything strictly after it). `_batch_blocks` turns that recorded metadata
+# into an ordered partition — "blocks" — of step indices: a batch becomes one
+# block whose members may appear in ANY relative order; every other step is
+# its own singleton block, pinned exactly where the tape puts it.
+#
+# `shapley_rank`'s per-repeat walk resolves the blocks in that fixed (tape-
+# respecting) sequence. A singleton block extends the coalition by its one
+# member exactly as the pre-existing algorithm always has. A multi-member
+# block computes the EXACT marginal contribution of each of its members by
+# averaging over EVERY ONE of `_block_orderings(block)`'s `len(block)!`
+# internal join orders (holding everything outside the block fixed) — the
+# local Shapley value of that small sub-game (Castro et al.'s permutation-
+# sampling estimator generalized to a DAG's partial order, but computed
+# exactly rather than Monte-Carlo-sampled, since a recorded concurrency batch
+# is small in every fixture this engine is exercised against). This is
+# DELIBERATELY not "sample one random/round-robin order per `m_samples`
+# repeat": that would make correctness depend on `m_samples` being large (or
+# even) enough to balance across orders by chance, which a caller choosing
+# `m_samples=1` for speed would silently break. Exact averaging makes the
+# result identical regardless of `m_samples` — matching every OTHER existing
+# case in this engine, whose correctness has never depended on `m_samples`
+# for these deterministic fixtures; `m_samples` only ever adds independent
+# repeats to build a genuine confidence interval from real trial noise.
+#
+# Whenever `async_batches` is falsy (`None`/empty — every existing caller),
+# `_batch_blocks` returns all-singleton blocks, so every block in the walk is
+# a singleton and this reduces to the exact `(0, ..., n-1)` walk every
+# repeat, unconditionally — the byte-for-byte pre-existing behavior.
+
+
+def _batch_blocks(n: int, async_batches: list[list[int]] | None) -> list[list[int]]:
+    """Partition step indices ``0..n-1`` into order-respecting blocks: each
+    entry of ``async_batches`` becomes one block (its members are mutually
+    unordered); every step not covered by any batch is its own singleton
+    block. Blocks are returned in ascending order of their smallest member,
+    matching tape order.
+
+    Raises ``ValueError`` if a batch index is out of range, a batch has fewer
+    than two distinct members, or two batches share a step — `async_batches`
+    is meant to be `Tape.async_batches` (whose entries `transport.py` already
+    only ever logs as non-overlapping, >=2-member, fully-concurrent spans),
+    but this is a public parameter, so a caller-supplied list is validated
+    defensively too, the same way `CoalitionSpec.__post_init__` validates its
+    own input rather than trusting the caller.
+    """
+    if not async_batches:
+        return [[i] for i in range(n)]
+    covered: dict[int, int] = {}
+    for batch_idx, batch in enumerate(async_batches):
+        members = sorted(set(batch))
+        if len(members) < 2 or len(members) != len(batch):
+            raise ValueError(f"async_batches[{batch_idx}] must have >=2 distinct members: {batch}")
+        for step in members:
+            if not 0 <= step < n:
+                raise ValueError(f"async_batches[{batch_idx}] step {step} out of range [0, {n})")
+            if step in covered:
+                raise ValueError(
+                    f"step {step} appears in more than one async_batches entry "
+                    f"({covered[step]} and {batch_idx})"
+                )
+            covered[step] = batch_idx
+    blocks: list[list[int]] = [[i] for i in range(n) if i not in covered]
+    blocks.extend(sorted(set(batch)) for batch in async_batches)
+    blocks.sort(key=lambda block: block[0])
+    return blocks
+
+
+def _block_orderings(block: list[int]) -> list[tuple[int, ...]]:
+    """All join orders whose telescoping marginals get averaged for one
+    block's EXACT local Shapley value: a singleton block has exactly one
+    (trivial) ordering; a multi-member (unordered async-batch) block has
+    every one of its ``math.factorial(len(block))`` permutations.
+    """
+    if len(block) == 1:
+        return [tuple(block)]
+    return list(itertools.permutations(block))
+
+
+def _block_cost_factor(async_batches: list[list[int]] | None) -> int:
+    """Worst-case per-repeat cost multiplier `shapley_rank`'s exact-average
+    walk introduces over the pre-existing single-order algorithm: a
+    multi-member block of size ``b`` is walked ``b!`` times (once per
+    internal ordering, see `_block_orderings`) instead of once, so its own
+    positions' billed cost is inflated by exactly ``b!``. Returns the LARGEST
+    such factor across every batch (or ``1`` if `async_batches` is falsy) —
+    a single conservative multiplier applied to the WHOLE pre-existing
+    per-repeat cost estimate is a safe (if loose) upper bound on the true,
+    per-position-varying total, since every individual position's own
+    inflation is at most this maximum (see `BudgetGovernor.estimate`).
+    """
+    if not async_batches:
+        return 1
+    return max(math.factorial(len(set(batch))) for batch in async_batches)
 
 
 # ── BlameEngine ─────────────────────────────────────────────────────────────
@@ -578,6 +703,7 @@ class BlameEngine:
         null_flip_rate: float = 0.05,
         fdr_q: float = 0.10,
         min_valid_fraction: float = 0.5,
+        boundary_guard: bool = False,
     ) -> BlameReport:
         """Fork each exchange `k` times with a perturbed response and measure how
         often the graded outcome flips relative to the parent run.
@@ -592,6 +718,13 @@ class BlameEngine:
         backend and level. The FDR-controlled responsible set is chosen by a
         one-sided binomial test of each step's flip-rate against
         ``null_flip_rate`` at false-discovery-rate ``fdr_q``.
+
+        `boundary_guard` (default `False`, byte-identical to before when left
+        off) is forwarded to every `ForkEngine.fork()` trial call — confining
+        each re-executed agent trial's own tool-call/thread/random/subprocess
+        surface (see `boundary_guard.py`). A trial that trips the guard raises
+        and is counted UNDEFINED by `_run_trial`'s existing exception handling,
+        never a silent NO_FLIP.
         """
         est = BudgetGovernor.estimate(tape, k=k)
         if est.est_usd > budget_usd:
@@ -612,7 +745,14 @@ class BlameEngine:
             tally = _StepTally()
             for _trial in range(k):
                 outcome, diverged = BlameEngine._run_trial(
-                    tape, step_idx, perturb_factory, agent_fn, oracle, parent_outcome, api_key
+                    tape,
+                    step_idx,
+                    perturb_factory,
+                    agent_fn,
+                    oracle,
+                    parent_outcome,
+                    api_key,
+                    boundary_guard,
                 )
                 total_forks += 1
                 if outcome is TrialOutcome.FLIP:
@@ -648,12 +788,21 @@ class BlameEngine:
                 )
             )
 
-        # Benjamini-Hochberg FDR over the per-step one-sided binomial p-values.
-        pvals = [r.p_value for r in results]
+        # Benjamini-Hochberg FDR over TRUSTWORTHY steps' p-values only. BH's FDR
+        # guarantee requires the candidate set to be fixed before correction
+        # (Benjamini & Hochberg 1995); silently letting an untrustworthy step's
+        # p-value (too few valid trials to be a meaningful estimate — see
+        # `trustworthy` above) occupy a correction slot would shrink every
+        # OTHER step's effective significance budget. An untrustworthy step
+        # therefore never enters `benjamini_hochberg`'s input at all and keeps
+        # its `FlipRateResult` defaults (`q_value=1.0`, `responsible=False`)
+        # unconditionally, regardless of how low its raw `p_value` happens to be.
+        trustworthy_idx = [i for i, r in enumerate(results) if r.trustworthy]
+        pvals = [results[i].p_value for i in trustworthy_idx]
         selected, qvals = benjamini_hochberg(pvals, fdr_q)
-        for i, r in enumerate(results):
-            r.q_value = qvals[i]
-            r.responsible = i in selected
+        for local_i, global_i in enumerate(trustworthy_idx):
+            results[global_i].q_value = qvals[local_i]
+            results[global_i].responsible = local_i in selected
         responsible_set = sorted(r.step_index for r in results if r.responsible)
 
         results.sort(key=lambda r: (-r.flip_rate, r.step_index))
@@ -679,13 +828,18 @@ class BlameEngine:
         oracle: Oracle,
         parent_outcome: bool | None,
         api_key: str,
+        boundary_guard: bool = False,
     ) -> tuple[TrialOutcome, bool]:
         """Run one fork trial; return ``(outcome, diverged)``.
 
         A diverged or errored fork is UNDEFINED (not a silent non-flip); the
         caller counts it. ``diverged`` is True only when the failure is a genuine
         `DivergenceError` (recovered from the SDK's exception wrapping), so the
-        per-step divergence rate is surfaced rather than swallowed.
+        per-step divergence rate is surfaced rather than swallowed. A
+        `BoundaryViolationError` (raised only when `boundary_guard=True`) is
+        caught by the same broad ``except Exception`` below and counted
+        UNDEFINED — never a silent NO_FLIP — but is not itself a `DivergenceError`,
+        so ``diverged`` stays False for it.
         """
         mutated_resp, tail_transport_obj = perturb_factory(step_idx)
         tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
@@ -697,6 +851,7 @@ class BlameEngine:
                 agent_fn,
                 post_fork_transport=tail_transport,
                 api_key=api_key,
+                boundary_guard=boundary_guard,
             )
         except Exception as exc:
             # A diverged (agent not deterministic up to the step) or otherwise
@@ -724,6 +879,7 @@ class BlameEngine:
         parent_outcome: bool | None,
         api_key: str,
         k: int,
+        boundary_guard: bool = False,
     ) -> _StepTally:
         """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
         set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
@@ -735,7 +891,9 @@ class BlameEngine:
         they would for an equivalent sequence of single-step trials. The tail
         transport is the one associated with the *highest-indexed* coalition
         member — for a one-element coalition this reduces to exactly
-        ``_run_trial``'s behaviour.
+        ``_run_trial``'s behaviour. ``boundary_guard`` is forwarded to
+        `ForkEngine.fork_coalition()` exactly like ``_run_trial`` forwards it to
+        `ForkEngine.fork()`; a violation is caught below and counted UNDEFINED.
         """
         tally = _StepTally()
         ordered = tuple(sorted(steps))
@@ -747,7 +905,12 @@ class BlameEngine:
             spec = CoalitionSpec(interventions=interventions)
             try:
                 branch = ForkEngine.fork_coalition(
-                    tape, spec, agent_fn, post_fork_transport=tail_transport, api_key=api_key
+                    tape,
+                    spec,
+                    agent_fn,
+                    post_fork_transport=tail_transport,
+                    api_key=api_key,
+                    boundary_guard=boundary_guard,
                 )
             except Exception as exc:
                 tally.undefined += 1
@@ -783,6 +946,8 @@ class BlameEngine:
         confidence: float = 0.95,
         necessity_threshold: float = 0.5,
         sufficiency_threshold: float = 0.5,
+        boundary_guard: bool = False,
+        async_batches: list[list[int]] | None = None,
     ) -> ShapleyReport:
         """Temporal (order-restricted) Shapley blame — additive to `rank()`.
 
@@ -799,18 +964,46 @@ class BlameEngine:
         SAMPLING but restricted to orderings consistent with temporal order (a
         step is only added after its predecessors — asymmetric/causal Shapley,
         Frye et al. 2020) so a downstream echo isn't credited for its upstream
-        cause. Because every tape step's predecessor set is exactly the full
-        prefix before it (the tape is a total causal chain: any earlier response
-        can in principle be echoed into any later request), that restriction
-        admits exactly ONE valid ordering — `(0, 1, ..., n-1)` — collapsing the
-        usual multi-permutation Monte-Carlo estimator to a telescoping walk:
-        `phi_i = v({0..i}) − v({0..i-1})`. `m_samples` repeats that walk
-        independently (a fresh k-trial estimate of every `v(S)` each time) to
-        build a genuine permutation-sampling confidence interval on each step's
-        value from real trial-to-trial noise, rather than reporting one point
-        estimate. (`sum_i phi_i = v({0..n-1}) − v(∅) = v(full) − 0`, the Shapley
-        efficiency axiom, since `v(∅)` is defined to be `0` — no intervention
-        anywhere is definitionally the parent run.)
+        cause. For a strictly SEQUENTIAL (sync, or single-request-at-a-time
+        async) tape, every step's predecessor set is exactly the full prefix
+        before it (any earlier response can in principle be echoed into any
+        later request), so that restriction admits exactly ONE valid ordering
+        — `(0, 1, ..., n-1)` — collapsing the usual multi-permutation
+        Monte-Carlo estimator to a telescoping walk: `phi_i = v({0..i}) −
+        v({0..i-1})`. This is the ONE documented blind spot such a tape has:
+        for a SYMMETRIC two-part AND-conjunction, this single-ordering walk
+        can only detect the marginal contribution of the LATER-joining half
+        (see `competing_faults.py`'s module docstring for the concrete case).
+
+        `async_batches` (default `None`, pass `tape.async_batches`) closes that
+        gap for tapes recorded through `AsyncTraceforkTransport`: a batch's
+        members genuinely raced (see `transport.py`) and so have NO causal
+        order relative to each other, only relative to everything strictly
+        before/after the batch. `_batch_blocks` turns that into an admissible
+        PARTIAL order; for each unordered batch, every repeat computes the
+        EXACT marginal contribution of each member by averaging over ALL of
+        `_block_orderings(block)`'s internal join orders (holding the rest of
+        the coalition fixed) — the local Shapley value of that small sub-game
+        — so a step inside a batch is credited its marginal contribution
+        under EVERY relative position, converging a symmetric conjunction's
+        two halves to equal credit instead of one being structurally locked
+        at zero, and doing so REGARDLESS of `m_samples` (never relying on
+        enough repeats landing on both orders by chance). A falsy
+        `async_batches` (the default, and every pre-existing caller) makes
+        every block a singleton, reducing this to the exact `(0, ..., n-1)`
+        walk every repeat — byte-for-byte the pre-existing single-ordering
+        behavior, not an approximation of it.
+
+        Regardless of ordering, each repeat's marginal contribution `phi_i =
+        v(S∪{i}) − v(S)` is estimated exactly as before, and `m_samples`
+        repeats independently (a fresh k-trial estimate of every `v(S)` each
+        time) build a genuine permutation-sampling confidence interval on each
+        step's value from real trial-to-trial noise, rather than reporting one
+        point estimate. (`sum_i phi_i = v({0..n-1}) − v(∅) = v(full) − 0`, the
+        Shapley efficiency axiom, since `v(∅)` is defined to be `0` — no
+        intervention anywhere is definitionally the parent run — and this
+        holds for ANY topological order of a fixed underlying DAG, not just
+        the sequential one.)
 
         Necessity ("would reverting step i's perturbation restore the parent
         outcome?") is read off the SAME walk: it's exactly the marginal jump
@@ -826,12 +1019,25 @@ class BlameEngine:
         ..., coalition_samples=m_samples)` prices the whole run before any spend,
         and this raises the same `BudgetExceededError` `rank()` does if it's over
         `budget_usd`.
+
+        `boundary_guard` (default `False`) is forwarded both to the internal
+        sufficiency pass (the `rank()` call below) and to every coalition-walk
+        trial (`_run_coalition_trials`), so it confines the re-executed agent's
+        surface across every fork this method issues, not just some of them.
+
+        Reuses `_run_coalition_trials`/`CoalitionSpec` completely unchanged for
+        every coalition evaluation, `async_batches` or not — a coalition is
+        always just the SET of steps forced so far; only the SEQUENCE of sets
+        visited along the walk (and thus which step gets credited each
+        marginal jump) is affected by ordering. No `fork.py` code changes.
         """
         n = len(tape.exchanges)
         if n == 0:
             return ShapleyReport(results=[], n_permutation_samples=m_samples, k=k, total_forks=0)
 
-        est = BudgetGovernor.estimate(tape, k=k, coalition_samples=m_samples)
+        est = BudgetGovernor.estimate(
+            tape, k=k, coalition_samples=m_samples, async_batches=async_batches
+        )
         if est.est_usd > budget_usd:
             raise BudgetExceededError(
                 f"estimated shapley blame cost ${est.est_usd:.2f} exceeds budget "
@@ -850,6 +1056,7 @@ class BlameEngine:
             k=k,
             budget_usd=math.inf,
             api_key=f"{api_key}-sufficiency",
+            boundary_guard=boundary_guard,
         )
         sufficiency_by_step = {r.step_index: r for r in single_step.results}
         parent_outcome = single_step.parent_outcome
@@ -859,23 +1066,75 @@ class BlameEngine:
         base_samples: list[list[float]] = [[] for _ in range(n)]
         coalition_forks = 0
 
+        # `blocks` is all-singleton (in tape order) when `async_batches` is
+        # falsy, so the walk below reduces to `(0, ..., n-1)` every repeat —
+        # the exact pre-existing behavior, unconditionally.
+        blocks = _batch_blocks(n, async_batches)
+
+        def _v(steps: tuple[int, ...]) -> float:
+            """`_run_coalition_trials`'s flip-rate for coalition `steps`,
+            counting its forks toward the run's total. Reused unchanged; the
+            SET is all that matters (it sorts its own argument internally)."""
+            nonlocal coalition_forks
+            tally = BlameEngine._run_coalition_trials(
+                tape,
+                steps,
+                perturb_factory,
+                agent_fn,
+                oracle,
+                parent_outcome,
+                api_key,
+                k,
+                boundary_guard,
+            )
+            coalition_forks += k
+            return tally.flips / tally.valid if tally.valid > 0 else math.nan
+
         for _repeat in range(m_samples):
             base_flip_rate = 0.0  # v(∅) — no intervention, axiomatically the parent
-            for i in range(n):
-                steps = tuple(range(i + 1))
-                tally = BlameEngine._run_coalition_trials(
-                    tape, steps, perturb_factory, agent_fn, oracle, parent_outcome, api_key, k
-                )
-                coalition_forks += k
-                valid = tally.valid
-                # An all-UNDEFINED coalition trial carries no information about
-                # this repeat's marginal step; hold the walk at its prior value
-                # rather than injecting a spurious 0-flip-rate reading.
-                full_flip_rate = tally.flips / valid if valid > 0 else base_flip_rate
-                marginal_samples[i].append(full_flip_rate - base_flip_rate)
-                full_samples[i].append(full_flip_rate)
-                base_samples[i].append(base_flip_rate)
-                base_flip_rate = full_flip_rate
+            coalition: set[int] = set()
+            for block in blocks:
+                if len(block) == 1:
+                    step = block[0]
+                    coalition.add(step)
+                    full_flip_rate = _v(tuple(coalition))
+                    # An all-UNDEFINED coalition trial (NaN) carries no
+                    # information about this repeat's marginal step; hold the
+                    # walk at its prior value rather than injecting a
+                    # spurious 0-flip-rate reading.
+                    if math.isnan(full_flip_rate):
+                        full_flip_rate = base_flip_rate
+                    marginal_samples[step].append(full_flip_rate - base_flip_rate)
+                    full_samples[step].append(full_flip_rate)
+                    base_samples[step].append(base_flip_rate)
+                    base_flip_rate = full_flip_rate
+                    continue
+
+                # Multi-member (unordered) block: the EXACT marginal
+                # contribution of each member, averaged over every one of
+                # `_block_orderings(block)`'s internal join orders — the
+                # local Shapley value of this small sub-game, independent of
+                # `m_samples` (see the module note above `_block_orderings`).
+                per_step_marginals: dict[int, list[float]] = {s: [] for s in block}
+                block_full_flip_rate = base_flip_rate
+                for ordering in _block_orderings(block):
+                    local_coalition = set(coalition)
+                    local_base = base_flip_rate
+                    for step in ordering:
+                        local_coalition.add(step)
+                        local_full = _v(tuple(local_coalition))
+                        if math.isnan(local_full):
+                            local_full = local_base
+                        per_step_marginals[step].append(local_full - local_base)
+                        local_base = local_full
+                    block_full_flip_rate = local_base  # v(coalition ∪ block) — order-independent
+                for step in block:
+                    vals = per_step_marginals[step]
+                    marginal_samples[step].append(sum(vals) / len(vals))
+                    full_samples[step].append(block_full_flip_rate)
+                    base_samples[step].append(base_flip_rate)
+                coalition |= set(block)
+                base_flip_rate = block_full_flip_rate
 
         results: list[ShapleyResult] = []
         for i in range(n):

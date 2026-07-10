@@ -8,7 +8,8 @@ import anthropic
 import httpx
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
-from tracefork.report import generate_report
+from tracefork.constants import BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUNDARY
+from tracefork.report import _tape_to_data, generate_report
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -235,3 +236,134 @@ def test_report_escapes_script_breakout_in_divergence_diff():
         data = _extract_data(content)
         live_value = data["replay"]["divergence"]["diag"]["field_diffs"][0]["live"]
         assert live_value == "</script><img src=x onerror=alert(1)>"
+
+
+# ── boundary / provenance / redaction badge (tracefork-bge.20) ─────────────
+
+
+def test_tape_to_data_emits_correct_boundary_for_all_three_boundary_constants():
+    """`_tape_to_data` must surface `tape.boundary` verbatim so the report UI can
+    render a trust badge — a forensic-only tape must not look identical to a
+    verified one (see `constants.py`'s boundary markers)."""
+    for boundary in (BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUNDARY):
+        tape = _make_tape()
+        tape.boundary = boundary
+        data = _tape_to_data(tape)
+        assert data["boundary"] == boundary
+
+
+def test_report_html_content_redacted_true_drives_the_redaction_badge():
+    """A `content_redacted=True` tape must embed that flag in the injected data
+    AND ship the client-side badge wiring (element + renderer) that turns it
+    into a visible warning — content_redacted stays forensic-only (never fed
+    into `digest()`), so the report is the only place a viewer learns about it."""
+    tape = _make_tape()
+    tape.content_redacted = True
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        content = out.read_text()
+        data = _extract_data(content)
+        assert data["content_redacted"] is True
+        # Structural wiring: the badge element and its renderer must exist in
+        # the single-file template so the injected flag actually reaches the UI.
+        assert 'id="redacted-tag"' in content
+        assert 'id="boundary-tag"' in content
+        assert "renderProvenanceBadges" in content
+
+
+def test_report_html_boundary_badge_wiring_present_for_forensic_boundary():
+    """A forensic-only boundary (OTel-ingested / proxy-recorded) must not be
+    silently indistinguishable from a verified `BOUNDARY_V1` tape in the report."""
+    tape = _make_tape()
+    tape.boundary = PROXY_BOUNDARY
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        data = _extract_data(content := out.read_text())
+        assert data["boundary"] == PROXY_BOUNDARY
+        assert "renderProvenanceBadges" in content
+
+
+# ── fork-tree panel data (tracefork-bge.15) ────────────────────────────────
+
+
+def test_tape_to_data_defaults_branches_to_empty_list():
+    """No `branches=` passed must still yield a falsy `[]`, the same neutral
+    empty-state pattern `replay={}` already establishes."""
+    tape = _make_tape()
+    data = _tape_to_data(tape)
+    assert data["branches"] == []
+
+
+def test_tape_to_data_includes_populated_branches_list():
+    """A populated `branches=` list (the shape `TapeStore.list_branches`
+    returns) round-trips into the data dict unchanged."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 3,
+            "mutation_desc": "swapped tool result",
+            "created_at": "2026-01-01T00:00:00",
+            "branch_digest": "abc123def456",
+        },
+        {
+            "branch_id": "b2",
+            "divergence_step": 0,
+            "mutation_desc": "swapped assistant text",
+            "created_at": "2026-01-02T00:00:00",
+            "branch_digest": "def456abc123",
+        },
+    ]
+    data = _tape_to_data(tape, branches=branches)
+    assert data["branches"] == branches
+
+
+def test_report_embeds_populated_branches_list():
+    """`generate_report`'s injected data blob carries the branches list end to
+    end, and the single-file template ships the fork-tree render wiring."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 0,
+            "mutation_desc": "mutated response",
+            "created_at": "2026-01-01T00:00:00",
+            "branch_digest": "abc123",
+        }
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branches=branches)
+        content = out.read_text()
+        data = _extract_data(content)
+        assert data["branches"] == branches
+        assert "renderForkTree" in content
+
+
+def test_report_escapes_script_breakout_in_branch_mutation_desc():
+    """A branch's `mutation_desc` containing `</script>` must not break out of
+    the inline script either — the same escaping that protects tape content
+    and replay diagnostics covers branch metadata too."""
+    tape = _make_tape()
+    branches = [
+        {
+            "branch_id": "b1",
+            "divergence_step": 0,
+            "mutation_desc": "</script><img src=x onerror=alert(1)>",
+            "created_at": "",
+            "branch_digest": "abc123",
+        }
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branches=branches)
+        content = out.read_text()
+        marker = "window.__TRACEFORK_DATA__ = "
+        start = content.find(marker)
+        end = content.find(";\n", start)
+        injected = content[start:end]
+        assert "</script" not in injected
+        data = _extract_data(content)
+        assert data["branches"][0]["mutation_desc"] == "</script><img src=x onerror=alert(1)>"

@@ -3,7 +3,10 @@
 `ReplayVerifier` loads a tape, runs the caller's agent function with a
 `TraceforkTransport("replay", tape)`, and returns a `VerificationResult`
 describing whether the replay was bit-exact. `DriftDoctor` classifies why
-a divergence happened when it wasn't.
+a divergence happened when it wasn't. Before that, an opt-in provenance check
+(`ProvenanceMismatchError`) compares the tape's recorded `matcher_name` (see
+`tape.Tape.provenance`) against the matcher this replay is actually using,
+firing only when the tape carries a non-empty provenance block.
 
 `run_fixture_corpus_check()` extends this into a replay-as-regression gate
 (the `validate --check` idea, applied to plain replay): given a directory of
@@ -25,8 +28,9 @@ from typing import Any
 import anthropic
 import httpx
 
+from .certificate import ReplayCertificate
 from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
-from .matcher import RequestMatcher
+from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError, find_divergence
 from .observability import instrument
 from .tape import Tape
@@ -37,6 +41,15 @@ class DriftCause(enum.Enum):
     UNRECORDED_NONDET = "unrecorded_nondet"
     CODE_CHANGE = "code_change"
     BOUNDARY_VIOLATION = "boundary_violation"
+
+
+class ProvenanceMismatchError(RuntimeError):
+    """Raised when a tape's recorded `provenance` (see `tape.Tape.provenance`)
+    disagrees with the replay-time configuration — currently just whether the
+    same `RequestMatcher` is in use. Opt-in: only fires when the tape's
+    `provenance` is non-empty *and* recorded a `matcher_name`; a tape with no
+    provenance (every pre-v5 tape, or a caller that never populated it) skips
+    the check entirely instead of raising."""
 
 
 @dataclass
@@ -59,6 +72,11 @@ class VerificationResult:
     recorded_fingerprint: str
     replayed_fingerprint: str
     divergence: DivergenceReport | None = None
+    # Additive/opt-in: `None` unless a caller explicitly attaches a
+    # `ReplayCertificate` (see `certificate.certificate_from_verification`).
+    # Never set by `ReplayVerifier.verify()` itself, so every existing caller
+    # of `verify()` sees byte-identical `VerificationResult` behavior.
+    certificate: ReplayCertificate | None = None
 
 
 class _LastRequestTransport(httpx.BaseTransport):
@@ -97,6 +115,7 @@ class ReplayVerifier:
 
     @instrument("tracefork.replay.verify")
     def verify(self) -> VerificationResult:
+        self._check_provenance()
         inner = TraceforkTransport("replay", self._tape, matcher=self._matcher)
         transport = _LastRequestTransport(inner)
         client = anthropic.Anthropic(
@@ -145,6 +164,30 @@ class ReplayVerifier:
             replayed_fingerprint=replayed_fp,
             divergence=divergence,
         )
+
+    def _check_provenance(self) -> None:
+        """Opt-in: if `self._tape.provenance` is non-empty and recorded a
+        `matcher_name` (see `Recorder`/`AsyncRecorder` in `recorder.py`),
+        compare it against the matcher this verifier will actually replay
+        with. A mismatch means the tape was recorded under a different
+        `RequestMatcher` than is being used to replay it — a configuration
+        bug that would otherwise surface only as a generic byte-diff
+        divergence — so this raises the distinct `ProvenanceMismatchError`
+        instead. Skipped entirely when `provenance` is empty (every pre-v5
+        tape, or a caller that never populated it)."""
+        recorded = self._tape.provenance
+        if not recorded:
+            return
+        recorded_matcher = recorded.get("matcher_name")
+        if recorded_matcher is None:
+            return
+        actual_matcher = (self._matcher or IDENTITY_MATCHER).name
+        if recorded_matcher != actual_matcher:
+            raise ProvenanceMismatchError(
+                f"tape was recorded with matcher {recorded_matcher!r} but replay "
+                f"is using {actual_matcher!r} — record and replay must use the "
+                "same RequestMatcher (see matcher.py)"
+            )
 
     def _diagnose(
         self, step_index: int, live_request: httpx.Request | None

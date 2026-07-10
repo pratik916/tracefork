@@ -24,8 +24,11 @@ uv run ruff format --check .
 echo "==> uv run mypy src/tracefork"
 uv run mypy src/tracefork
 
-echo "==> uv run pytest -q --cov --cov-report=term-missing"
-uv run pytest -q --cov --cov-report=term-missing
+echo "==> uv run pytest -q --cov --cov-report=term-missing --junit-xml=junit.xml"
+uv run pytest -q --cov --cov-report=term-missing --junit-xml=junit.xml
+
+echo "==> uv run python scripts/check_executed_evidence.py"
+uv run python scripts/check_executed_evidence.py
 
 echo "==> uv run tracefork validate --check"
 uv run tracefork validate --check

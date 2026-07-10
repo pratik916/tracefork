@@ -39,6 +39,11 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Property-based fuzzing (tests/test_property_*.py) proving Tape round-trip
+    # digest stability, digest() metadata-exclusion, and IdentityMatcher's
+    # fingerprint contract over generated inputs, not just fixed-input pins.
+    # Test-only: never imported by src/tracefork.
+    "hypothesis>=6",
 ]
 # Optional: the OpenAI / Google Gemini SDKs are only needed for live record/replay
 # against those providers. The adapters parse raw wire JSON/bytes, so offline

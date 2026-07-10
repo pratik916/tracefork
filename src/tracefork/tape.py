@@ -86,6 +86,16 @@ class Tape:
     # `exchanges` list ordering). A sequential or sync tape has an empty batch
     # log, so its digest and every existing tape's digest are unchanged.
     async_batches: list[list[int]] = field(default_factory=list)
+    # Recording provenance/witness block (v5): the matcher fingerprint
+    # (`matcher_name`), whether `BoundaryGuard` was active (`boundary_guard`,
+    # `"true"`/`"false"`), and the `NondetSource` mode (`nondet_mode`) in effect
+    # when `Recorder`/`AsyncRecorder` produced this tape. Purely forensic
+    # metadata for diagnosing a mismatched-configuration replay: like
+    # `boundary`/`agent_name`/`async_batches`, it is NEVER fed into `digest()`,
+    # so every existing tape's content digest is unchanged and a pre-v5 tape
+    # upcasts to an empty dict. See `replay.ReplayVerifier` for the opt-in
+    # `matcher_name` mismatch check this enables.
+    provenance: dict[str, str] = field(default_factory=dict)
 
     def append_exchange(self, request_body: bytes, response_body: bytes) -> None:
         self.exchanges.append((request_body, response_body))
@@ -117,7 +127,7 @@ class Tape:
         a content-addressed, zstd-compressed binary container). Shared blobs are
         stored once by sha256, and there is no base64, so the ~1.33x base64
         blow-up of the legacy format is gone. Read back with `from_bytes`."""
-        return _encode_v4(self)
+        return _encode_v5(self)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Tape:
@@ -136,6 +146,7 @@ class Tape:
         tape.exchanges = f["exchanges"]
         tape.tool_exchanges = f["tool_exchanges"]
         tape.async_batches = [list(b) for b in f.get("async_batches", [])]
+        tape.provenance = dict(f.get("provenance", {}))
         return tape
 
     def save(self, path: str) -> None:
@@ -225,16 +236,16 @@ class Tape:
 _Fields = dict[str, Any]
 
 
-def _encode_v4(tape: Tape) -> bytes:
-    """Version-4 body: a JSON header (boundary, agent_name, draws, the LLM
+def _encode_v5(tape: Tape) -> bytes:
+    """Version-5 body: a JSON header (boundary, agent_name, draws, the LLM
     exchange hash pairs, the tool-exchange hash pairs, the concurrency-batch log,
-    and the dedup'd blob-hash order) followed by, for each unique blob in order, a
-    uint32 length + its zstd-compressed bytes. Content-addressed (each distinct
-    request/response stored once, LLM and tool blobs sharing one store) and
-    base64-free. LLM blobs are ordered first, so an LLM-only tape's blob layout
-    is identical to the v2 format that preceded the tool log. `async_batches` is
-    the only addition over v3: a plain list of index lists, empty (and so
-    absent-in-effect) for every sequential or sync tape."""
+    the provenance witness block, and the dedup'd blob-hash order) followed by,
+    for each unique blob in order, a uint32 length + its zstd-compressed bytes.
+    Content-addressed (each distinct request/response stored once, LLM and tool
+    blobs sharing one store) and base64-free. LLM blobs are ordered first, so an
+    LLM-only tape's blob layout is identical to the v2 format that preceded the
+    tool log. `provenance` is the only addition over v4: a small string->string
+    dict, empty for a tape whose `Recorder`/`AsyncRecorder` never populated it."""
     order: list[str] = []
     seen: dict[str, bytes] = {}
     for req, resp in (*tape.exchanges, *tape.tool_exchanges):
@@ -252,6 +263,7 @@ def _encode_v4(tape: Tape) -> bytes:
             [sha256_hex(req), sha256_hex(resp)] for req, resp in tape.tool_exchanges
         ],
         "async_batches": tape.async_batches,
+        "provenance": tape.provenance,
         "blob_hashes": order,
         "content_redacted": tape.content_redacted,
     }
@@ -327,8 +339,8 @@ def _decode_v3_binary(body: bytes) -> _Fields:
 
 
 def _decode_v4_binary(body: bytes) -> _Fields:
-    """Content-addressed zstd container written by `_encode_v4` (adds the
-    concurrency-batch log `async_batches` over v3)."""
+    """Content-addressed zstd container written by the pre-v5 encoder (adds the
+    concurrency-batch log `async_batches` over v3, but has no `provenance`)."""
     header, blobs = _read_blob_container(body)
     return {
         "boundary": header["boundary"],
@@ -339,6 +351,24 @@ def _decode_v4_binary(body: bytes) -> _Fields:
             (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
         ],
         "async_batches": [list(b) for b in header.get("async_batches", [])],
+        "content_redacted": header.get("content_redacted", False),
+    }
+
+
+def _decode_v5_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container written by `_encode_v5` (adds the
+    `provenance` witness block over v4)."""
+    header, blobs = _read_blob_container(body)
+    return {
+        "boundary": header["boundary"],
+        "agent_name": header["agent_name"],
+        "draws": [tuple(pair) for pair in header["draws"]],
+        "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "tool_exchanges": [
+            (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
+        ],
+        "async_batches": [list(b) for b in header.get("async_batches", [])],
+        "provenance": dict(header.get("provenance", {})),
         "content_redacted": header.get("content_redacted", False),
     }
 
@@ -366,16 +396,27 @@ def _upcast_v3_to_v4(fields: _Fields) -> _Fields:
     return fields
 
 
+def _upcast_v4_to_v5(fields: _Fields) -> _Fields:
+    """v4 -> v5 adds the provenance witness block; a pre-v5 tape has none, so
+    it defaults to an empty dict. `provenance` is never hashed into `digest()`,
+    so this leaves every existing tape's content digest and replay behavior
+    unchanged."""
+    fields.setdefault("provenance", {})
+    return fields
+
+
 _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     1: _decode_v1_json,
     2: _decode_v2_binary,
     3: _decode_v3_binary,
     4: _decode_v4_binary,
+    5: _decode_v5_binary,
 }
 _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     1: _upcast_v1_to_v2,
     2: _upcast_v2_to_v3,
     3: _upcast_v3_to_v4,
+    4: _upcast_v4_to_v5,
 }
 
 

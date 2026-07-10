@@ -18,8 +18,10 @@ from tracefork.competing_faults import (
     StepRole,
     _fails,
     build_competing_fault_tape,
+    build_concurrent_gate_payload_tape,
     make_perturb_factory,
     run_shapley,
+    run_shapley_concurrent,
 )
 
 
@@ -182,3 +184,59 @@ def test_gate_and_payload_correctly_not_necessary_when_overdetermined():
     for step_index in (3, 4):
         r = _by_step(report, step_index)
         assert r.necessity is False
+
+
+# ── genuinely-concurrent GATE/PAYLOAD (tracefork-bge.10) ────────────────────
+
+
+def test_concurrent_tape_records_a_real_batch_for_gate_and_payload():
+    """`build_concurrent_gate_payload_tape` must record its concurrency
+    through the REAL `AsyncTraceforkTransport` machinery, not a hand-
+    constructed `tape.async_batches` -- steps 3 (GATE) and 4 (PAYLOAD),
+    recorded in that completion order (see the module's `_CONCURRENT_DELAYS`)."""
+    tape = build_concurrent_gate_payload_tape()
+    assert len(tape.exchanges) == N_TURNS
+    assert tape.async_batches == [[3, 4]]
+
+
+def test_concurrent_parent_tape_grades_success():
+    tape = build_concurrent_gate_payload_tape()
+    from tracefork.blame import StringMatchOracle
+
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+    assert oracle.grade(tape.exchanges[-1][1].decode(errors="replace")) is True
+
+
+def test_concurrent_gate_and_payload_both_resolve_necessary():
+    """The fix: forwarding the tape's REAL `async_batches` into `shapley_rank`
+    makes both halves of the conjunction converge to necessity=True, unlike
+    `test_temporal_order_undercredits_the_earlier_half_of_a_conjunction`'s
+    sequential-tape limitation, which this leaves completely untouched."""
+    report = run_shapley_concurrent(SCENARIO_GATE_PAYLOAD, k=3, m_samples=2)
+    gate = _by_step(report, 3)
+    payload = _by_step(report, 4)
+    assert gate.necessity is True
+    assert payload.necessity is True
+    assert gate.sufficiency is False
+    assert payload.sufficiency is False
+    assert gate.shapley_value == pytest.approx(0.5)
+    assert payload.shapley_value == pytest.approx(0.5)
+
+
+def test_concurrent_decoys_still_true_negatives():
+    report = run_shapley_concurrent(SCENARIO_GATE_PAYLOAD, k=3, m_samples=2)
+    for step_index in (0, 1, 2, 5):
+        r = _by_step(report, step_index)
+        assert r.necessity is False, f"step{step_index} should not be necessary"
+        assert r.sufficiency is False, f"step{step_index} should not be sufficient"
+
+
+def test_sequential_gate_payload_limitation_is_unaffected_by_the_fix():
+    """`run_shapley` (the untouched, fully-sequential fixture) must keep
+    reproducing the exact documented limitation -- the fix is additive, not a
+    silent change to the existing scenario."""
+    report = run_shapley(SCENARIO_GATE_PAYLOAD, k=3, m_samples=2)
+    gate = _by_step(report, 3)
+    payload = _by_step(report, 4)
+    assert gate.necessity is False
+    assert payload.necessity is True

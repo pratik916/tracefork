@@ -36,7 +36,9 @@ uv run tracefork validate --check    # regression-gate vs experiments/validation
 uv run tracefork bench                # long-tape competing-fault discrimination benchmark
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy
+uv run tracefork --help              # replay, verify, fork, report, receipt, serve, blame, tournament,
+                                      # validate, bench, proxy, export, ingest, prune, coverage,
+                                      # bundle-export, bundle-import
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 bash scripts/e2e.sh                  # single-receipt gate: sync, lint, type-check, tests+coverage,
                                       # validate --check, replay --check, bench, build+twine, one PASS banner
@@ -69,7 +71,21 @@ The product lives in `src/tracefork/`:
   SDK's `platform_headers()` `lru_cache` on `__enter__` so its one internal
   `subprocess.Popen` call (uncached platform detection) doesn't trip the guard on the first
   real API call. Wired into `Recorder`/`AsyncRecorder` via `boundary_guard=` (tri-state:
-  explicit wins over `TraceforkConfig.boundary_guard`, both default `False`).
+  explicit wins over `TraceforkConfig.boundary_guard`, both default `False`). A second,
+  independently opt-in `confinement: ConfinementSpec | None = None` parameter
+  additionally patches `builtins.open` (reject write-mode opens resolving outside
+  `writable_roots`; reads always allowed) and `socket.socket.connect` (reject hosts
+  outside `allowed_hosts`, raised before any DNS/TCP attempt) for the guard's active
+  window, restored symmetrically on exit; `confinement=None` (the default) leaves both
+  completely unpatched. `ConfinementViolationError` subclasses `BoundaryViolationError`.
+  Capabilities are declared as data (`ConfinementSpec`, a frozen dataclass) and verified
+  independently at this boundary rather than derived from the agent's own tool-call
+  args (the confused-deputy hole); this is a fixed local allowlist, not a full OS
+  sandbox — Landlock/Seatbelt-grade backends are an explicit future tier.
+  `ForkEngine.fork()`/`fork_coalition()` (`fork.py`) take a matching `confinement=`
+  kwarg that forces the guard active for the re-executed agent even when
+  `boundary_guard=False`, confining a fork's tail-record phase to a declared
+  writable/network surface.
 - `transport.py` — `TraceforkTransport` (sync) + `AsyncTraceforkTransport` (async) are the
   capture seam, streaming-SSE capable (buffer via `.read()`/`.aread()`). Record mode tees
   request+response bytes into the tape; replay mode serves recorded bytes and
@@ -84,6 +100,9 @@ The product lives in `src/tracefork/`:
   sync transport is untouched (stays positional). `chaos_release_order(tape, seed)` derives a
   seeded, physically-possible reordering of a recorded schedule (chaos-mode replay) for
   race/ordering-bug analysis; **do NOT** add awaits/ordering to the sequential or sync path.
+  A keyword-only `on_exchange` hook (opt-in, default `None`) fires once, immediately
+  after `tape.append_exchange`, in the record branch only — the crash-safe-checkpoint
+  seam (see `checkpoint.py`); never fired on replay or the async ordered-release/chaos path.
 - `tape.py` — `Tape` is content-addressed (sha256 blobs) + an ordered event log,
   persistable to SQLite, with a hash-chain `digest()` fingerprint. `to_bytes`/`from_bytes`
   emit a **versioned envelope** (`TAPE_MAGIC` + uint16 version, then a zstd + content-
@@ -94,7 +113,11 @@ The product lives in `src/tracefork/`:
   completion order of fully-overlapping fan-out); like `boundary`/`agent_name` it is
   persisted but **never** fed into `digest()` (the completion order is already fingerprinted
   by the `exchanges` list ordering), so every existing and every sequential/sync tape's
-  digest is byte-identical and v1/v2/v3 tapes upcast to an empty batch log. It's a JSON
+  digest is byte-identical and v1/v2/v3 tapes upcast to an empty batch log. **v5** adds `provenance`
+  (matcher_name/boundary_guard/nondet_mode, populated by
+  `Recorder`/`AsyncRecorder`); like `async_batches` it is metadata only,
+  **never** fed into `digest()`, and v1-v4 tapes upcast to `provenance={}`
+  — see `replay.py`'s opt-in `ProvenanceMismatchError` check. It's a JSON
   header + zstd blobs, **not pickle** — no
   arbitrary-code-execution risk. `open_sqlite()` is the one hardened connection factory
   (WAL, `synchronous=NORMAL`, `busy_timeout`, `foreign_keys=ON`); writers take `BEGIN
@@ -105,15 +128,201 @@ The product lives in `src/tracefork/`:
   `datetime.datetime` (immutable C type in 3.12+, and a subclass breaks the SDK's pydantic
   schema builder) — agents needing deterministic clocks/random read `NondetSource` directly.
   Optionally wraps the recording window in a `BoundaryGuard` (see `boundary_guard.py`).
+  An opt-in `checkpoint_path=` wires a `CheckpointWriter` (see `checkpoint.py`) into
+  the transport's `on_exchange` hook so each exchange is durably committed as it
+  happens, and calls `finalize(tape)` on a clean `__exit__`/`__aexit__` only —
+  default `None` is byte-identical to before this flag existed.
+- `checkpoint.py` — `CheckpointWriter`/`recover_checkpoint`: opt-in crash-safe
+  incremental recording. Each recorded exchange is committed to a local SQLite
+  file with its own `BEGIN IMMEDIATE`/`COMMIT` (reusing `tape.open_sqlite`) the
+  instant it happens, so a crash before `tape.save()` loses at most the exchange
+  in flight, never the already-recorded prefix. `recover_checkpoint(path)` returns
+  `(tape, was_finalized)`: a mid-crash recovery is an honest linear prefix with
+  `was_finalized=False`; a clean `finalize(tape)` writes the complete tape (draws
+  included) via `Tape.save` and flips `was_finalized=True`. Scoped to exchanges
+  only, not draws — a narrower-than-ideal but honest, documented boundary. Wired
+  into `transport.py`'s record branch via a keyword-only `on_exchange` hook (never
+  fired on replay or the async ordered-release/chaos path) and into
+  `Recorder`/`AsyncRecorder` via `checkpoint_path=`.
 - `fork.py` — `ForkTransport` runs three phases: prefix-replay ($0, request asserted to
   match the parent), mutation-injection (same request, swapped response), tail-record (the
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.
-  `ForkEngine.fork()` re-runs the **same** agent that produced the tape.
+  `ForkEngine.fork()` re-runs the **same** agent that produced the tape. Every `Branch` also
+  carries a content-addressed `branch_digest` (`compute_branch_digest`): `sha256(parent_tape
+  .digest() + delta_tape.digest() + repr(intervened_steps))`, computed in `fork()`/
+  `fork_coalition()` right before constructing the returned `Branch` — Merkle-DAG identity
+  (a node's hash folds in its children's), so identical (parent, delta, intervened_steps)
+  always produce the same digest and `store.py` can key branches by content, resolve
+  fork-of-fork chains, and answer inverse-citation queries as reachability walks. Branch/
+  store-level metadata only — `Tape.digest()` itself is completely untouched. Every `Branch`
+  also carries `parent_tape_digest` (the parent tape's own `digest()` at fork time) and
+  `divergence_exchange_digest` (`compute_divergence_exchange_digest`: sha256 of the exact
+  request+response bytes at the first divergence point) — a Certificate-Transparency-style
+  citable fork point, re-verified independently on every `store.py` `load_branch` (see
+  below) rather than trusted once at write time.
+- `diff.py` — generalized point-to-point / fork-branch diff, purely a
+  sequence-of-steps orchestration layer on top of `divergence.py`'s existing
+  single-step structural-diff primitive (`diff_json`/`diff_request_bytes`/
+  `MISSING`); adds no new diff logic of its own. `branch_diff(parent_tape,
+  branch, from_step=None)` walks a branch's `delta_tape` against its parent
+  from the divergence step onward; `branch` is either a live `fork.Branch`
+  (its `.delta_tape`/`.divergence_step` read directly) or a plain `Tape` (a
+  store-reloaded `delta_tape`, with `divergence_step=` passed explicitly) —
+  decoupled from `TapeStore` itself either way. `tape_diff(tape_a, tape_b,
+  step)` compares two independent tapes at one step index, no parent/child
+  relationship assumed. A step present on only one side (a `delta_tape`
+  shorter than the parent's tail) reports via `MISSING`, never a crash. CLI:
+  `tracefork diff <parent_run_id> <branch_id>` (branch mode) or
+  `<run_id_a> <run_id_b> --step N` (tape mode).
 - `store.py` — `TapeStore`, SQLite persistence for tapes + the branch DAG.
+  `save_tape` is install-or-verify-same-content (git's object-store model):
+  reusing a `run_id` with byte-identical content (compared via `Tape.digest()`,
+  never raw bytes) is an idempotent no-op; genuinely different content raises
+  `TapeConflictError` instead of silently clobbering the prior tape, unless the
+  caller passes `overwrite=True`. The check-then-write stays inside the
+  existing `BEGIN IMMEDIATE`/`_write_lock` transaction — no second lock.
+  `save_branch` gains an optional `branch_id=` parameter (default `None`,
+  generating a fresh uuid exactly as every existing caller already gets):
+  passing it applies the same install-or-verify-same-content CAS guard as
+  `save_tape` (idempotent no-op on identical content, `TapeConflictError` on
+  a genuine collision) so a caller that needs to preserve a branch's id
+  across stores (`bundle.py`'s `import_bundle`) gets the same safety
+  `save_tape` already has, instead of the raw `sqlite3.IntegrityError` a bare
+  collision would otherwise raise. `prune()` is a
+  soft-archive-only retention pass (git gc / borg prune's mark-and-sweep-with-
+  soft-archive discipline, never a hard delete): a tape matching
+  `older_than_iso` (lexical `created_at` cutoff) and/or an explicit `run_ids`
+  allowlist has its branches copied into `branches_archived` and deleted from
+  the live `branches` table FIRST, then its row copied into `tapes_archived`
+  and deleted from the live `tapes` table — the order the live `branches` ->
+  `tapes` foreign key requires — all inside one `BEGIN IMMEDIATE`/
+  `_write_lock` transaction. `dry_run=True` computes the candidate set with
+  zero writes. Archived rows are never deleted by anything; reclaiming that
+  space is a distinct, out-of-scope, higher-risk step. `StorageBackend` is
+  deliberately NOT extended with `prune` (kept `TapeStore`-only for now); the
+  `tracefork prune` CLI command always exits 0 (a maintenance op, not a gate).
+  `save_blame_report`/`save_shapley_report` persist `blame.py`'s
+  `FlipRateResult`/`ShapleyResult`s into a `causal_edges` table (upsert-by-
+  replace on `edge_id=f"{run_id}:{step_index}:{method}"`, so a re-blame
+  replaces rather than duplicates) instead of letting every blame run be
+  computed and discarded; `causal_edges_for_run`/`cited_by`/`causal_closure`
+  read them back — `cited_by` derives citing branch ids straight from the
+  existing `branches` table, and `causal_closure` BFS-walks
+  `branches.parent_run_id` chains (where a branch was promoted to its own
+  tape via `save_tape(delta_tape, run_id=branch_id)`) unioning each
+  generation's `responsible=1` edges. `StorageBackend` gains the same 5
+  signatures; `causal_edges` has no FK to `tapes` (unlike `branches`,
+  `prune()` doesn't need to know about it) and is never fed into
+  `Tape.digest()`. `cli.py`'s `blame` command calls `save_blame_report`
+  additively after its existing JSON write. `sessions`/`spawn_edges` are a
+  SEPARATE new schema for cross-agent orchestration/delegation lineage — NOT
+  `Tape.async_batches` (a single agent's own per-run asyncio fan-out;
+  unrelated, never conflate the two) and NOT the fork/counterfactual
+  `branches` DAG. A session is rooted at one `run_id`; each `spawn_edges`
+  row is a `parent_run_id -> child_run_id` delegation edge (+ optional
+  `spawn_reason`), both FK-checked against `tapes(run_id)` (an unknown
+  run_id raises `sqlite3.IntegrityError`, never silently accepted).
+  Modeling delegation as its OWN graph — distinct from the causal/execution
+  graph `causal_edges` already covers — follows 2026 delegated-execution
+  observability practice: collapsing the two breaks under async fan-out and
+  re-delegation, which `fork.py`/`blame.py` do constantly.
+  `create_session`/`add_spawn_edge` mirror `save_tape`/`save_branch`'s
+  `BEGIN IMMEDIATE` + `self._write_lock` write discipline; `session_tapes`
+  BFS-walks the spawn graph reachable from a session's root (deduplicated —
+  a run reached via more than one path, e.g. a diamond, appears once);
+  `spawn_children`/`spawn_parent` answer the direct-neighbor queries. A NEW,
+  separate `runtime_checkable` `SessionStore` Protocol (not merged into
+  `StorageBackend`, so no third-party `StorageBackend` implementer breaks)
+  names this seam; `TapeStore` satisfies both. `stored_digest`/`all_branch_parents`
+  are two small `TapeStore`-only read helpers (same "not on `StorageBackend`
+  yet" precedent as `prune`) for `fsck.py`: `stored_digest` gates on `PRAGMA
+  table_info(tapes)` so a future `digest` column is an opportunistic stronger
+  check, never a hard dependency; `all_branch_parents` returns every
+  `(branch_id, parent_run_id)` pair regardless of parent liveness, since
+  `list_branches(parent_run_id)` alone can never surface a branch whose parent
+  tape row was force-deleted directly (`foreign_keys=OFF`). `raw_tape_row`/
+  `raw_branch_rows` (read) and `install_raw_tape_row`/`install_raw_branch_row`
+  (write) are four more small `TapeStore`-only helpers, for `bundle.py`'s
+  byte-for-byte export: the read pair returns a stored row's raw BLOB column
+  exactly as stored (zero `Tape.from_bytes`/`to_bytes` decode-reencode); the
+  write pair is a plain `INSERT OR REPLACE` with no CAS guard, deliberately
+  not general-purpose (unlike `save_tape`/`save_branch`) — safe only because
+  `export_bundle` always points it at a fresh bundle file, never a live store.
+  The `branches` table also carries `fork.py`'s content-addressed
+  `branch_digest` (a column + index; Branch/store-level metadata only, never
+  fed into `Tape.digest()`), migrated onto a pre-existing `store.db` via a
+  `PRAGMA table_info`-guarded `ALTER TABLE` in `TapeStore.__init__` (a fresh
+  database gets the column straight from `CREATE TABLE`; an old one is
+  altered in place, no row lost). `save_branch`/`load_branch` gain a
+  `branch_digest=` parameter/return key defaulting to `''`, so every
+  existing caller is unaffected; `find_branch_by_digest` resolves the branch
+  with a given digest, and `branches_forked_from` is the inverse-citation
+  query — which branches used a given digest's branch as their own parent,
+  once that branch's `delta_tape` is itself promoted to a tape via
+  `save_tape(delta_tape, run_id=branch_id)` (the same promotion convention
+  `causal_closure` already relies on) — enabling fork-of-fork chains as a
+  plain reachability walk. `branches` also carries `fork.py`'s
+  `parent_tape_digest`/`divergence_exchange_digest`, migrated in the SAME
+  guarded `ALTER TABLE` pass as `branch_digest` (one migration, not two);
+  `save_branch` gains matching optional parameters (default `''`, every
+  existing caller — including `cli.py`'s fork command, which does not pass
+  them — unaffected). `load_branch` is the re-verification point: when a
+  branch recorded a non-empty `parent_tape_digest`, it recomputes the parent
+  tape's CURRENT digest and compares it against the stored value, raising
+  `ForkPointDriftError` (hard error, never silently logged and continued) on
+  a mismatch; an empty `parent_tape_digest` has nothing to re-verify against
+  and skips the check. `server.py`'s `get_branch` catches
+  `ForkPointDriftError` and maps it to HTTP 409, alongside its existing
+  `KeyError` → 404.
+- `bundle.py` — lossless tape+branch trajectory export/import: a bundle is
+  literally a second, smaller `store.db` (same DDL, same
+  `Tape.to_bytes()` envelope) — `git bundle`'s model, a scoped-down valid
+  store any `TapeStore` can open directly rather than a bespoke archive
+  format. `export_bundle(store, run_id, output_path)` copies `run_id` and its
+  DIRECT branches' BLOB columns byte-for-byte via `store.py`'s four raw-row
+  helpers above — never a `Tape` decode/re-encode round trip, so the bundle's
+  bytes are identical to the source store's, not merely digest-equal.
+  `import_bundle(target, bundle_path)` goes the other way through the
+  EXISTING CAS-guarded `save_tape`/`save_branch` write path (never a raw
+  `INSERT`), preserving each branch's id via `save_branch`'s new `branch_id=`
+  parameter — a genuine content collision on an existing `run_id`/`branch_id`
+  raises `TapeConflictError` instead of silently clobbering; reusing the same
+  ids with byte-identical content is an idempotent no-op. `tracefork
+  bundle-export <run_id> [-o bundle.db] [--store store.db]` / `tracefork
+  bundle-import <bundle.db> [--store store.db]` are the CLI surface,
+  distinct from the lossy OTel/OpenInference `export`/`ingest` commands
+  (`interop.py`) — a bundle is bit-exact replayable, an OTel/OpenInference
+  export is not. Offline/$0, pure local file I/O.
+- `fsck.py` — `store_fsck()` is a read-only, git-fsck-style STRUCTURAL check
+  over a `TapeStore` (distinct from `replay.py`'s replay-FIDELITY
+  verification): every tape must decode via `load_tape`, every branch under a
+  still-live parent must decode via `load_branch` (a decode error is reported
+  as a `FsckRow` failure, never raised, so one bad row doesn't abort the
+  scan), and every branch's `parent_run_id` must resolve to a live tape — an
+  orphaned-parent failure reported even when `load_branch` alone would still
+  succeed. Mirrors `replay.py`'s `CorpusCheckResult` dataclass-list-plus-
+  `all_passed` shape (`StoreFsckResult.rows` / `.all_ok`). Never mutates the
+  store. `tracefork verify --store <db>` is the CLI surface, mutually
+  exclusive with `--corpus`.
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and
   `rank()` raises `BudgetExceededError` if the estimate exceeds `budget_usd`.
+- `ci_calibration.py` — standalone Monte Carlo coverage-calibration harness for
+  `blame.py`'s proportion CIs: fix a KNOWN ground-truth flip probability,
+  simulate thousands of Bernoulli(`n_trials`) replicates over
+  `random.Random(seed)`, compute the candidate interval per replicate via
+  `blame.py`'s REAL `proportion_ci`/`wilson_ci`/`CIMethod` (never a parallel
+  reimplementation of the interval math), and measure empirical coverage —
+  the canonical Brown-Cai-DasGupta (2001) calibration methodology.
+  `simulate_coverage()` runs one `(method, true_p, n_trials)` cell;
+  `run_calibration()` sweeps a grid into a `CalibrationReport` mirroring
+  `bench.py`'s dataclass-report shape. `monte_carlo_error()` is the standard
+  error of the coverage estimate itself, which sets both the tolerance band
+  a cell is judged against and the minimum trustworthy replicate count
+  (`DEFAULT_N_REPEATS = 2000`). Pure math, deterministic given a seed,
+  offline/$0 — no fork/agent/API calls. Standalone diagnostic today (not
+  wired into any CLI command or gate).
 - `judge.py` — OPT-IN, additive on top of `blame.py`'s `Oracle` protocol (never imported by the
   default $0 path): `LLMJudgeOracle` is a binary-rubric judge with few-shot examples, a
   configurable ("cross-family") judge model with a self-judge guard, position-swap averaging
@@ -135,16 +344,71 @@ The product lives in `src/tracefork/`:
   7-exchange tape with several causally-DISTINCT faults planted at once (a root,
   a downstream echo, and a two-part necessary-not-sufficient AND-conjunction), scored
   against `blame.py`'s coalition/temporal-Shapley engine (`shapley_rank`) via `tracefork
-  bench`. 8/9 planted cases resolve correctly; the 9th is a documented, NOT hidden,
-  limitation of single-ordering temporal Shapley (it under-credits the earlier half of a
-  symmetric conjunction) — see `competing_faults.py`'s module docstring and README →
-  Validation scope. Cites, but does not reproduce, the published Who&When (ICML 2025)
-  ~14.2% log-based step-attribution anchor as context only — no external dataset is ever
-  downloaded (offline/$0 invariant applies here too). Zero-diff over the engines: both
-  modules only call `blame.py`'s existing public API.
+  bench`. 10/11 planted cases resolve correctly; the one that doesn't is a documented,
+  NOT hidden, limitation of single-ordering temporal Shapley over a strictly SEQUENTIAL
+  tape (it under-credits the earlier half of a symmetric conjunction) — see
+  `competing_faults.py`'s module docstring and README → Validation scope. Cites, but does
+  not reproduce, the published Who&When (ICML 2025) ~14.2% log-based step-attribution
+  anchor as context only — no external dataset is ever downloaded (offline/$0 invariant
+  applies here too). Zero-diff over the engines: both modules only call `blame.py`'s
+  existing public API. `shapley_rank`'s optional `async_batches` parameter
+  (`tracefork-bge.10`) closes that limitation for tapes recorded through
+  `AsyncTraceforkTransport`: a batch's members genuinely raced, so `_batch_blocks`/
+  `_block_orderings` compute each member's EXACT marginal contribution averaged over
+  every one of the batch's internal join orders (the local Shapley value of that small
+  sub-game), independent of `m_samples`; a falsy `async_batches` (every pre-existing
+  caller) is byte-for-byte the original single-ordering algorithm.
+  `build_concurrent_gate_payload_tape`/`run_shapley_concurrent` record the SAME
+  GATE/PAYLOAD conjunction through a REAL `asyncio.gather` (not a hand-constructed
+  `tape.async_batches`) and both halves now resolve `necessity=True`.
+  `BudgetGovernor.estimate` gains a matching `async_batches` parameter that inflates its
+  pre-flight cost estimate by the batch's `b!` — a safe, if loose, upper bound on the new
+  walk's true (per-position-varying) cost, so real spend never outruns it.
+- `tournament.py` — `TournamentEngine.run()` ranks N pre-specified `Variant`
+  candidate continuations at ONE fixed `step_index` (a different axis from
+  `blame.py`'s per-step-across-runs comparison): each variant is forked `k`
+  times via `ForkEngine.fork` (unchanged, zero-diff), graded by an `Oracle`,
+  and scored by its own success rate (no baseline to flip away from) with a
+  Wilson CI (`blame.proportion_ci`, reused). `TournamentEngine.estimate`
+  prices the run via `BudgetGovernor.estimate` (never a parallel cost model,
+  reused verbatim via probe tapes shaped for this engine's "N variants at one
+  step" cost, unlike blame's "every step once") BEFORE any trial runs, and
+  `run()` raises `blame.py`'s own `BudgetExceededError` if that estimate
+  exceeds `budget_usd`. Forking the tape's LAST exchange has an empty tail —
+  `ForkTransport` never calls its inner transport there — so the common
+  "best-of-N final answers" comparison is genuinely $0. A winner is declared
+  only when the top variant is significantly better than EVERY runner-up:
+  each runner-up's trial count is tested one-sided (`blame.binom_sf_ge`,
+  reused) against the top's observed rate as the null, and the p-values are
+  jointly corrected via Benjamini-Hochberg (`blame.benjamini_hochberg`,
+  reused) at `fdr_q` — so two variants with the same underlying success
+  probability don't produce a spurious winner. `tracefork tournament` is the
+  CLI surface (new command only; `report.py`/`server.py` untouched — a
+  tournament result is a new artifact, not yet wired into the report UI).
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
-  three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
+  four-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).
+  `server.py` also exposes an additive `GET /api/session/{session_id}`
+  (`store.py`'s `sessions`/`spawn_edges`, mirroring `get_run`'s
+  404-on-`KeyError` pattern) — explicitly out of scope for `report.html`'s
+  UI itself (tracefork-bge.12), a JSON-only surface for now. The fourth
+  panel is a fork-tree view (tracefork-bge.15) built on the now-landed
+  `branch_digest`/DAG metadata (tracefork-bge.21) and `store.py`'s
+  already-persisted branch fields: `_tape_to_data`/`generate_report` gain an
+  optional `branches: list[dict] | None = None` parameter defaulting to `[]`
+  (the same falsy empty-state pattern `replay={}` already establishes);
+  `cli.py`'s `report` command threads `store.list_branches(run_id)` through
+  when loading via `run_id`, leaving `branches=None` (documented scope
+  limit, no store to query) on the `--tape` path; `server.py`'s `get_run`
+  adds `data["branches"] = store.list_branches(run_id)` additively.
+  `web/report.html`'s `renderForkTree` draws a git-graph-style row layout
+  (branches ranked by `divergence_step`, edge-labeled with `mutation_desc`/
+  `branch_digest`) as inline SVG — no new JS library, no CDN — following
+  `renderTimeline`'s existing vanilla-JS pattern; a live-mode node click
+  fetches `/api/branch/{id}`, a static report shows an honest
+  'live-mode-only' affordance instead. The panel renders one level (a run's
+  direct branches) — a full multi-level fork-of-fork DAG render is future
+  scope (see `store.py`'s `branches_forked_from`).
 - `wire.py` / `synthetic.py` — Anthropic wire-format builders and the offline
   Scripted/FaultAware fake transports, in the **package** so production never imports from
   `tests/`; `tests/fakes.py` re-exports them.
@@ -154,7 +418,42 @@ The product lives in `src/tracefork/`:
   and a `digest()` match per fixture — `tracefork replay --check <dir>`. `fixtures.py` holds
   the tiny deterministic agents the corpus is built from (kept out of `validate.py` so the
   corpus doesn't couple to fault-testing concerns); `scripts/gen_replay_fixtures.py`
-  (re)generates the corpus offline.
+  (re)generates the corpus offline. `ReplayVerifier.verify()` also runs an opt-in provenance
+  check: if the tape's `provenance` (see `tape.py`) is non-empty and recorded a
+  `matcher_name`, a mismatch against the matcher actually used at replay raises a distinct
+  `ProvenanceMismatchError` instead of a generic byte-diff divergence; empty provenance
+  skips the check entirely.
+- `certificate.py` — `ReplayCertificate`, a frozen dataclass whose `strength`
+  (`UNVERIFIED`/`HASH_MATCHED`/`BIT_EXACT_FULL_REPLAY`) is constructor-enforced against its
+  own `matched`/`total`/fingerprint fields (`ProofEnvelopeError` on overclaim) — a typed
+  ceiling on the bit-exactness claim instead of a bare boolean a caller could misreport.
+  `certificate_from_verification(result, tape)` is the sole producer wired to real data,
+  recomputing the recorded fingerprint from `tape.digest()` rather than trusting `result`'s
+  own field. Additive only: `VerificationResult.certificate` defaults to `None` and
+  `ReplayVerifier.verify()` never sets it; `tracefork replay`/`verify` attach one and print
+  an extra receipt line, every other caller is unaffected.
+- `receipt.py` — `build_trust_receipt(tape, replay=, validate_report=,
+  bench_report=)` is pure composition, no new engine logic: a JSON-safe,
+  in-toto-Statement-shaped (subject-by-digest + predicate, unsigned today,
+  upgradeable to DSSE later) dict combining `tape.digest()[:16]`/`boundary`/
+  `content_redacted` with already-computed evidence — a fresh ($0)
+  `ReplayVerifier.verify()` result (via `verification_result_to_dict`, the
+  same conversion `cli.py`'s `report` command already applies) plus the
+  parsed `validation_report.json`/`bench_report.json` dicts `validate`/
+  `bench` already write. Any evidence left `None` renders as an explicit
+  `{"available": False}` marker, never an omitted key or a defaulted
+  "verified" claim. `build_shield_json(receipt)` derives a Shields.io
+  endpoint-badge dict: green (`brightgreen`) only when replay is bit-exact
+  AND validate's `overall_top1_precision` clears the same 0.7 bar
+  `cli.py`'s `validate` command already prints against, red on a detected
+  replay divergence, yellow otherwise — a `content_redacted` tape (see
+  `redact.py` / tracefork-bge.20) never badges green regardless of the
+  other evidence. The badge message embeds the receipt's own fingerprint
+  prefix so a stale badge is visible at a glance. `tracefork receipt`
+  (mirrors `report`'s run_id/--tape/--agent loading) is the CLI surface,
+  writing `receipt.json` (+ an optional Shields.io badge JSON via
+  `--shield-output`); offline/$0 — it only re-runs replay and reads
+  already-generated JSON off disk, never triggers a live blame call.
 - `proxy.py` — `RecordProxy`/`ReplayProxy` (wired into FastAPI apps via
   `build_record_app`/`build_replay_app`) are a **localhost base-URL record/replay proxy**
   for clients the in-process httpx seam can't reach (curl, Node, Go, non-wrapped Python):
@@ -187,7 +486,23 @@ The product lives in `src/tracefork/`:
   framework's exact internal attribute names/event shapes aren't a documented
   stable API, injection is defensive (a short candidate list, never one
   hard-coded name) — see each module's docstring.
-- `cli.py` — Typer entry point for all eleven commands.
+- `coverage.py` — determinism-coverage report for an already-loaded `Tape`:
+  `tape_draw_coverage` tallies `nondet.py`'s three draw kinds
+  (`clock`/`uuid`/`random`, only kinds that occurred — no zero-filled
+  entries) and whether concurrency (`async_batches`) / `BoundaryGuard`
+  (`provenance["boundary_guard"]`) were recorded/active; plus, given the
+  agent's source *text*, `scan_source_for_nondeterminism_calls` is a
+  best-effort `ast.parse`-only lint (never imports/executes the source) for
+  call sites shaped like what `boundary_guard.py` itself patches
+  (`Thread.start`/`Popen.__init__`/`random.random`/`time.monotonic`/
+  `time.sleep`) vs. that module's own documented, permanent exclusions
+  (`datetime.datetime.now()`/`time.time()`, always informational, never a
+  violation regardless of guard state). `tracefork coverage <tape>
+  [--agent-source FILE]` is the CLI surface. Read-only: never touches
+  `Tape.digest()`/`to_bytes()`/`from_bytes()`.
+- `cli.py` — Typer entry point for all top-level commands, plus a nested
+  `session` sub-app (`create`/`spawn`/`show`) for `store.py`'s
+  orchestration-session/spawn-lineage schema.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
@@ -201,7 +516,7 @@ sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest
 plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
 base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
 documented scope boundaries called out explicitly, not papered over) — all
-offline/$0. `tests/test_cli_smoke.py` invokes every one of the eleven CLI
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the sixteen CLI
 subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
 call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
 to a no-op (proving the CLI's own wiring without binding a socket) plus a
@@ -210,6 +525,21 @@ serving behavior. `scripts/e2e.sh` runs the whole gate — sync, lint, format,
 mypy, tests+coverage, `validate --check`, `replay --check`, `bench`, build+twine
 — as one script with a single PASS/FAIL verdict. Both test files are additive
 only: zero-diff over `transport.py`/`tape.py`/`fork.py`/`blame.py`/`matcher.py`.
+`scripts/check_executed_evidence.py` is the executed-evidence CI sentinel
+(tracefork-bge.25): both `scripts/e2e.sh` and `.github/workflows/ci.yml` run
+pytest with `--junit-xml=junit.xml`, then this script cross-checks the
+JUnit report against `tests/required_test_ids.txt` (a curated
+classname::name manifest of this repo's most safety-critical tests — the
+negative control, `Tape.digest()`/round-trip tests, bench's
+`unexpected_failures` regression, the `ReplayCertificate` negative control,
+checkpoint/bundle round-trips, and the Hypothesis property tests) and hard-
+fails (exit 1) if any required id is absent or present-but-skipped, so a
+narrowed `-k` selection or a silent skip can no longer pass CI/e2e green on a
+bare 0 exit code alone. Pure stdlib `xml.etree.ElementTree` parsing of a
+report pytest itself just wrote in the same run (not untrusted input) — see
+the module's own docstring for that trust-boundary note. Renaming/removing a
+manifested test is a maintenance obligation: update the manifest in the same
+change, or the sentinel correctly starts failing.
 
 ## Invariants / conventions
 

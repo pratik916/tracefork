@@ -91,6 +91,12 @@ PASS/FAIL verdict:
 bash scripts/e2e.sh
 ```
 
+The tests+coverage step writes `junit.xml`, which `scripts/check_executed_evidence.py`
+then cross-checks against `tests/required_test_ids.txt` — a manifest of this repo's
+most safety-critical test ids (negative control, tape digest/round-trip, bench's
+regression check, and more) — so a narrowed test selection or a silently-skipped
+required test fails CI/e2e even though pytest's own exit code was 0.
+
 `tracefork validate` prints:
 
 ```
@@ -143,14 +149,20 @@ uv run tracefork --help
 | `replay  <tape> --agent pkg.mod:fn` | Replay a tape and print the bit-exact verification receipt. |
 | `replay  --check <fixtures dir>` | Replay-as-regression gate: assert every fixture in a committed tape corpus replays bit-exact and its `digest()` matches. |
 | `verify  <tape> --agent pkg.mod:fn` | Verify replay; exit non-zero on drift (CI gate). |
+| `verify  --corpus [--corpus-dir <dir>]` | Gate a committed fixture corpus (default `experiments/replay_fixtures`) — same check as `replay --check`, exit non-zero on any fixture failure. |
 | `fork    <run_id> --step N --response f --agent pkg.mod:fn` | Fork a run at step N with a mutated response; record the counterfactual branch. |
+| `coalition-fork <run_id> --intervene N:f [--intervene M:g ...] --agent pkg.mod:fn` | Fork a run at a SET of steps forced jointly (`do(S)`) — the public what-if DSL over the already-tested `CoalitionSpec`/`fork_coalition`. |
+| `diff    <parent_run_id> <branch_id> [--store]` | Structural diff of a branch's `delta_tape` against its parent, from the divergence step onward. |
+| `diff    <run_id_a> <run_id_b> --step N [--store]` | Structural diff of two independent tapes at one step index (no parent/child relationship assumed). |
 | `blame   <run_id> --agent pkg.mod:fn [--k 10] [--budget 5.0]` | Rank every step by causal flip-rate with 95% CIs (re-runs the agent; budget-capped). |
 | `report  <run_id> \| --tape <tape> -o out.html` | Render the self-contained three-panel HTML report. |
+| `receipt <run_id> \| --tape <tape> [--agent pkg.mod:fn] -o receipt.json [--shield-output shield.json]` | Build a shareable, JSON-safe trust receipt (replay/validate/bench evidence, explicit when absent) + an optional Shields.io badge JSON. Offline/$0 — see [Trust receipt](#trust-receipt--badge-opt-in). |
 | `serve   [--store store.db] [--port 7777]` | Serve the live web UI (same-origin, 127.0.0.1). |
 | `validate [--k 3] [--n-runs 5] [--check]` | Run the fault-injection suite; `--check` gates against the committed report. |
 | `bench   [--k 3] [--m-samples 2]` | Long-tape competing-fault benchmark: does the coalition/temporal-Shapley engine discriminate *several* simultaneously planted causes, not just detect one? See [Validation scope](#validation-scope). |
 | `export  <run_id> --otel\|--openinference -o out.json` | Export a tape (+ optional `--blame-report`) as an OTel GenAI trace or an OpenInference dataset. |
 | `ingest  <trace.json> --otel\|--openinference -o out.tape.sqlite` | Build a tape's step structure from an externally-produced trace — blame-by-re-execution only, **not** bit-exact replayable. |
+| `prune   [--older-than-days N] [--run-id id ...] [--dry-run]` | Archive tapes (and their branches) older than a cutoff and/or by explicit `run_id` — soft-archive only, never a hard delete; see [Prune / retention](#prune--retention-opt-in). |
 | `proxy   record\|replay --tape <tape> [--upstream url] [--port 8899]` | Localhost base-URL record/replay proxy for non-Python clients (curl, Node, Go, ...) — see [Localhost record/replay proxy](#localhost-recordreplay-proxy-for-non-python-clients-opt-in). |
 
 Replay, verify, fork, and the offline demos need no key. `blame` against a *real* run
@@ -181,17 +193,26 @@ is the contract between them.
   parent tape for $0, request asserted to match — the agent must be deterministic up to
   the fork point), **mutation-injection** (same request, swapped response), and
   **tail-record** (the counterfactual continuation recorded fresh). A `Branch` carries
-  `prefix_replayed`/`tail_recorded` counters that quantify the savings.
+  `prefix_replayed`/`tail_recorded` counters that quantify the savings. `ForkEngine.fork()`/
+  `fork_coalition()` take an opt-in `boundary_guard=` (default `False`) that wraps just the
+  re-executed `agent_fn(client)` call in a fresh `BoundaryGuard`, confining that fork trial's
+  own tool-call/thread/random/subprocess surface.
 - **`blame.py`** — forks each step `k` times, re-runs the agent, grades the outcome via an
   `Oracle`, and counts flips vs. the parent outcome. `wilson_ci()` gives the interval;
-  `BudgetGovernor` estimates fork count and dollar cost before any spend.
+  `BudgetGovernor` estimates fork count and dollar cost before any spend. `rank()`/
+  `shapley_rank()` forward the same `boundary_guard=` flag into every fork they issue (including
+  `shapley_rank()`'s internal sufficiency pass); a trial that trips the guard is counted
+  `UNDEFINED`, never a silent non-flip.
 - **`faults.py` / `validate.py`** — five fault classes, each producing *valid* Anthropic
   JSON with a marker embedded inside a content field. A synthetic agent echoes each
   response into its next request, so an injected fault propagates through a fork to a
   fault-aware tail and flips the outcome — letting the blame engine be scored against
   ground truth entirely offline.
 - **`report.py` / `server.py` / `web/report.html`** — a single, dependency-free HTML file
-  (vanilla JS, no npm) rendered statically by `report` or served live by `serve`.
+  (vanilla JS, no npm) rendered statically by `report` or served live by `serve`; a
+  fourth panel renders the run's fork tree (branches ranked by divergence step,
+  edge-labeled with each branch's mutation and content-addressed digest), live-clickable
+  to fetch `/api/branch/{id}` when served, metadata-only in a static report.
 - **`interop.py`** — `gen_ai.*`/OpenInference export (`export`) and ingest (`ingest`); see
   [OTel / OpenInference interop](#otel--openinference-interop-opt-in) for the precise,
   blame-only-not-bit-exact scope of the ingest direction.
@@ -301,6 +322,33 @@ a **structlog JSON** logging pipeline (`observability.configure_structlog_json()
 double opt-in even when installed (`enable_otel_instrumentation()` or
 `TRACEFORK_OTEL_ENABLED=1`), so merely installing the extra changes nothing.
 
+## Prune / retention (opt-in)
+
+Tapes and branches otherwise accumulate forever. `tracefork prune` mirrors git
+gc / borg prune's mark-and-sweep-with-**soft-archive** discipline: it never
+hard-deletes anything. A matching tape (and its branches) moves from the live
+`tapes`/`branches` tables into `tapes_archived`/`branches_archived` — both
+stay queryable there indefinitely; reclaiming that space is a deliberately
+separate, out-of-scope, higher-risk step.
+
+```bash
+# Preview what a 30-day retention window would archive -- zero writes.
+uv run tracefork prune --older-than-days 30 --dry-run
+
+# Archive it for real, and/or name specific run_ids explicitly (repeatable).
+uv run tracefork prune --older-than-days 30
+uv run tracefork prune --run-id abc123 --run-id def456
+```
+
+A tape matches if it's older than `--older-than-days` **or** named by
+`--run-id` — passing neither matches nothing (never "everything" by
+accident). `TapeStore.prune()` does the real work inside one transaction:
+branches are archived-and-deleted first, then their parent tape, satisfying
+the live `branches -> tapes` foreign key. The CLI always exits 0 — pruning is
+a maintenance operation, not a pass/fail gate. A pruned `run_id`'s report
+links go stale: `serve`'s `list_runs`/`get_run`/`get_branch` correctly 404 it
+via the same `KeyError` path any unknown id already takes.
+
 ## Framework adapters (opt-in)
 
 Most agents in the wild are built on a framework, not raw SDK calls — and a
@@ -366,6 +414,29 @@ Each adapter's real-framework wrapper is import-guarded and validated against a
 synthetic stand-in mimicking the framework's interface (never a live call) in the
 offline test suite; the thin real subclasses are only reachable — and only
 smoke-tested — when the framework is actually installed (`pytest.importorskip`).
+
+## Plugin / extension API (opt-in)
+
+Every pluggable seam in tracefork — provider adapters, blame oracles, tape
+serializers, request matchers, and the framework adapters above — is backed
+by one generic mechanism: `tracefork.plugins.Registry`, a dict-backed
+registry plus an opt-in `importlib.metadata` entry-point loader, so a
+third-party package can ship (say) a custom request matcher or a Bedrock
+provider adapter without forking tracefork.
+
+**Nothing loads automatically.** A package on `sys.path` advertising a
+`tracefork.matchers` (or `.providers`/`.oracles`/`.serializers`/`.adapters`)
+entry point does nothing until a caller explicitly allowlists it via
+`Registry.load_entry_points(allow={...})`/`allow_all=True`, or an operator
+sets the `TRACEFORK_ALLOW_PLUGINS` environment variable. Merely installing a
+dependency is never enough, by itself, to inject code into tracefork's
+record/replay/fork/blame path.
+
+Full contract — the five groups, each protocol, the security model, and a
+stability policy for what's public API versus internal — is documented in
+[`docs/plugin-api.md`](docs/plugin-api.md); `examples/plugin_example/` is a
+complete, standalone example package (its own `pyproject.toml`, its own
+declared entry point) implementing a custom `RequestMatcher` end to end.
 
 ## AWS Bedrock (opt-in)
 
@@ -454,6 +525,38 @@ docstring for the exact rule. Storage/hashing reuse `tape.py` unchanged, and the
 replay-time divergence check reuses `matcher.py`'s existing `RequestMatcher` protocol —
 nothing new was invented for either.
 
+## Trust receipt / badge (opt-in)
+
+`report.py`'s HTML panel and `validate`/`bench`'s JSON files are all *disk-only* —
+nothing about a run's evidence is easy to externalize into a README badge or hand to a
+third party. `tracefork receipt` composes exactly that evidence into one shareable,
+JSON-safe document — no new engine logic, purely already-computed numbers:
+
+```bash
+uv run tracefork receipt --tape run.tape.sqlite --agent pkg.mod:fn \
+  --validation-report validation_report.json --bench-report bench_report.json \
+  -o receipt.json --shield-output shield.json
+```
+
+`receipt.json` mirrors an [in-toto Statement](https://github.com/in-toto/attestation)
+shape (subject-by-digest + predicate) — unsigned today, upgradeable to a DSSE-signed
+envelope later without a rewrite: `tape_fingerprint` (`tape.digest()[:16]`), `boundary`,
+`content_redacted`, and a `replay`/`validate`/`bench` block per piece of evidence. Any
+evidence not supplied renders as an explicit `{"available": false}` marker — **never** an
+omitted key or a defaulted "verified" state; a receipt must never overstate what was
+actually checked. `--agent` re-runs replay fresh ($0, no network); `--validation-report`/
+`--bench-report` just read the JSON `validate`/`bench` already wrote to disk.
+
+`shield.json` (via `--shield-output`) is a [Shields.io endpoint-badge](https://shields.io/badges/endpoint-badge)
+JSON, so the same receipt can drive a live README badge: `brightgreen` only when replay
+was bit-exact **and** `validate`'s precision clears the same 0.7 bar `tracefork validate`
+already prints against; `red` on a detected replay divergence; `yellow` for every other
+case — including a `content_redacted` tape (see Redaction above), which must never badge
+green regardless of the other numbers. The badge message always embeds the receipt's own
+fingerprint prefix, so a stale badge (tape regenerated, badge not refreshed) is visible at
+a glance rather than silently misleading. Offline/$0 the whole way: `receipt` never
+triggers a live `blame` call.
+
 ## Validation scope
 
 Read this section before trusting any accuracy number elsewhere in this README — it says
@@ -483,22 +586,29 @@ against each one's known ground truth:
 |---|---|---|
 | a **root cause** (necessary *and* sufficient) | necessary, sufficient | matches |
 | a **downstream echo** of the root — independently "sufficient" under naive single-step flip-rate (ties the root exactly), must not be blamed as root | sufficient, NOT necessary | matches |
-| a **two-part AND-conjunction** — neither half alone is sufficient; both halves are genuinely necessary | necessary, NOT sufficient (both halves) | the **later**-joining half matches; the **earlier** half reads `necessity=False` |
+| a **two-part AND-conjunction** on a strictly SEQUENTIAL tape — neither half alone is sufficient; both halves are genuinely necessary | necessary, NOT sufficient (both halves) | the **later**-joining half matches; the **earlier** half reads `necessity=False` |
+| the SAME two-part AND-conjunction, recorded through a genuinely-concurrent `asyncio.gather` (`tape.async_batches` carries a real batch) | necessary, NOT sufficient (both halves) | both halves match — `shapley_rank`'s `async_batches` parameter closes the sequential-tape blind spot above |
 | the same root cause re-run **alongside** the AND-conjunction (an over-determined run) | root: necessary + sufficient; conjunction halves: correctly NOT necessary, since the root alone already guarantees failure | matches |
-| 4 unrelated decoy steps across the three scenarios above | neither necessary nor sufficient | matches |
+| 4 unrelated decoy steps across the four scenarios above | neither necessary nor sufficient | matches |
 
-**8 of 9 cases resolve exactly as planted** (Wilson 95% CI on that 8/9 at the CLI's
-defaults, `--k 3 --m-samples 2`: roughly `[0.56, 0.98]` — small-n, read the interval, not
+**10 of 11 cases resolve exactly as planted** (Wilson 95% CI on that 10/11 at the CLI's
+defaults, `--k 3 --m-samples 2`: roughly `[0.62, 0.98]` — small-n, read the interval, not
 just the point estimate; `tracefork bench` prints it exactly). The one documented exception:
-`shapley_rank`'s necessity check is a **temporal-order-restricted** Shapley walk with
-exactly one valid permutation (an explicit design trade-off — see the function's
-docstring), so for a *symmetric* two-part conjunction it can only detect the marginal
-contribution of the **later**-joining half; the earlier half is genuinely necessary too, but
-its own marginal is measured *before* the conjunction completes, so it reads
-`necessity=False`. `tracefork bench` reports this itself (`[LIMITATION]`, never silently
-passed), and it's pinned by
+on a strictly SEQUENTIAL tape, `shapley_rank`'s necessity check is a
+**temporal-order-restricted** Shapley walk with exactly one valid permutation (an explicit
+design trade-off — see the function's docstring), so for a *symmetric* two-part conjunction
+it can only detect the marginal contribution of the **later**-joining half; the earlier half
+is genuinely necessary too, but its own marginal is measured *before* the conjunction
+completes, so it reads `necessity=False`. `tracefork bench` reports this itself
+(`[LIMITATION]`, never silently passed), and it's pinned by
 [`tests/test_competing_faults.py::test_temporal_order_undercredits_the_earlier_half_of_a_conjunction`](tests/test_competing_faults.py)
-— see `src/tracefork/competing_faults.py`'s module docstring for the full mechanism.
+— see `src/tracefork/competing_faults.py`'s module docstring for the full mechanism. This is
+a property of a strictly sequential tape, not of the engine itself: the SAME conjunction
+recorded through a genuine `asyncio.gather` (`build_concurrent_gate_payload_tape`) gives
+`shapley_rank`'s `async_batches` parameter a real partial order to sample both join orders
+of, and both halves correctly read `necessity=True` — see the `concurrent_gate_completes_
+conjunction`/`concurrent_payload_completes_conjunction` cases in `tracefork bench`'s own
+output.
 
 **Where this sits next to the field.** Zhang et al., "Who&When: Uncover the Whodunit and
 When of LLM Multi-Agent Failures" (ICML 2025), report
@@ -532,7 +642,7 @@ src/tracefork/      transport, tape, nondet, recorder, matcher, redact, fork, st
                     proxy (opt-in localhost base-URL record/replay proxy for non-Python clients),
                     providers/ (anthropic, openai, gemini, bedrock adapters)
 src/tracefork_spike/  the original bit-exact record/replay spike
-web/report.html     the single-file three-panel UI
+web/report.html     the single-file four-panel UI (timeline, detail, blame, fork tree)
 examples/           runnable demo that produces the report above
 tests/              616 offline tests ($0, no key)
 experiments/        committed reference report for `validate --check`

@@ -2,7 +2,9 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, validate, bench, export, ingest.
+Commands: replay, verify, fork, coalition-fork, diff, report, receipt, serve,
+blame, tournament, validate, bench, export, ingest, prune, proxy, coverage,
+bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ def replay(
     """Replay a tape and print the verification receipt, or gate a fixture corpus with --check."""
     import importlib
 
+    from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
 
@@ -54,7 +57,8 @@ def replay(
     agent_fn = getattr(mod, fn_name)
 
     result = ReplayVerifier(tape, agent_fn).verify()
-    _print_receipt(tape_path, result)
+    result.certificate = certificate_from_verification(result, tape)
+    _print_receipt(tape_path, result, tape)
     raise typer.Exit(0 if result.bit_exact else 1)
 
 
@@ -84,28 +88,48 @@ def verify(
     tape_path: Path = typer.Argument(None, help="Single tape to verify"),  # noqa: B008
     agent: str = typer.Option(None, "--agent", "-a", help="Import path of agent fn"),
     corpus: bool = typer.Option(
-        False, "--corpus", help="Verify all tapes in experiments/validation_tapes/"
+        False,
+        "--corpus",
+        help="Gate a committed fixture corpus (replay-as-regression); see --corpus-dir",
+    ),
+    corpus_dir: Path = typer.Option(  # noqa: B008
+        Path("experiments/replay_fixtures"),
+        "--corpus-dir",
+        help="Fixture corpus dir for --corpus (default: experiments/replay_fixtures, "
+        "the same corpus 'replay --check' and CI already use)",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        None,
+        "--store",
+        help="Path to a store.db: run a read-only structural fsck (every tape/"
+        "branch decodes, every branch's parent resolves) instead of replay-"
+        "verifying a single tape. Mutually exclusive with --corpus.",
     ),
 ) -> None:
-    """Verify bit-exact replay. Exit 1 on drift."""
+    """Verify bit-exact replay (single tape or --corpus), or run a read-only
+    structural fsck over a store with --store <db path>. Exit 1 on drift, on
+    any fsck row failure, on any --corpus fixture failure, or if both
+    --corpus and --store are passed."""
     import importlib
 
+    from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
 
+    if corpus and store is not None:
+        typer.echo("Pass at most one of --corpus or --store")
+        raise typer.Exit(1)
+
+    if store is not None:
+        _run_store_fsck(store)
+        return
+
     if corpus:
-        corpus_dir = Path("experiments/validation_tapes")
-        tapes = list(corpus_dir.glob("*.tape.sqlite"))
-        if not tapes:
-            typer.echo("No tapes found in experiments/validation_tapes/")
-            raise typer.Exit(1)
-        for tp in sorted(tapes):
-            typer.echo(f"  {tp.name}: skipped (agent not specified per-tape)")
-        typer.echo(f"Corpus: {len(tapes)} tapes scanned")
-        raise typer.Exit(0)
+        _run_replay_check(corpus_dir)
+        return
 
     if tape_path is None or agent is None:
-        typer.echo("Provide --agent and a tape path, or use --corpus")
+        typer.echo("Provide --agent and a tape path, or use --corpus/--store")
         raise typer.Exit(1)
 
     tape = Tape.load(str(tape_path))
@@ -113,8 +137,39 @@ def verify(
     mod = importlib.import_module(module_path)
     agent_fn = getattr(mod, fn_name)
     result = ReplayVerifier(tape, agent_fn).verify()
-    _print_receipt(tape_path, result)
+    result.certificate = certificate_from_verification(result, tape)
+    _print_receipt(tape_path, result, tape)
     raise typer.Exit(0 if result.bit_exact else 1)
+
+
+def _run_store_fsck(store_path: Path) -> None:
+    """`verify --store` body: a read-only structural fsck over a `TapeStore`
+    database (see `fsck.store_fsck`). Exits 1 if any tape/branch fails to
+    decode or a branch's parent can't resolve (orphaned parent); never
+    mutates the store."""
+    from tracefork.fsck import store_fsck
+    from tracefork.store import TapeStore
+
+    if not store_path.exists():
+        typer.echo(f"No store found at {store_path}")
+        raise typer.Exit(1)
+
+    db = TapeStore(str(store_path))
+    try:
+        result = store_fsck(db)
+    finally:
+        db.close()
+
+    typer.echo(f"\n  tracefork verify --store {store_path}")
+    typer.echo(f"  {'─' * 60}")
+    if not result.rows:
+        typer.echo("  (store is empty — nothing to check)")
+    for row in result.rows:
+        status = "PASS" if row.passed else "FAIL"
+        typer.echo(f"  [{status}] {row.kind:<7} {row.id:<14} {row.reason}")
+    n_pass = sum(1 for r in result.rows if r.passed)
+    typer.echo(f"\n  {n_pass}/{len(result.rows)} row(s) passed\n")
+    raise typer.Exit(0 if result.all_ok else 1)
 
 
 @app.command()
@@ -158,6 +213,7 @@ def fork(
         divergence_step=step,
         delta_tape=branch.delta_tape,
         mutation_desc=desc,
+        branch_digest=branch.branch_digest,
     )
 
     typer.echo("\n  Fork created")
@@ -166,6 +222,168 @@ def fork(
     typer.echo(f"  divergence_step {step}")
     typer.echo(f"  delta_exchanges {len(branch.delta_tape.exchanges)}")
     typer.echo(f"  description     {desc or '(none)'}\n")
+
+
+@app.command()
+def coalition_fork(
+    run_id: str = typer.Argument(..., help="Parent run_id to coalition-fork from"),
+    intervene: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--intervene",
+        help="A 'step:response_file' intervention, repeatable (>=1 required) -- "
+        "every step is forced to its response_file's bytes JOINTLY with every "
+        "other --intervene (the coalition/Shapley do(S) primitive)",
+    ),
+    agent: str = typer.Option(..., "--agent", "-a", help="Import path of post-fork agent fn"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    desc: str = typer.Option("", "--desc", "-d", help="Human description of the coalition"),
+) -> None:
+    """Fork a run at a SET of steps forced jointly, record the new branch.
+
+    Generalizes `fork` (one divergence step) to a public what-if DSL: each
+    `--intervene step:response_file` pins one intervention locus; every
+    locus is resampled under the same forced-response policy in a single
+    joint pass. Only the coalition's first (lowest-index) intervention is
+    request-matched against the parent tape -- the genuine point of first
+    divergence; every later intervention is forced unconditionally, since
+    the agent's requests have already diverged by then. This pinned-locus +
+    same-policy-resampling discipline is what a coalition/Shapley blame
+    computation needs from its intervention primitive -- distinct from a
+    naive "fork anywhere and diff", where the intervention point and the
+    resampling policy are both ad hoc.
+    """
+    import importlib
+    import json
+
+    from tracefork.fork import CoalitionSpec, ForkEngine, StepIntervention
+    from tracefork.store import TapeStore
+
+    interventions = []
+    for spec in intervene:
+        step_str, sep, response_path = spec.partition(":")
+        if not sep or not step_str or not response_path:
+            raise typer.BadParameter(f"--intervene must be 'step:response_file', got {spec!r}")
+        try:
+            step = int(step_str)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--intervene step must be an integer, got {step_str!r}"
+            ) from exc
+        response_file = Path(response_path)
+        if not response_file.is_file():
+            raise typer.BadParameter(f"--intervene response file not found: {response_path!r}")
+        interventions.append(
+            StepIntervention(step=step, mutated_response=response_file.read_bytes())
+        )
+
+    try:
+        spec_obj = CoalitionSpec(interventions=tuple(interventions), mutation_desc=desc)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    db = TapeStore(str(store))
+    parent_tape = db.load_tape(run_id)
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    mod = importlib.import_module(module_path)
+    agent_fn = getattr(mod, fn_name)
+
+    try:
+        branch = ForkEngine.fork_coalition(parent_tape, spec_obj, agent_fn)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    # Coalition step list + description round-trip through the existing
+    # free-text `mutation_desc` column (no store.py schema change) -- see
+    # `store.py`'s `save_branch`/`load_branch`.
+    mutation_desc_json = json.dumps(
+        {"coalition_steps": list(branch.intervened_steps), "desc": desc}
+    )
+
+    branch_id = db.save_branch(
+        parent_run_id=run_id,
+        divergence_step=branch.divergence_step,
+        delta_tape=branch.delta_tape,
+        mutation_desc=mutation_desc_json,
+        branch_digest=branch.branch_digest,
+    )
+
+    typer.echo("\n  Coalition fork created")
+    typer.echo(f"  branch_id        {branch_id}")
+    typer.echo(f"  parent_run_id    {run_id}")
+    typer.echo(f"  intervened_steps {list(branch.intervened_steps)}")
+    typer.echo(f"  delta_exchanges  {len(branch.delta_tape.exchanges)}")
+    typer.echo(f"  description      {desc or '(none)'}\n")
+
+
+@app.command()
+def diff(
+    id_a: str = typer.Argument(..., help="parent run_id (default mode), or run_id_a (with --step)"),
+    id_b: str = typer.Argument(..., help="branch_id (default mode), or run_id_b (with --step)"),
+    step: int = typer.Option(
+        None,
+        "--step",
+        help="Compare id_a/id_b as two independent tapes at this single step "
+        "index, instead of the default parent-run-vs-branch mode",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Structural diff: a branch against its parent (default), or two tapes at
+    one step (--step). Reuses `divergence.py`'s structural-diff primitive,
+    walked over a range of steps -- see `diff.py`."""
+    from tracefork.diff import branch_diff, tape_diff
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        if step is not None:
+            tape_a = db.load_tape(id_a)
+            tape_b = db.load_tape(id_b)
+            step_diffs = (tape_diff(tape_a, tape_b, step),)
+            heading = f"tracefork diff {id_a} {id_b} --step {step}"
+        else:
+            parent_tape = db.load_tape(id_a)
+            branch_row = db.load_branch(id_b)
+            range_diff = branch_diff(
+                parent_tape,
+                branch_row["delta_tape"],
+                divergence_step=branch_row["divergence_step"],
+            )
+            step_diffs = range_diff.steps
+            heading = f"tracefork diff {id_a} {id_b}"
+    finally:
+        db.close()
+
+    _print_diff_receipt(heading, step_diffs)
+    n_changed = sum(1 for s in step_diffs if s.changed)
+    raise typer.Exit(0 if n_changed == 0 else 1)
+
+
+def _print_diff_receipt(heading: str, step_diffs) -> None:
+    """Operator-facing receipt for `diff` — one line per step, PASS when
+    unchanged, FAIL (with the field-diff count) otherwise. Mirrors
+    `_run_replay_check`'s PASS/FAIL-per-row style."""
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    for s in step_diffs:
+        if s.changed:
+            n = len(s.request_diffs) + len(s.response_diffs)
+            typer.echo(f"  [FAIL] step {s.step_index:<4} {n} field(s) differ")
+            for d in s.request_diffs:
+                typer.echo(f"           request  {d.path}: {d.recorded!r} -> {d.live!r}")
+            for d in s.response_diffs:
+                typer.echo(f"           response {d.path}: {d.recorded!r} -> {d.live!r}")
+        else:
+            typer.echo(f"  [PASS] step {s.step_index:<4} identical")
+    n_changed = sum(1 for s in step_diffs if s.changed)
+    if n_changed == 0:
+        typer.echo(f"\n  {len(step_diffs)}/{len(step_diffs)} step(s) identical\n")
+    else:
+        typer.echo(f"\n  {n_changed}/{len(step_diffs)} step(s) changed\n")
 
 
 @app.command()
@@ -195,12 +413,20 @@ def report(
         "per-step trust flags (divergence rate, UNDEFINED trial counts) in the report",
     ),
 ) -> None:
-    """Generate a self-contained HTML report from a tape."""
+    """Generate a self-contained HTML report from a tape.
+
+    When loaded via `run_id` (from `store`), the run's saved branches are
+    looked up and embedded as the report's fork-tree panel data
+    (tracefork-bge.15). The `--tape` path has no store to look branches up
+    in — an honest, documented scope limit: those reports render an empty
+    fork tree rather than a silently-populated one.
+    """
     import json as _json
 
     from tracefork.report import generate_report
     from tracefork.tape import Tape
 
+    branches: list[dict] | None = None
     if tape_path:
         tape = Tape.load(str(tape_path))
     elif run_id:
@@ -208,6 +434,7 @@ def report(
 
         db = TapeStore(str(store))
         tape = db.load_tape(run_id)
+        branches = db.list_branches(run_id)
     else:
         typer.echo("Provide a run_id or --tape path")
         raise typer.Exit(1)
@@ -228,8 +455,107 @@ def report(
         blame_data = _json.loads(blame_report.read_text())
         blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
 
-    generate_report(tape, output, blame=blame_dict, replay=replay_data)
+    generate_report(tape, output, blame=blame_dict, replay=replay_data, branches=branches)
     typer.echo(f"Report written to {output}")
+    _print_trust_lines(tape)
+
+
+@app.command()
+def receipt(
+    run_id: str = typer.Argument(None, help="run_id to build a trust receipt for (from store)"),
+    tape_path: Path = typer.Option(  # noqa: B008
+        None, "--tape", "-t", help="Path to a .tape.sqlite file"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    agent: str = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this tape "
+        "(pkg.mod:fn); re-replayed ($0) to embed replay evidence in the receipt",
+    ),
+    validation_report: Path = typer.Option(  # noqa: B008
+        Path("validation_report.json"),
+        "--validation-report",
+        help="Path to a validation_report.json (from `tracefork validate`); "
+        "embedded if it exists, an explicit absent marker otherwise",
+    ),
+    bench_report_path: Path = typer.Option(  # noqa: B008
+        Path("bench_report.json"),
+        "--bench-report",
+        help="Path to a bench_report.json (from `tracefork bench`); embedded "
+        "if it exists, an explicit absent marker otherwise",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        Path("receipt.json"), "--output", "-o", help="Output receipt JSON file"
+    ),
+    shield_output: Path = typer.Option(  # noqa: B008
+        None,
+        "--shield-output",
+        help="Optional output path for a Shields.io endpoint-badge JSON derived from the receipt",
+    ),
+) -> None:
+    """Build a shareable, JSON-safe trust receipt for a tape (tracefork-bge.26).
+
+    Composes already-computed evidence — a fresh ($0) replay via --agent,
+    plus `validation_report.json`/`bench_report.json` off disk if present —
+    into one attestation-shaped JSON document (see `tracefork.receipt`).
+    Missing evidence is always an explicit `{"available": false}` marker,
+    never silently omitted or defaulted to a verified state. Pass
+    `--shield-output` to also write a Shields.io-style endpoint-badge JSON
+    (green only when replay is bit-exact AND validate clears the precision
+    bar; a content-redacted tape never badges green).
+    """
+    import json as _json
+
+    from tracefork.receipt import build_shield_json, build_trust_receipt
+    from tracefork.tape import Tape
+
+    if tape_path:
+        tape = Tape.load(str(tape_path))
+    elif run_id:
+        from tracefork.store import TapeStore
+
+        db = TapeStore(str(store))
+        tape = db.load_tape(run_id)
+    else:
+        typer.echo("Provide a run_id or --tape path")
+        raise typer.Exit(1)
+
+    replay_result = None
+    if agent:
+        import importlib
+
+        from tracefork.replay import ReplayVerifier
+
+        module_path, fn_name = agent.rsplit(":", 1)
+        agent_fn = getattr(importlib.import_module(module_path), fn_name)
+        replay_result = ReplayVerifier(tape, agent_fn).verify()
+
+    validate_data = None
+    if validation_report.exists():
+        validate_data = _json.loads(validation_report.read_text())
+
+    bench_data = None
+    if bench_report_path.exists():
+        bench_data = _json.loads(bench_report_path.read_text())
+
+    receipt_dict = build_trust_receipt(
+        tape,
+        replay=replay_result,
+        validate_report=validate_data,
+        bench_report=bench_data,
+    )
+    output.write_text(_json.dumps(receipt_dict, indent=2))
+    typer.echo(f"  Receipt written to {output}")
+    typer.echo(f"  tape_fingerprint  {receipt_dict['tape_fingerprint']}")
+
+    if shield_output is not None:
+        shield_dict = build_shield_json(receipt_dict)
+        shield_output.write_text(_json.dumps(shield_dict, indent=2))
+        typer.echo(f"  Shield badge written to {shield_output}")
 
 
 @app.command()
@@ -401,6 +727,9 @@ def blame(
         )
     )
     typer.echo(f"  Report saved to {report_path}")
+
+    edge_ids = db.save_blame_report(run_id, report)
+    typer.echo(f"  Causal edges persisted   {len(edge_ids)}")
 
 
 @app.command()
@@ -673,6 +1002,137 @@ def ingest(
 
 
 @app.command()
+def bundle_export(
+    run_id: str = typer.Argument(..., help="run_id to export (and its direct branches)"),
+    output: Path = typer.Option(  # noqa: B008
+        Path("bundle.db"), "--output", "-o", help="Output bundle store.db path"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to source store.db"
+    ),
+) -> None:
+    """Export a run and its direct branches into a portable, self-contained
+    store.db bundle — a scp-able artifact analogous to `git bundle`.
+
+    Raw blob copy, byte-for-byte: no Tape decode/re-encode round trip (unlike
+    `export --otel`/`--openinference`, which are lossy observability data,
+    not a replayable tape). See `tracefork bundle-import` for the reverse
+    direction.
+    """
+    from tracefork.bundle import export_bundle
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        result = export_bundle(db, run_id, str(output))
+    except KeyError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Bundle written to {output}")
+    typer.echo(f"  run_id     {result.run_id}")
+    typer.echo(f"  branch(es) {len(result.branch_ids)}\n")
+
+
+@app.command()
+def bundle_import(
+    bundle_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Path to a bundle store.db (from `tracefork bundle-export`)"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to destination store.db"
+    ),
+) -> None:
+    """Import every run + its direct branches from a bundle store.db into
+    --store, through the CAS-guarded save_tape/save_branch write path (never
+    raw INSERT) — a genuine content collision on an existing run_id/branch_id
+    raises an error instead of silently overwriting. Reusing the same ids
+    with byte-identical content is an idempotent no-op. See `tracefork
+    bundle-export` for the reverse direction.
+    """
+    from tracefork.bundle import import_bundle
+    from tracefork.store import TapeConflictError, TapeStore
+
+    if not bundle_path.exists():
+        typer.echo(f"No bundle found at {bundle_path}")
+        raise typer.Exit(1)
+
+    db = TapeStore(str(store))
+    try:
+        result = import_bundle(db, str(bundle_path))
+    except TapeConflictError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Imported {len(result.run_ids)} run(s), {len(result.branch_ids)} branch(es)")
+    typer.echo(f"  from {bundle_path} -> {store}\n")
+
+
+@app.command()
+def prune(
+    older_than_days: float = typer.Option(
+        None,
+        "--older-than-days",
+        help="Archive tapes with created_at older than N days ago",
+    ),
+    run_id: list[str] = typer.Option(  # noqa: B008
+        [], "--run-id", help="Explicit run_id to archive (repeatable)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Compute the candidate set; mutate nothing"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Archive tapes (and their branches) — never hard-delete.
+
+    Mirrors git gc / borg prune's mark-and-sweep-with-soft-archive
+    discipline: matching rows move to tapes_archived/branches_archived and
+    stay queryable there forever; reclaiming that space is a distinct,
+    out-of-scope, higher-risk step. A tape matches if it's older than
+    --older-than-days OR named by a repeatable --run-id; passing neither
+    matches nothing. --dry-run previews the candidate set with zero writes.
+
+    NOTE: report links for a pruned run_id go stale — server.py's
+    list_runs/get_run/get_branch correctly 404 it via the existing KeyError
+    path, same as any unknown run_id.
+
+    Always exits 0: pruning is a maintenance operation, not a pass/fail gate.
+    """
+    import datetime as _dt
+
+    from tracefork.store import TapeStore
+
+    older_than_iso = None
+    if older_than_days is not None:
+        cutoff = _dt.datetime.now(_dt.UTC) - _dt.timedelta(days=older_than_days)
+        older_than_iso = cutoff.isoformat()
+
+    db = TapeStore(str(store))
+    report = db.prune(older_than_iso=older_than_iso, run_ids=list(run_id), dry_run=dry_run)
+
+    label = "prune [dry-run]" if dry_run else "prune"
+    typer.echo(f"\n  tracefork {label}")
+    typer.echo(f"  {'─' * 50}")
+    if not report.tapes_archived:
+        typer.echo("  no candidates matched (nothing archived)")
+    else:
+        for rid in report.tapes_archived:
+            typer.echo(f"    {rid}")
+        verb = "would archive" if dry_run else "Archived"
+        typer.echo(
+            f"\n  {verb} {len(report.tapes_archived)} tape(s), "
+            f"{len(report.branches_archived)} branch(es)"
+        )
+    typer.echo("")
+
+
+@app.command()
 def proxy(
     mode: str = typer.Argument(..., help="record | replay"),
     tape_path: Path = typer.Option(  # noqa: B008
@@ -749,7 +1209,359 @@ def proxy(
     uvicorn.run(replay_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
 
-def _print_receipt(tape_path: Path, result) -> None:
+@app.command()
+def coverage(
+    tape_path: Path = typer.Argument(..., help="Path to a .tape.sqlite file"),  # noqa: B008
+    agent_source: Path = typer.Option(  # noqa: B008
+        None,
+        "--agent-source",
+        help="Path to the agent's Python source file: a best-effort static "
+        "AST scan (never imported or executed) for known-uncapturable "
+        "nondeterminism call sites not covered by BoundaryGuard",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Optional JSON output path"
+    ),
+) -> None:
+    """Print a determinism-coverage report for a recorded tape.
+
+    Reports which nondeterminism draw kinds occurred, whether concurrency was
+    recorded, and whether `BoundaryGuard` was active at record time -- plus,
+    with --agent-source, a best-effort static AST scan for known-uncapturable
+    nondeterminism calls not covered by the active guard. See
+    `coverage.py`'s module docstring for the scan's scope limits.
+    """
+    from tracefork.coverage import coverage_report
+    from tracefork.tape import Tape
+
+    tape = Tape.load(str(tape_path))
+    source = agent_source.read_text() if agent_source is not None else None
+    result = coverage_report(tape, agent_source=source)
+
+    typer.echo(f"\n  tracefork coverage — {tape_path.name}")
+    typer.echo(f"  {'─' * 50}")
+    typer.echo(f"  boundary_guard_active   {result.boundary_guard_active}")
+    typer.echo(f"  concurrency_recorded    {result.concurrency_recorded}")
+    typer.echo("  draw counts:")
+    if result.draw_counts:
+        for kind, count in sorted(result.draw_counts.items()):
+            typer.echo(f"    {kind:<10} {count}")
+    else:
+        typer.echo("    (no draws recorded)")
+
+    if agent_source is not None:
+        typer.echo(f"\n  AST scan of {agent_source.name} (best-effort lint):")
+        if result.findings:
+            for f in result.findings:
+                tag = "GUARDABLE" if f.guardable else "informational"
+                typer.echo(f"    line {f.lineno:<4} [{tag:<13}] {f.call} -- {f.note}")
+        else:
+            typer.echo("    no known-uncapturable call sites found")
+    typer.echo("")
+
+    if output is not None:
+        import json as _json
+
+        output.write_text(
+            _json.dumps(
+                {
+                    "draw_counts": result.draw_counts,
+                    "concurrency_recorded": result.concurrency_recorded,
+                    "boundary_guard_active": result.boundary_guard_active,
+                    "findings": [
+                        {
+                            "call": f.call,
+                            "lineno": f.lineno,
+                            "guardable": f.guardable,
+                            "caught": f.caught,
+                            "note": f.note,
+                        }
+                        for f in result.findings
+                    ],
+                },
+                indent=2,
+            )
+        )
+        typer.echo(f"  Report saved to {output}\n")
+
+
+@app.command()
+def tournament(
+    run_id: str = typer.Argument(..., help="run_id to analyze"),
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this run; "
+        "it is re-run for each variant trial and must be deterministic up to "
+        "the fixed step",
+    ),
+    candidate: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--candidate",
+        help="A 'name:text' candidate continuation, repeatable (>=1 required) -- "
+        "'text' becomes the forced response at --step",
+    ),
+    step: int = typer.Option(
+        -1,
+        "--step",
+        help="Fixed step index to compare candidates at (default: the tape's "
+        "last exchange -- a $0 comparison, no tail calls)",
+    ),
+    k: int = typer.Option(10, "--k", help="Forks per candidate variant"),
+    budget: float = typer.Option(_DEFAULT_CONFIG.budget_usd, "--budget", help="USD spend cap"),
+    success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
+    failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
+    ci_method: str = typer.Option(
+        "wilson", "--ci-method", help="Proportion CI: wilson|jeffreys|clopper_pearson|agresti_coull"
+    ),
+    confidence: float = typer.Option(0.95, "--confidence", help="CI confidence level (0,1)"),
+    fdr_q: float = typer.Option(
+        0.10, "--fdr-q", help="Benjamini-Hochberg false-discovery-rate for the winner test"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Rank pre-specified candidate continuations at one fixed step.
+
+    Unlike `blame` (which compares a single perturbation against the parent
+    outcome, across every step), a tournament compares N candidate responses
+    against EACH OTHER at one step you choose, ranked by success rate with a
+    Wilson CI and a Benjamini-Hochberg-corrected significance test of the top
+    candidate against every runner-up. When `--step` targets the tape's last
+    exchange (the default), the comparison is $0 -- see `tournament.py`'s
+    module docstring.
+    """
+    if not run_id or not all(c.isalnum() or c in "-_" for c in run_id):
+        raise typer.BadParameter("run_id must be alphanumeric (with '-' or '_')")
+
+    import importlib
+    import json
+    import os
+
+    from tracefork.blame import BudgetExceededError, CIMethod, StringMatchOracle
+    from tracefork.store import TapeStore
+    from tracefork.tournament import TournamentEngine, Variant
+    from tracefork.wire import make_text_response
+
+    try:
+        method = CIMethod(ci_method)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    db = TapeStore(str(store))
+    tape = db.load_tape(run_id)
+
+    step_index = step if step >= 0 else len(tape.exchanges) - 1
+    if step_index < 0 or step_index >= len(tape.exchanges):
+        raise typer.BadParameter(f"--step {step_index} out of range [0, {len(tape.exchanges)})")
+
+    variants = []
+    for spec in candidate:
+        name, sep, text = spec.partition(":")
+        if not sep or not name or not text:
+            raise typer.BadParameter(f"--candidate must be 'name:text', got {spec!r}")
+        variants.append(Variant(name=name, response=make_text_response(text)))
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    agent_fn = getattr(importlib.import_module(module_path), fn_name)
+
+    oracle = StringMatchOracle(success_re=success_re, failure_re=failure_re)
+    est = TournamentEngine.estimate(tape, step_index=step_index, n_variants=len(variants), k=k)
+
+    typer.echo(f"\n  Tournament estimate: {est.n_forks} forks, ~${est.est_usd:.2f}")
+    if est.est_usd > budget:
+        typer.echo(f"  Estimated cost ${est.est_usd:.2f} exceeds budget ${budget:.2f}.")
+        typer.echo("  Use --budget to increase or --k to reduce trials.")
+        raise typer.Exit(1)
+
+    try:
+        report = TournamentEngine.run(
+            tape,
+            step_index=step_index,
+            variants=variants,
+            agent_fn=agent_fn,
+            oracle=oracle,
+            k=k,
+            budget_usd=budget,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            ci_method=method,
+            confidence=confidence,
+            fdr_q=fdr_q,
+        )
+    except BudgetExceededError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+
+    ci_pct = round(confidence * 100)
+    typer.echo(
+        f"\n  run-{run_id} · tournament at step-{step_index} · k={k} · "
+        f"{report.total_forks} forks · {method.value} {ci_pct}% CI\n"
+    )
+    ci_hdr = f"{ci_pct}% CI"
+    typer.echo(f"  {'rank':<5} {'variant':<16} {'score':<10} {ci_hdr:<22} {'q-value':<10} winner")
+    typer.echo(f"  {'─' * 76}")
+    for rank, r in enumerate(report.results, 1):
+        ci_str = f"[{r.ci_lo:.2f}, {r.ci_hi:.2f}]"
+        flag = " *" if r.significant_winner else ""
+        typer.echo(
+            f"  {rank:<5} {r.name:<16} {r.score:<10.2f} {ci_str:<22} {r.q_value:<10.3g}{flag}"
+        )
+
+    winner = report.winner()
+    if winner is not None:
+        typer.echo(f"\n  winner (FDR q≤{fdr_q}): {winner.name}")
+    else:
+        typer.echo(f"\n  winner (FDR q≤{fdr_q}): (no candidate significantly beats every other)")
+    typer.echo("")
+
+    report_path = Path(f"tournament_{run_id}.json")
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "step_index": step_index,
+                "k": k,
+                "ci_method": method.value,
+                "confidence": confidence,
+                "fdr_q": fdr_q,
+                "winner": winner.name if winner is not None else None,
+                "results": [
+                    {
+                        "name": r.name,
+                        "score": r.score,
+                        "ci_lo": r.ci_lo,
+                        "ci_hi": r.ci_hi,
+                        "successes": r.successes,
+                        "trials": r.trials,
+                        "valid_trials": r.valid_trials,
+                        "undefined": r.undefined,
+                        "divergences": r.divergences,
+                        "q_value": r.q_value,
+                        "significant_winner": r.significant_winner,
+                    }
+                    for r in report.results
+                ],
+            },
+            indent=2,
+        )
+    )
+    typer.echo(f"  Report saved to {report_path}")
+
+
+# ── session (orchestration spawn-lineage) sub-app ───────────────────────────
+
+session_app = typer.Typer(
+    name="session", help="Orchestration session / spawn-lineage commands (create/spawn/show)."
+)
+app.add_typer(session_app, name="session")
+
+
+@session_app.command("create")
+def session_create(
+    root_run_id: str = typer.Argument(..., help="run_id of the session's root tape"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Create a new orchestration session rooted at ROOT_RUN_ID.
+
+    ROOT_RUN_ID must already be a stored tape (`FOREIGN KEY` to `tapes`); an
+    unknown run_id is rejected rather than silently accepted.
+    """
+    import sqlite3
+
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        session_id = db.create_session(root_run_id=root_run_id)
+    except sqlite3.IntegrityError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  Session created")
+    typer.echo(f"  session_id   {session_id}")
+    typer.echo(f"  root_run_id  {root_run_id}\n")
+
+
+@session_app.command("spawn")
+def session_spawn(
+    session_id: str = typer.Argument(..., help="Session id to add the spawn edge to"),
+    parent_run_id: str = typer.Argument(..., help="Delegating run_id"),
+    child_run_id: str = typer.Argument(..., help="Spawned/delegated-to run_id"),
+    reason: str = typer.Option("", "--reason", help="Human-readable spawn reason"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Record a spawn/delegation edge from PARENT_RUN_ID to CHILD_RUN_ID
+    within SESSION_ID.
+
+    SESSION_ID/PARENT_RUN_ID/CHILD_RUN_ID must already exist (a live session
+    and two stored tapes) — each enforced by its own `FOREIGN KEY`.
+    """
+    import sqlite3
+
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        edge_id = db.add_spawn_edge(
+            session_id=session_id,
+            parent_run_id=parent_run_id,
+            child_run_id=child_run_id,
+            spawn_reason=reason,
+        )
+    except sqlite3.IntegrityError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  Spawn edge recorded")
+    typer.echo(f"  edge_id        {edge_id}")
+    typer.echo(f"  session_id     {session_id}")
+    typer.echo(f"  parent_run_id  {parent_run_id}")
+    typer.echo(f"  child_run_id   {child_run_id}\n")
+
+
+@session_app.command("show")
+def session_show(
+    session_id: str = typer.Argument(..., help="Session id to show"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Show a session's root tape and every tape reachable via spawn edges
+    (a BFS over `spawn_edges`, see `store.py`'s `session_tapes`)."""
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            session = db.get_session(session_id)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        tapes = db.session_tapes(session_id)
+    finally:
+        db.close()
+
+    typer.echo("\n  Session")
+    typer.echo(f"  session_id   {session['session_id']}")
+    typer.echo(f"  root_run_id  {session['root_run_id']}")
+    typer.echo(f"  created_at   {session['created_at']}")
+    typer.echo(f"  tapes ({len(tapes)}):")
+    for rid in tapes:
+        typer.echo(f"    {rid}")
+    typer.echo("")
+
+
+def _print_receipt(tape_path: Path, result, tape) -> None:
     from tracefork.replay import DriftDoctor
 
     status = "PASS" if result.bit_exact else "FAIL"
@@ -759,8 +1571,24 @@ def _print_receipt(tape_path: Path, result) -> None:
     typer.echo(f"  exchanges       {result.matched}/{result.total} matched")
     typer.echo(f"  fingerprint     {'match' if result.fingerprints_match else 'MISMATCH'}")
     typer.echo(f"  result          {status}")
+    certificate = getattr(result, "certificate", None)
+    if certificate is not None:
+        typer.echo(f"  certificate     {certificate.strength.value}")
     if result.divergence:
         cause = DriftDoctor.classify(result.divergence)
         typer.echo(f"  drift cause     {cause.value}")
         typer.echo(f"  at exchange     #{result.divergence.step_index}")
+    _print_trust_lines(tape)
     typer.echo("")
+
+
+def _print_trust_lines(tape) -> None:
+    """Print the two trust/provenance lines (`Tape.boundary`/`content_redacted`)
+    shared by the replay/verify receipt and the `report` command's terminal
+    echo (tracefork-bge.20) — a forensic-only or content-redacted tape must
+    not look identical to a verified one. Both fields are envelope metadata,
+    never fed into `Tape.digest()` (see `tape.py`); this is a trust warning,
+    not a pass/fail input.
+    """
+    typer.echo(f"  boundary        {tape.boundary}")
+    typer.echo(f"  content_redacted {tape.content_redacted}")

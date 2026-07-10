@@ -6,10 +6,19 @@ an early step changes the downstream request bytes — exactly the counterfactua
 behaviour a fork must capture.
 """
 
+import random
+import threading
+
 import anthropic
 import httpx
+import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
+from tracefork.boundary_guard import (
+    BoundaryViolationError,
+    ConfinementSpec,
+    ConfinementViolationError,
+)
 from tracefork.fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from tracefork.nondet import find_divergence
 from tracefork.tape import Tape
@@ -121,6 +130,94 @@ def test_branch_spec_mutation_desc():
     assert spec.mutation_desc == "flip seats to 0"
 
 
+# ── branch_digest (content-addressed fork identity) ─────────────────────────
+
+
+def test_fork_branch_digest_is_deterministic_for_identical_inputs():
+    """Two forks with the SAME (parent_tape, divergence_step, delta content,
+    intervened_steps) produce the identical branch_digest."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch1 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch2 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch1.branch_digest
+    assert branch1.branch_digest == branch2.branch_digest
+
+
+def test_fork_branch_digest_differs_for_different_mutated_response():
+    parent_tape = _build_two_turn_tape()
+    spec_b = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+    spec_other = BranchSpec(divergence_step=1, mutated_response=make_text_response("Different"))
+
+    branch_b = ForkEngine.fork(
+        parent_tape, spec_b, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch_other = ForkEngine.fork(
+        parent_tape, spec_other, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch_b.branch_digest != branch_other.branch_digest
+
+
+# ── fork-point verification (parent_tape_digest / divergence_exchange_digest) ──
+
+
+def test_fork_parent_tape_digest_equals_parent_tape_digest_at_fork_time():
+    """Branch.parent_tape_digest is the parent tape's own digest() at fork
+    time -- the citable fork-point store.py's load_branch re-verifies."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch.parent_tape_digest == parent_tape.digest()
+
+
+def test_fork_divergence_exchange_digest_stable_across_two_forks_same_step_and_parent():
+    """Two forks at the SAME (parent, divergence_step, mutated_response)
+    produce the identical divergence_exchange_digest."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch1 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch2 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch1.divergence_exchange_digest
+    assert branch1.divergence_exchange_digest == branch2.divergence_exchange_digest
+
+
+def test_fork_divergence_exchange_digest_changes_when_divergence_step_differs():
+    """The same mutated_response forked at a DIFFERENT step yields a different
+    divergence_exchange_digest -- the request half of the pair differs."""
+    parent_tape = _build_two_turn_tape()
+    spec_step0 = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+    spec_step1 = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch_step0 = ForkEngine.fork(
+        parent_tape,
+        spec_step0,
+        _conversation_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_C]),
+    )
+    branch_step1 = ForkEngine.fork(
+        parent_tape, spec_step1, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch_step0.divergence_exchange_digest != branch_step1.divergence_exchange_digest
+
+
 # ── coalition forks (joint, multi-step interventions) ───────────────────────
 
 
@@ -223,6 +320,8 @@ def test_fork_coalition_single_step_matches_classic_fork():
     coalition_resps = [e[1] for e in coalition.delta_tape.exchanges]
     classic_resps = [e[1] for e in classic.delta_tape.exchanges]
     assert coalition_resps == classic_resps
+    assert coalition.parent_tape_digest == classic.parent_tape_digest
+    assert coalition.divergence_exchange_digest == classic.divergence_exchange_digest
 
 
 def test_fork_coalition_forces_two_steps_jointly():
@@ -301,6 +400,125 @@ def test_fork_coalition_prefix_divergence_raises():
         assert divergence is not None
 
 
+# ── rebase (fork-tree merge/rebase onto a moved parent) ──────────────────────
+
+
+def test_rebase_replays_unchanged_prefix_from_the_new_parent_at_zero_cost():
+    """The prefix before the fork point is replayed from the NEW parent tape,
+    for $0 -- exactly like a classic fork()'s prefix, but sourced from the
+    moved base instead of the original parent."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+    assert old_branch.prefix_replayed == 1
+
+    new_parent_tape = _build_three_turn_tape()  # a fresh, byte-identical parent
+    fake_post = ScriptedFakeLLM([])  # a fully-reused tail never reaches this
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.prefix_replayed == 1
+    assert rebased.parent_tape is new_parent_tape
+    assert rebased.divergence_step == old_branch.divergence_step
+    assert rebased.intervened_steps == old_branch.intervened_steps
+    assert len(new_parent_tape.exchanges) == 3  # the new parent itself is never mutated
+
+
+def test_rebase_raises_divergence_error_when_new_parents_prefix_itself_moved():
+    """If the new parent's prefix (before the fork point) doesn't match what
+    the agent deterministically rebuilds, rebase raises DivergenceError --
+    same contract as fork()/fork_coalition()'s own prefix assert."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+
+    bad_new_parent = Tape()
+    bad_new_parent.append_exchange(b"not-the-real-turn1-request", RESP_A)
+
+    try:
+        ForkEngine.rebase(
+            old_branch, bad_new_parent, _three_turn_agent, post_fork_transport=ScriptedFakeLLM([])
+        )
+        raise AssertionError("expected DivergenceError")
+    except Exception as exc:
+        divergence = find_divergence(exc)
+        assert divergence is not None
+
+
+def test_rebase_reuses_old_delta_tapes_tail_exchange_when_it_still_matches():
+    """When the new parent's prefix reconstructs the SAME downstream request
+    the old branch already recorded a tail response for, rebase reuses that
+    response by fingerprint match instead of paying for a live re-record."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+    assert old_branch.tail_recorded == 1
+
+    new_parent_tape = _build_three_turn_tape()  # byte-identical prefix + reply text
+    fake_post = ScriptedFakeLLM([])  # must NEVER be reached -- full reuse
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.tail_reused == 1
+    assert rebased.tail_recorded == 0
+    assert len(fake_post.requests_received) == 0
+    assert rebased.delta_tape.exchanges == old_branch.delta_tape.exchanges
+
+
+def test_rebase_falls_through_to_live_re_recording_when_old_tail_no_longer_matches():
+    """When the new parent's prefix reply text differs, the downstream tail
+    request the agent builds during rebase no longer matches the old
+    branch's recorded tail request -- rebase falls through to live
+    re-recording via post_fork_transport instead of reusing a stale response."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+
+    # A self-consistent new parent whose turn1 reply text differs, so
+    # turn3's downstream request (embedding that reply) no longer matches
+    # the old branch's recorded tail request byte-for-byte.
+    different_first = make_text_response("A different turn1 reply")
+    new_parent_tape = Tape()
+    fake_new_parent = ScriptedFakeLLM([different_first, RESP_C, RESP_E])
+    new_parent_transport = TraceforkTransport("record", new_parent_tape, fake_new_parent)
+    new_parent_client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=new_parent_transport),
+        max_retries=0,
+    )
+    _three_turn_agent(new_parent_client)
+
+    fake_post = ScriptedFakeLLM([RESP_E])  # must be reached exactly once
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.tail_reused == 0
+    assert rebased.tail_recorded == 1
+    assert len(fake_post.requests_received) == 1
+
+
 def test_fork_coalition_out_of_range_step_raises():
     parent_tape = _build_two_turn_tape()
     spec = CoalitionSpec(interventions=(StepIntervention(5, RESP_B),))
@@ -311,3 +529,136 @@ def test_fork_coalition_out_of_range_step_raises():
         raise AssertionError("expected ValueError")
     except ValueError as e:
         assert "out of range" in str(e)
+
+
+# ── boundary_guard confinement (tracefork-bge.1) ────────────────────────────
+
+
+def _thread_spawning_agent(client: anthropic.Anthropic) -> str:
+    """Spawns a thread before doing anything else — a boundary violation."""
+    threading.Thread(target=lambda: None).start()
+    return _conversation_agent(client)
+
+
+def _random_calling_agent(client: anthropic.Anthropic) -> str:
+    """Reads `random.random()` directly, bypassing NondetSource — a violation."""
+    random.random()
+    return _three_turn_agent(client)
+
+
+def test_fork_boundary_guard_true_raises_on_thread_spawn():
+    """boundary_guard=True must trip on a thread spawned anywhere inside
+    agent_fn (here, before the prefix is even replayed)."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    with pytest.raises(BoundaryViolationError, match="Thread"):
+        ForkEngine.fork(
+            parent_tape,
+            spec,
+            _thread_spawning_agent,
+            post_fork_transport=ScriptedFakeLLM([]),
+            boundary_guard=True,
+        )
+
+
+def test_fork_boundary_guard_false_default_does_not_raise_on_thread_spawn():
+    """Default off: the exact same violating agent must NOT raise — zero
+    behavior change unless a caller explicitly opts in."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _thread_spawning_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    assert branch.divergence_step == 1
+
+
+def test_fork_coalition_boundary_guard_true_raises_on_random_call():
+    """boundary_guard=True on fork_coalition must trip on a direct
+    random.random() call by the agent."""
+    parent_tape = _build_three_turn_tape()
+    spec = CoalitionSpec(interventions=(StepIntervention(0, RESP_B),))
+
+    with pytest.raises(BoundaryViolationError, match="random"):
+        ForkEngine.fork_coalition(
+            parent_tape,
+            spec,
+            _random_calling_agent,
+            post_fork_transport=ScriptedFakeLLM([RESP_C, RESP_E]),
+            boundary_guard=True,
+        )
+
+
+def test_fork_coalition_boundary_guard_false_default_does_not_raise_on_random_call():
+    """Default off for fork_coalition: same violating agent, no exception."""
+    parent_tape = _build_three_turn_tape()
+    spec = CoalitionSpec(interventions=(StepIntervention(0, RESP_B),))
+
+    branch = ForkEngine.fork_coalition(
+        parent_tape,
+        spec,
+        _random_calling_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_C, RESP_E]),
+    )
+    assert branch.divergence_step == 0
+
+
+# ── ConfinementSpec-lite (tracefork-bge.17) ─────────────────────────────────
+
+
+def test_fork_confinement_blocks_filesystem_write_during_tail_record(tmp_path):
+    """A `confinement=` spec passed to `fork()` forces the guard active even
+    though `boundary_guard` defaults to False, and rejects a write outside
+    the declared writable_roots attempted during the tail-record phase."""
+    writable_root = tmp_path / "allowed"
+    writable_root.mkdir()
+    outside_file = tmp_path / "leak.txt"
+
+    def _write_attempting_agent(client: anthropic.Anthropic) -> str:
+        r1 = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "turn1"}],
+        )
+        first = r1.content[0].text
+        # Simulated side effect happening after the mutated (divergence-step)
+        # response comes back but before the tail-record request — i.e.
+        # squarely inside the tail-record window.
+        with open(outside_file, "w") as f:
+            f.write("leak")
+        r2 = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[
+                {"role": "user", "content": "turn1"},
+                {"role": "assistant", "content": first},
+                {"role": "user", "content": "turn2"},
+            ],
+        )
+        return r2.content[0].text
+
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+
+    with pytest.raises(ConfinementViolationError, match="writable_roots"):
+        ForkEngine.fork(
+            parent_tape,
+            spec,
+            _write_attempting_agent,
+            post_fork_transport=ScriptedFakeLLM([]),
+            confinement=ConfinementSpec(writable_roots=(str(writable_root),)),
+        )
+    assert not outside_file.exists()
+
+
+def test_fork_confinement_none_default_preserves_existing_behavior():
+    """`confinement=None` (the implicit default) must leave `fork()`'s
+    behavior byte-identical to every pre-existing test_fork.py case."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    assert branch.divergence_step == 1

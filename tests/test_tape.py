@@ -91,3 +91,32 @@ def test_to_bytes_from_bytes_roundtrip():
     assert restored.draws == tape.draws
     assert restored.exchanges == tape.exchanges
     assert restored.agent_name == tape.agent_name
+
+
+# ── provenance (v5): matcher/boundary_guard/nondet-mode witness block ───────
+
+
+def test_provenance_roundtrips_through_to_bytes_from_bytes_exactly():
+    tape = _make_tape()
+    tape.provenance = {
+        "matcher_name": "identity",
+        "boundary_guard": "false",
+        "nondet_mode": "recording",
+    }
+    restored = Tape.from_bytes(tape.to_bytes())
+    assert restored.provenance == tape.provenance
+
+
+def test_digest_excludes_provenance():
+    """Two tapes identical except for `provenance` must hash EQUAL — the single
+    most load-bearing invariant for this field (explicit test, not implied by
+    the general digest tests above)."""
+    t1 = _make_tape()
+    t2 = _make_tape()
+    t2.provenance = {
+        "matcher_name": "bedrock",
+        "boundary_guard": "true",
+        "nondet_mode": "recording",
+    }
+    assert t1.provenance != t2.provenance
+    assert t1.digest() == t2.digest()

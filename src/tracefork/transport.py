@@ -14,6 +14,16 @@ bit-exactness claim — see the README's determinism-boundary note. An opt-in
 providers whose raw bytes are non-deterministic; the record and replay sides MUST
 share the same matcher instance or the fingerprints will not line up.
 
+``new_episodes`` mode (``TraceforkTransport`` only — the sync path; see
+``record_mode.py``, whose ``RecordMode.NEW_EPISODES`` now resolves to this literal
+instead of raising ``NotImplementedError``): replays the recorded prefix with the
+EXACT same strict-replay assert logic as ``"replay"`` (unmodified — a divergence
+inside the recorded prefix is still a hard ``DivergenceError``), then, for any
+request beyond the tape's recorded exchanges, forwards it to ``inner`` and records
+it exactly like ``"record"`` mode does (same redaction/``on_exchange`` hook path),
+tallied separately via ``new_episodes_recorded``. Requires an inner transport, same
+as ``"record"``. ``"replay"`` itself is completely untouched by this addition.
+
 An opt-in ``Redactor`` (``redactor=``, record mode only) additionally scrubs the
 response body before it is stored. Request-side redaction is applied further
 upstream, inside the matcher itself (``Redactor.matcher()``), so that record and
@@ -39,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections import deque
+from collections.abc import Callable
 
 import httpx
 
@@ -59,10 +70,11 @@ class TraceforkTransport(httpx.BaseTransport):
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
+        on_exchange: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
-        assert mode in ("record", "replay")
-        if mode == "record" and inner is None:
-            raise ValueError("record mode requires an inner transport")
+        assert mode in ("record", "replay", "new_episodes")
+        if mode in ("record", "new_episodes") and inner is None:
+            raise ValueError(f"{mode} mode requires an inner transport")
         self.mode = mode
         self.tape = tape
         self.inner = inner
@@ -70,15 +82,66 @@ class TraceforkTransport(httpx.BaseTransport):
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         # Default is None: no redaction — the pre-redaction contract (byte-identical).
         self.redactor = redactor
+        # Opt-in checkpoint hook (see checkpoint.py): fired once, immediately
+        # after `tape.append_exchange`, in the record branch only. `None` is
+        # byte-identical to before this hook existed.
+        self.on_exchange = on_exchange
         self._i = 0
         self.matched = 0
+        # new_episodes-only: trailing requests recorded past the tape's
+        # original recorded prefix (see module docstring). Always 0 for
+        # "record"/"replay".
+        self.new_episodes_recorded = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if self.mode == "record":
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
-            self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
+            stored_req = self.matcher.stored_request(request)
+            self.tape.append_exchange(stored_req, stored_resp)
+            if self.on_exchange is not None:
+                self.on_exchange(stored_req, stored_resp)
+            return httpx.Response(
+                inner_resp.status_code,
+                headers={
+                    "content-type": inner_resp.headers.get("content-type", "application/json")
+                },
+                content=resp_body,
+                request=request,
+            )
+
+        if self.mode == "new_episodes":
+            if self._i < len(self.tape.exchanges):
+                # Recorded prefix — the EXACT same strict-replay assert logic
+                # as "replay" below, unmodified.
+                rec_req, rec_resp = self.tape.exchange(self._i)
+                rec_fp = self.matcher.stored_fingerprint(rec_req)
+                live_fp = self.matcher.live_fingerprint(request)
+                if rec_fp != live_fp:
+                    raise DivergenceError(
+                        f"request #{self._i} diverged from tape "
+                        f"(recorded {rec_fp[:12]}, replay {live_fp[:12]})"
+                    )
+                self._i += 1
+                self.matched += 1
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    content=rec_resp,
+                    request=request,
+                )
+            # Beyond the recorded prefix — record this trailing episode,
+            # mirroring "record" mode's own logic exactly.
+            inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
+            resp_body = inner_resp.read()
+            stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
+            stored_req = self.matcher.stored_request(request)
+            self.tape.append_exchange(stored_req, stored_resp)
+            if self.on_exchange is not None:
+                self.on_exchange(stored_req, stored_resp)
+            self._i += 1
+            self.new_episodes_recorded += 1
             return httpx.Response(
                 inner_resp.status_code,
                 headers={
@@ -137,6 +200,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         release_order: list[int] | None = None,
+        on_exchange: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -146,6 +210,11 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         self.inner = inner
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self.redactor = redactor
+        # Opt-in checkpoint hook (see checkpoint.py): fired once, immediately
+        # after `tape.append_exchange`, in `_record` only — never `_replay` and
+        # never the ordered-release/chaos machinery. `None` is byte-identical
+        # to before this hook existed.
+        self.on_exchange = on_exchange
         self._release_order_param = release_order
         self._i = 0
         self.matched = 0
@@ -191,7 +260,10 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         resp_body = await inner_resp.aread()
 
         stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
-        self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
+        stored_req = self.matcher.stored_request(request)
+        self.tape.append_exchange(stored_req, stored_resp)
+        if self.on_exchange is not None:
+            self.on_exchange(stored_req, stored_resp)
         idx = len(self.tape.exchanges) - 1
 
         # Completion bookkeeping — atomic from here to the return (no await).

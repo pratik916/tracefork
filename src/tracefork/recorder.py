@@ -16,6 +16,10 @@ subprocess spawn or direct `random`/clock reads that bypass `NondetSource` —
 see `boundary_guard.py`. Default is off; behavior is unchanged unless a caller
 opts in.
 
+Both recorders also populate `tape.provenance` (matcher_name/boundary_guard/
+nondet_mode — see `tape.py`) from values already in scope, a witness block
+`ReplayVerifier` can optionally check against the replay-time configuration.
+
 Usage (sync):
     with Recorder(client, agent_name="my-agent") as rec:
         result = my_agent(rec.client)
@@ -37,8 +41,9 @@ import anthropic
 import httpx
 
 from .boundary_guard import BoundaryGuard
+from .checkpoint import CheckpointWriter
 from .config import TraceforkConfig
-from .matcher import RequestMatcher
+from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import RecordingNondet
 from .observability import traced_span
 from .redact import Redactor
@@ -74,6 +79,13 @@ class Recorder:
     window (from here through ``__exit__``), hard-erroring on thread/
     subprocess spawn or direct ``random``/clock reads. Default is off —
     identical to before this flag existed.
+
+    ``checkpoint_path`` is an opt-in crash-safety path (see ``checkpoint.py``):
+    when given, each recorded exchange is durably committed to a local SQLite
+    file at that path the instant it happens (not just at ``tape.save()``
+    time), and a clean ``__exit__`` finalizes it. Scoped to exchanges only
+    (not draws) — see ``checkpoint.py``'s module docstring. Default ``None``
+    is byte-identical to before this flag existed.
     """
 
     def __init__(
@@ -85,6 +97,7 @@ class Recorder:
         redactor: Redactor | None = None,
         config: TraceforkConfig | None = None,
         boundary_guard: bool | None = None,
+        checkpoint_path: str | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
@@ -92,12 +105,14 @@ class Recorder:
         self._redactor = redactor
         self._config = config
         self._boundary_guard_flag = boundary_guard
+        self._checkpoint_path = checkpoint_path
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
         self._guard: BoundaryGuard | None = None
         self._span_cm: Any = None
+        self._checkpoint: CheckpointWriter | None = None
 
     @property
     def client(self) -> anthropic.Anthropic:
@@ -134,8 +149,21 @@ class Recorder:
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
         orig_inner = self._orig_client._client._transport
         effective_matcher = redactor.matcher(self._matcher) if redactor else self._matcher
+        on_exchange = None
+        if self._checkpoint_path is not None:
+            self._checkpoint = CheckpointWriter(
+                self._checkpoint_path,
+                agent_name=self._agent_name,
+                boundary=self._tape.boundary,
+            )
+            on_exchange = self._checkpoint.append_exchange
         transport = TraceforkTransport(
-            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=redactor
+            "record",
+            self._tape,
+            orig_inner,
+            matcher=effective_matcher,
+            redactor=redactor,
+            on_exchange=on_exchange,
         )
         # `.copy()` preserves the original client's base_url, auth_token, default
         # headers/query and timeout — only the transport and retries are swapped, so
@@ -163,6 +191,15 @@ class Recorder:
         if guard_enabled:
             self._guard = BoundaryGuard()
             self._guard.__enter__()
+
+        # Provenance/witness block (see tape.py): the matcher/boundary-guard/
+        # nondet-mode context this tape was recorded under, for `ReplayVerifier`'s
+        # opt-in mismatch check. Never fed into `digest()`.
+        self._tape.provenance = {
+            "matcher_name": (effective_matcher or IDENTITY_MATCHER).name,
+            "boundary_guard": str(guard_enabled).lower(),
+            "nondet_mode": "recording",
+        }
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -170,6 +207,12 @@ class Recorder:
             self._guard.__exit__(*args)
             self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]
+        # Finalize the checkpoint only on a clean exit (no exception): a crash
+        # mid-recording should leave the checkpoint visibly non-finalized (see
+        # checkpoint.py) rather than have __exit__ paper over it.
+        if self._checkpoint is not None and args[0] is None:
+            assert self._tape is not None
+            self._checkpoint.finalize(self._tape)
         if self._span_cm is not None:
             self._span_cm.__exit__(*args)
             self._span_cm = None
@@ -179,7 +222,7 @@ class AsyncRecorder:
     """Async context manager that records an AsyncAnthropic client's I/O.
 
     See ``Recorder`` for the ``matcher`` / ``redactor`` / ``config`` /
-    ``boundary_guard`` contract — identical here.
+    ``boundary_guard`` / ``checkpoint_path`` contract — identical here.
     """
 
     def __init__(
@@ -191,6 +234,7 @@ class AsyncRecorder:
         redactor: Redactor | None = None,
         config: TraceforkConfig | None = None,
         boundary_guard: bool | None = None,
+        checkpoint_path: str | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
@@ -198,12 +242,14 @@ class AsyncRecorder:
         self._redactor = redactor
         self._config = config
         self._boundary_guard_flag = boundary_guard
+        self._checkpoint_path = checkpoint_path
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
         self._orig_uuid4: Callable[[], _uuid_module.UUID] | None = None
         self._guard: BoundaryGuard | None = None
         self._span_cm: Any = None
+        self._checkpoint: CheckpointWriter | None = None
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -233,8 +279,21 @@ class AsyncRecorder:
 
         orig_inner = self._orig_client._client._transport
         effective_matcher = redactor.matcher(self._matcher) if redactor else self._matcher
+        on_exchange = None
+        if self._checkpoint_path is not None:
+            self._checkpoint = CheckpointWriter(
+                self._checkpoint_path,
+                agent_name=self._agent_name,
+                boundary=self._tape.boundary,
+            )
+            on_exchange = self._checkpoint.append_exchange
         transport = AsyncTraceforkTransport(
-            "record", self._tape, orig_inner, matcher=effective_matcher, redactor=redactor
+            "record",
+            self._tape,
+            orig_inner,
+            matcher=effective_matcher,
+            redactor=redactor,
+            on_exchange=on_exchange,
         )
         # `.copy()` preserves base_url, auth_token, default headers/query and timeout
         # (see the sync Recorder) — only the transport and retries are swapped.
@@ -258,6 +317,13 @@ class AsyncRecorder:
         if guard_enabled:
             self._guard = BoundaryGuard()
             self._guard.__enter__()
+
+        # See the sync Recorder for the provenance/witness block contract.
+        self._tape.provenance = {
+            "matcher_name": (effective_matcher or IDENTITY_MATCHER).name,
+            "boundary_guard": str(guard_enabled).lower(),
+            "nondet_mode": "recording",
+        }
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -265,6 +331,10 @@ class AsyncRecorder:
             self._guard.__exit__(*args)
             self._guard = None
         _uuid_module.uuid4 = self._orig_uuid4  # type: ignore[assignment]
+        # See the sync Recorder for the clean-exit-only finalize contract.
+        if self._checkpoint is not None and args[0] is None:
+            assert self._tape is not None
+            self._checkpoint.finalize(self._tape)
         if self._span_cm is not None:
             self._span_cm.__exit__(*args)
             self._span_cm = None

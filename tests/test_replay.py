@@ -5,9 +5,17 @@ from pathlib import Path
 
 import anthropic
 import httpx
+import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response, make_tool_use_response
-from tracefork.replay import DriftCause, DriftDoctor, ReplayVerifier, run_fixture_corpus_check
+from tracefork.matcher import bedrock_matcher
+from tracefork.replay import (
+    DriftCause,
+    DriftDoctor,
+    ProvenanceMismatchError,
+    ReplayVerifier,
+    run_fixture_corpus_check,
+)
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -52,6 +60,34 @@ def test_verifier_passes_on_exact_replay():
     assert result.total == 1
     assert result.fingerprints_match is True
     assert result.divergence is None
+
+
+def test_provenance_mismatch_raises_distinct_error():
+    """A tape recorded with matcher_name='identity' but replayed against a
+    genuinely different matcher must raise a distinct ProvenanceMismatchError,
+    not a generic byte-diff divergence."""
+    tape = _record_tape([TEXT_RESP])
+    tape.provenance = {"matcher_name": "identity"}
+    with pytest.raises(ProvenanceMismatchError, match="identity"):
+        ReplayVerifier(tape, _agent_fn, matcher=bedrock_matcher()).verify()
+
+
+def test_provenance_matching_matcher_name_no_spurious_failure():
+    tape = _record_tape([TEXT_RESP])
+    tape.provenance = {"matcher_name": "identity"}
+    result = ReplayVerifier(tape, _agent_fn).verify()
+    assert result.bit_exact is True
+
+
+def test_empty_provenance_skips_check_entirely():
+    """No provenance recorded (the common case, and every pre-v5 tape) -> the
+    check never fires, regardless of which matcher replay uses."""
+    tape = _record_tape([TEXT_RESP])
+    assert tape.provenance == {}
+    try:
+        ReplayVerifier(tape, _agent_fn, matcher=bedrock_matcher()).verify()
+    except ProvenanceMismatchError:
+        pytest.fail("ProvenanceMismatchError must not fire when tape.provenance is empty")
 
 
 def test_verifier_fails_on_code_change():

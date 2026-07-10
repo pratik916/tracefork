@@ -17,9 +17,11 @@ __pycache__/
 /store.db
 /report.html
 /blame_*.json
+/tournament_*.json
 /validation_report.json
 /bench_report.json
 /examples/demo_report.html
+/junit.xml
 
 # Build, coverage, and tool caches (regenerated on demand)
 /dist/
