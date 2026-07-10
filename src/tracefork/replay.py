@@ -25,6 +25,7 @@ from typing import Any
 import anthropic
 import httpx
 
+from .certificate import ReplayCertificate
 from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
 from .matcher import RequestMatcher
 from .nondet import DivergenceError, find_divergence
@@ -59,6 +60,11 @@ class VerificationResult:
     recorded_fingerprint: str
     replayed_fingerprint: str
     divergence: DivergenceReport | None = None
+    # Additive/opt-in: `None` unless a caller explicitly attaches a
+    # `ReplayCertificate` (see `certificate.certificate_from_verification`).
+    # Never set by `ReplayVerifier.verify()` itself, so every existing caller
+    # of `verify()` sees byte-identical `VerificationResult` behavior.
+    certificate: ReplayCertificate | None = None
 
 
 class _LastRequestTransport(httpx.BaseTransport):

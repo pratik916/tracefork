@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed `ReplayCertificate` / proof envelope** (new `certificate.py`) — a
+  frozen dataclass whose `strength` (`UNVERIFIED` / `HASH_MATCHED` /
+  `BIT_EXACT_FULL_REPLAY`) is checked against its own `matched`/`total`/
+  fingerprint fields in `__post_init__`: `BIT_EXACT_FULL_REPLAY` raises
+  `ProofEnvelopeError` unless every exchange matched *and* the recorded and
+  replayed fingerprints are identical, so a caller can no longer overclaim
+  bit-exactness with a bare boolean. `certificate_from_verification(result,
+  tape)` is the sole function that derives a certificate from a real
+  `ReplayVerifier.verify()` result, recomputing the recorded fingerprint from
+  `tape.digest()` rather than trusting the result's own field. Purely
+  additive: `VerificationResult` gains an optional `certificate` field
+  (`None` unless explicitly attached — `ReplayVerifier.verify()` itself is
+  unchanged), and `tracefork replay`/`tracefork verify` attach one and print
+  an extra `certificate` line in the receipt; every other caller (fixture
+  corpus check, the web report) is byte-for-byte unaffected.
+
 - **`tracefork prune`** (`store.py`, `cli.py`) — a retention/GC command for
   tapes and branches, mirroring git gc / borg prune's mark-and-sweep-with-
   soft-archive discipline: nothing is ever hard-deleted. `TapeStore.prune(*,

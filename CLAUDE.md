@@ -175,6 +175,15 @@ The product lives in `src/tracefork/`:
   the tiny deterministic agents the corpus is built from (kept out of `validate.py` so the
   corpus doesn't couple to fault-testing concerns); `scripts/gen_replay_fixtures.py`
   (re)generates the corpus offline.
+- `certificate.py` — `ReplayCertificate`, a frozen dataclass whose `strength`
+  (`UNVERIFIED`/`HASH_MATCHED`/`BIT_EXACT_FULL_REPLAY`) is constructor-enforced against its
+  own `matched`/`total`/fingerprint fields (`ProofEnvelopeError` on overclaim) — a typed
+  ceiling on the bit-exactness claim instead of a bare boolean a caller could misreport.
+  `certificate_from_verification(result, tape)` is the sole producer wired to real data,
+  recomputing the recorded fingerprint from `tape.digest()` rather than trusting `result`'s
+  own field. Additive only: `VerificationResult.certificate` defaults to `None` and
+  `ReplayVerifier.verify()` never sets it; `tracefork replay`/`verify` attach one and print
+  an extra receipt line, every other caller is unaffected.
 - `proxy.py` — `RecordProxy`/`ReplayProxy` (wired into FastAPI apps via
   `build_record_app`/`build_replay_app`) are a **localhost base-URL record/replay proxy**
   for clients the in-process httpx seam can't reach (curl, Node, Go, non-wrapped Python):

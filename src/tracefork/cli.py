@@ -37,6 +37,7 @@ def replay(
     """Replay a tape and print the verification receipt, or gate a fixture corpus with --check."""
     import importlib
 
+    from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
 
@@ -55,6 +56,7 @@ def replay(
     agent_fn = getattr(mod, fn_name)
 
     result = ReplayVerifier(tape, agent_fn).verify()
+    result.certificate = certificate_from_verification(result, tape)
     _print_receipt(tape_path, result)
     raise typer.Exit(0 if result.bit_exact else 1)
 
@@ -91,6 +93,7 @@ def verify(
     """Verify bit-exact replay. Exit 1 on drift."""
     import importlib
 
+    from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
 
@@ -114,6 +117,7 @@ def verify(
     mod = importlib.import_module(module_path)
     agent_fn = getattr(mod, fn_name)
     result = ReplayVerifier(tape, agent_fn).verify()
+    result.certificate = certificate_from_verification(result, tape)
     _print_receipt(tape_path, result)
     raise typer.Exit(0 if result.bit_exact else 1)
 
@@ -820,6 +824,9 @@ def _print_receipt(tape_path: Path, result) -> None:
     typer.echo(f"  exchanges       {result.matched}/{result.total} matched")
     typer.echo(f"  fingerprint     {'match' if result.fingerprints_match else 'MISMATCH'}")
     typer.echo(f"  result          {status}")
+    certificate = getattr(result, "certificate", None)
+    if certificate is not None:
+        typer.echo(f"  certificate     {certificate.strength.value}")
     if result.divergence:
         cause = DriftDoctor.classify(result.divergence)
         typer.echo(f"  drift cause     {cause.value}")
