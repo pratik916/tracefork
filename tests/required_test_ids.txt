@@ -1,0 +1,55 @@
+# Executed-evidence CI sentinel — required test id manifest (tracefork-bge.25)
+#
+# Each non-comment line is a pytest node id in JUnit "classname::name" form
+# (module path dotted, e.g. `tests.test_tape`, then `::`, then the bare test
+# function name — no parametrize suffix on any id below). Both scripts/e2e.sh
+# and .github/workflows/ci.yml run pytest with --junit-xml=junit.xml and then
+# `scripts/check_executed_evidence.py`, which hard-fails if any id below is
+# absent from the report or present-but-skipped — so a narrowed `-k`
+# selection or a silently skipped test can never pass CI/e2e green just
+# because pytest's own exit code was 0. Blank lines and `#` comments are
+# ignored.
+#
+# Maintenance obligation: renaming or removing any test below requires
+# updating this file in the SAME change, or the sentinel correctly starts
+# failing (see scripts/check_executed_evidence.py's module docstring).
+
+# Negative control — the "proof, not assertion" invariant: a real divergence
+# (a drifting NondetSource forcing a replay mismatch) must never be silently
+# swallowed anywhere across record -> store -> replay -> fork -> blame.
+tests.test_e2e::test_negative_control_drifting_nondet_forces_divergence_through_the_store
+
+# Tape digest / round-trip byte-stability — the hash-chain fingerprint every
+# replay/fork/store guarantee is built on top of.
+tests.test_tape::test_digest_is_deterministic
+tests.test_tape::test_digest_changes_on_draws
+tests.test_tape::test_digest_changes_on_exchange
+tests.test_tape::test_save_load_roundtrip
+tests.test_tape::test_to_bytes_from_bytes_roundtrip
+tests.test_tape::test_provenance_roundtrips_through_to_bytes_from_bytes_exactly
+tests.test_tape::test_digest_excludes_provenance
+
+# bench's unexpected_failures regression test (tracefork-bge's competing-fault
+# benchmark) — 10/11 planted cases must resolve with zero UNEXPECTED misses;
+# the one documented limitation is asserted separately and must stay the only
+# miss.
+tests.test_bench::test_run_bench_matches_ground_truth_except_the_documented_limitation
+
+# ReplayCertificate negative control (tracefork-bge.3) — a certificate must
+# never overclaim BIT_EXACT_FULL_REPLAY on a divergent replay.
+tests.test_certificate::test_certificate_from_verification_on_negative_control_is_not_bit_exact
+
+# Checkpoint round-trip (tracefork-bge.6) — crash-safe incremental recording
+# must reproduce the exact same digest as a clean finalize.
+tests.test_checkpoint::test_finalize_marks_finalized_and_digest_matches_original
+tests.test_checkpoint::test_recovered_nonfinalized_digest_matches_manual_build
+
+# Bundle round-trip (tracefork-bge.16) — export/import must stay bit-exact
+# and replay-verifiable, not merely digest-equal.
+tests.test_bundle::test_bundle_round_trip_then_replay_verifier_is_bit_exact
+
+# Property-based tests (tracefork-bge.13) — Hypothesis-driven invariants over
+# arbitrary generated inputs, not just the fixed-example pins above.
+tests.test_property_tape::test_to_bytes_from_bytes_roundtrip_is_lossless_and_digest_stable
+tests.test_property_tape::test_digest_excludes_metadata_fields
+tests.test_property_matcher::test_identity_matcher_fingerprint_roundtrip_over_arbitrary_json_bodies

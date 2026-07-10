@@ -525,6 +525,21 @@ serving behavior. `scripts/e2e.sh` runs the whole gate — sync, lint, format,
 mypy, tests+coverage, `validate --check`, `replay --check`, `bench`, build+twine
 — as one script with a single PASS/FAIL verdict. Both test files are additive
 only: zero-diff over `transport.py`/`tape.py`/`fork.py`/`blame.py`/`matcher.py`.
+`scripts/check_executed_evidence.py` is the executed-evidence CI sentinel
+(tracefork-bge.25): both `scripts/e2e.sh` and `.github/workflows/ci.yml` run
+pytest with `--junit-xml=junit.xml`, then this script cross-checks the
+JUnit report against `tests/required_test_ids.txt` (a curated
+classname::name manifest of this repo's most safety-critical tests — the
+negative control, `Tape.digest()`/round-trip tests, bench's
+`unexpected_failures` regression, the `ReplayCertificate` negative control,
+checkpoint/bundle round-trips, and the Hypothesis property tests) and hard-
+fails (exit 1) if any required id is absent or present-but-skipped, so a
+narrowed `-k` selection or a silent skip can no longer pass CI/e2e green on a
+bare 0 exit code alone. Pure stdlib `xml.etree.ElementTree` parsing of a
+report pytest itself just wrote in the same run (not untrusted input) — see
+the module's own docstring for that trust-boundary note. Renaming/removing a
+manifested test is a maintenance obligation: update the manifest in the same
+change, or the sentinel correctly starts failing.
 
 ## Invariants / conventions
 

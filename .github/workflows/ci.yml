@@ -27,7 +27,9 @@ jobs:
       - name: Type check
         run: uv run mypy src/tracefork
       - name: Tests + coverage
-        run: uv run pytest -q --cov --cov-report=term-missing
+        run: uv run pytest -q --cov --cov-report=term-missing --junit-xml=junit.xml
+      - name: Executed-evidence CI sentinel
+        run: uv run python scripts/check_executed_evidence.py
       - name: Self-validation regression gate
         run: uv run tracefork validate --check
       - name: Build distribution

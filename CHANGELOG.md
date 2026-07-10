@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Executed-evidence CI sentinel** (`scripts/check_executed_evidence.py`,
+  `tests/required_test_ids.txt`, `scripts/e2e.sh`,
+  `.github/workflows/ci.yml`) — a bare pytest exit code proves nothing about
+  a narrowed `-k` selection or a silently-skipped test; both CI and
+  `scripts/e2e.sh` now run pytest with `--junit-xml=junit.xml` and then this
+  new checker, which cross-checks the JUnit report against a curated
+  required-test-id manifest (the negative control, `Tape.digest()`/
+  round-trip tests, bench's `unexpected_failures` regression, the
+  `ReplayCertificate` negative control, checkpoint/bundle round-trips, and
+  the Hypothesis property tests) and exits 1 with a clear diagnostic on any
+  id that's missing or present-but-skipped. A missing/malformed `junit.xml`
+  is also a hard failure, never a no-op pass-through. Offline/$0, pure local
+  file parsing (stdlib `xml.etree.ElementTree`, no new dependency).
+
 - **Shareable trust receipt + badge per run** (`receipt.py`, new
   `tracefork receipt` CLI command) — composes a tape's already-computed
   replay/validate/bench evidence into one JSON-safe, in-toto-Statement-shaped

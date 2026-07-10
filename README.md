@@ -91,6 +91,12 @@ PASS/FAIL verdict:
 bash scripts/e2e.sh
 ```
 
+The tests+coverage step writes `junit.xml`, which `scripts/check_executed_evidence.py`
+then cross-checks against `tests/required_test_ids.txt` — a manifest of this repo's
+most safety-critical test ids (negative control, tape digest/round-trip, bench's
+regression check, and more) — so a narrowed test selection or a silently-skipped
+required test fails CI/e2e even though pytest's own exit code was 0.
+
 `tracefork validate` prints:
 
 ```
