@@ -3,7 +3,7 @@
     tracefork <command> [args]
 
 Commands: replay, verify, fork, report, serve, blame, validate, bench, export,
-ingest, prune, proxy, coverage.
+ingest, prune, proxy, coverage, bundle-export, bundle-import.
 """
 
 from __future__ import annotations
@@ -726,6 +726,77 @@ def ingest(
     typer.echo("  NOTE: step structure only, reconstructed from span attributes — NOT")
     typer.echo("  tracefork's own recorded bytes. Supports blame-by-re-execution, NOT $0")
     typer.echo("  bit-exact replay (`replay`/`fork` will diverge on this tape).\n")
+
+
+@app.command()
+def bundle_export(
+    run_id: str = typer.Argument(..., help="run_id to export (and its direct branches)"),
+    output: Path = typer.Option(  # noqa: B008
+        Path("bundle.db"), "--output", "-o", help="Output bundle store.db path"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to source store.db"
+    ),
+) -> None:
+    """Export a run and its direct branches into a portable, self-contained
+    store.db bundle — a scp-able artifact analogous to `git bundle`.
+
+    Raw blob copy, byte-for-byte: no Tape decode/re-encode round trip (unlike
+    `export --otel`/`--openinference`, which are lossy observability data,
+    not a replayable tape). See `tracefork bundle-import` for the reverse
+    direction.
+    """
+    from tracefork.bundle import export_bundle
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        result = export_bundle(db, run_id, str(output))
+    except KeyError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Bundle written to {output}")
+    typer.echo(f"  run_id     {result.run_id}")
+    typer.echo(f"  branch(es) {len(result.branch_ids)}\n")
+
+
+@app.command()
+def bundle_import(
+    bundle_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Path to a bundle store.db (from `tracefork bundle-export`)"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to destination store.db"
+    ),
+) -> None:
+    """Import every run + its direct branches from a bundle store.db into
+    --store, through the CAS-guarded save_tape/save_branch write path (never
+    raw INSERT) — a genuine content collision on an existing run_id/branch_id
+    raises an error instead of silently overwriting. Reusing the same ids
+    with byte-identical content is an idempotent no-op. See `tracefork
+    bundle-export` for the reverse direction.
+    """
+    from tracefork.bundle import import_bundle
+    from tracefork.store import TapeConflictError, TapeStore
+
+    if not bundle_path.exists():
+        typer.echo(f"No bundle found at {bundle_path}")
+        raise typer.Exit(1)
+
+    db = TapeStore(str(store))
+    try:
+        result = import_bundle(db, str(bundle_path))
+    except TapeConflictError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Imported {len(result.run_ids)} run(s), {len(result.branch_ids)} branch(es)")
+    typer.echo(f"  from {bundle_path} -> {store}\n")
 
 
 @app.command()

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lossless tape+branch bundle export/import** (`bundle.py`, new; `store.py`,
+  `cli.py`) — `tracefork bundle-export <run_id> [--output bundle.db]
+  [--store store.db]` / `tracefork bundle-import <bundle.db> [--store
+  store.db]`, a portable, scp-able artifact analogous to `git bundle`: a
+  bundle is literally a second, smaller `store.db` (same DDL, same
+  `Tape.to_bytes()` envelope), not a bespoke archive format. `export_bundle`
+  copies a run's + its direct branches' `tapes`/`branches` BLOB columns
+  byte-for-byte via two new `TapeStore`-only helper pairs
+  (`raw_tape_row`/`raw_branch_rows` read, `install_raw_tape_row`/
+  `install_raw_branch_row` write) — zero `Tape.from_bytes`/`to_bytes`
+  decode-reencode round trip, so the bundle's stored bytes are identical to
+  the source store's, not merely digest-equal. `import_bundle` goes through
+  the EXISTING CAS-guarded `save_tape`/`save_branch` write path — never a raw
+  `INSERT` — so a collision on import (an existing `run_id`/`branch_id` with
+  genuinely different content) raises `TapeConflictError` instead of
+  silently clobbering; reusing the same ids with byte-identical content is
+  an idempotent no-op. `save_branch` gains an optional `branch_id=` parameter
+  (defaults to `None`, generating a fresh uuid exactly as before) so import
+  can preserve a branch's id across stores, guarded by the same
+  install-or-verify-same-content check as `save_tape`. Offline/$0, pure local
+  file I/O.
+
 - **Crash-safe incremental (checkpointed) recording** (`checkpoint.py`, new;
   `transport.py`, `recorder.py`) — a crash before `tape.save()`/`to_bytes()`
   previously lost the entire in-memory recording. `CheckpointWriter` durably

@@ -390,6 +390,71 @@ def test_cli_export_requires_exactly_one_format_flag_is_documented_nonzero(tmp_p
     assert "exactly one" in result.output
 
 
+# ── bundle-export / bundle-import ───────────────────────────────────────
+
+
+def test_cli_bundle_export_then_import_round_trip_exit_zero(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    bundle_path = tmp_path / "bundle.db"
+    export_result = runner.invoke(
+        app, ["bundle-export", run_id, "--store", str(db), "-o", str(bundle_path)]
+    )
+    assert export_result.exit_code == 0, export_result.output
+    assert bundle_path.exists()
+
+    target_db = tmp_path / "target.db"
+    import_result = runner.invoke(
+        app, ["bundle-import", str(bundle_path), "--store", str(target_db)]
+    )
+    assert import_result.exit_code == 0, import_result.output
+
+    target = TapeStore(str(target_db))
+    try:
+        assert any(r["run_id"] == run_id for r in target.list_runs())
+    finally:
+        target.close()
+
+
+def test_cli_bundle_export_unknown_run_id_is_documented_nonzero_exit(tmp_path):
+    db = tmp_path / "store.db"
+    TapeStore(str(db)).close()
+    result = runner.invoke(
+        app, ["bundle-export", "does-not-exist", "--store", str(db), "-o", str(tmp_path / "b.db")]
+    )
+    assert result.exit_code == 1
+
+
+def test_cli_bundle_import_missing_bundle_is_documented_nonzero_exit(tmp_path):
+    result = runner.invoke(
+        app, ["bundle-import", str(tmp_path / "nope.db"), "--store", str(tmp_path / "s.db")]
+    )
+    assert result.exit_code == 1
+    assert "No bundle found" in result.output
+
+
+def test_cli_bundle_import_conflicting_content_is_documented_nonzero_exit(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    bundle_path = tmp_path / "bundle.db"
+    export_result = runner.invoke(
+        app, ["bundle-export", run_id, "--store", str(db), "-o", str(bundle_path)]
+    )
+    assert export_result.exit_code == 0, export_result.output
+
+    target_db = tmp_path / "target.db"
+    target = TapeStore(str(target_db))
+    try:
+        conflicting = Tape(agent_name="conflict")
+        conflicting.append_exchange(b"different-req", b"different-resp")
+        target.save_tape(conflicting, run_id=run_id)
+    finally:
+        target.close()
+
+    import_result = runner.invoke(
+        app, ["bundle-import", str(bundle_path), "--store", str(target_db)]
+    )
+    assert import_result.exit_code == 1
+
+
 # ── prune ────────────────────────────────────────────────────────────────
 
 

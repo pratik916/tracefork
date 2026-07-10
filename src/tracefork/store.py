@@ -81,6 +81,7 @@ class StorageBackend(Protocol):
         delta_tape: Tape,
         mutation_desc: str = "",
         created_at: str = "",
+        branch_id: str | None = None,
     ) -> str: ...
 
     def load_branch(self, branch_id: str) -> dict: ...
@@ -314,12 +315,39 @@ class TapeStore:
         delta_tape: Tape,
         mutation_desc: str = "",
         created_at: str = "",
+        branch_id: str | None = None,
     ) -> str:
-        bid = uuid.uuid4().hex[:12]
+        """Persist ``delta_tape`` as a new branch of ``parent_run_id`` (a fresh
+        ``branch_id`` if omitted).
+
+        ``branch_id`` (optional) lets a caller reuse a specific id instead of
+        generating a fresh uuid — e.g. ``bundle.py``'s ``import_bundle``,
+        which must preserve a branch's id across stores. When passed, the same
+        install-or-verify-same-content CAS guard as :meth:`save_tape` applies:
+        reusing a ``branch_id`` whose stored ``delta_tape`` content is
+        byte-identical (via ``Tape.digest()``) is an idempotent no-op;
+        genuinely different content raises :class:`TapeConflictError`. Every
+        existing caller omits ``branch_id`` and keeps today's behavior exactly
+        (a fresh uuid, no collision possible, no SELECT before the INSERT).
+        """
+        bid = branch_id or uuid.uuid4().hex[:12]
         blob = delta_tape.to_bytes()
         with self._write_lock:
             self._con.execute("BEGIN IMMEDIATE")
             try:
+                if branch_id is not None:
+                    row = self._con.execute(
+                        "SELECT delta_tape_bytes FROM branches WHERE branch_id=?", (bid,)
+                    ).fetchone()
+                    if row is not None:
+                        existing_digest = Tape.from_bytes(bytes(row[0])).digest()
+                        if existing_digest != delta_tape.digest():
+                            raise TapeConflictError(
+                                f"branch_id {bid!r} already stored with different content "
+                                "(digest mismatch)"
+                            )
+                        self._con.execute("COMMIT")
+                        return bid
                 self._con.execute(
                     """INSERT INTO branches
                        (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
@@ -374,6 +402,76 @@ class TapeStore:
         ``stored_digest``/``prune()``."""
         rows = self._con.execute("SELECT branch_id, parent_run_id FROM branches").fetchall()
         return [(r[0], r[1]) for r in rows]
+
+    # ── raw row access (bundle.py's byte-for-byte export/import) ───────────
+
+    def raw_tape_row(self, run_id: str) -> tuple[str, str, bytes, str] | None:
+        """The raw ``tapes`` row for ``run_id`` — ``(run_id, agent_name,
+        tape_bytes, created_at)`` — exactly as stored, with zero decode or
+        re-encode. Powers ``bundle.py``'s byte-for-byte ``export_bundle``
+        (see that module's docstring); returns ``None`` if ``run_id`` isn't
+        found. Same "``TapeStore``-only read helper" precedent as
+        ``stored_digest``/``all_branch_parents``."""
+        row = self._con.execute(
+            "SELECT run_id, agent_name, tape_bytes, created_at FROM tapes WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        return None if row is None else (row[0], row[1], bytes(row[2]), row[3])
+
+    def raw_branch_rows(self, parent_run_id: str) -> list[tuple[str, str, int, bytes, str, str]]:
+        """The raw ``branches`` rows for every branch under ``parent_run_id``
+        — ``(branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+        mutation_desc, created_at)`` — exactly as stored, with zero decode or
+        re-encode. Powers ``bundle.py``'s byte-for-byte ``export_bundle``."""
+        rows = self._con.execute(
+            """SELECT branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+                      mutation_desc, created_at
+               FROM branches WHERE parent_run_id=?""",
+            (parent_run_id,),
+        ).fetchall()
+        return [(r[0], r[1], r[2], bytes(r[3]), r[4], r[5]) for r in rows]
+
+    def install_raw_tape_row(self, row: tuple[str, str, bytes, str]) -> None:
+        """Write a raw ``tapes`` row (as returned by :meth:`raw_tape_row`)
+        verbatim — ``INSERT OR REPLACE``, no digest check, no CAS guard.
+
+        For ``bundle.py``'s ``export_bundle`` writing into a FRESH bundle
+        file only, where no prior content can exist to collide with; this is
+        deliberately NOT a general-purpose write path (unlike
+        :meth:`save_tape`) and must never be pointed at a live store another
+        writer is using.
+        """
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) "
+                    "VALUES(?,?,?,?)",
+                    row,
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+
+    def install_raw_branch_row(self, row: tuple[str, str, int, bytes, str, str]) -> None:
+        """Write a raw ``branches`` row (as returned by :meth:`raw_branch_rows`)
+        verbatim — ``INSERT OR REPLACE``, no digest check, no CAS guard. Same
+        fresh-bundle-file-only caveat as :meth:`install_raw_tape_row`."""
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    """INSERT OR REPLACE INTO branches
+                       (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+                        mutation_desc, created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    row,
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
 
     # ── causal graph (persistent blame/Shapley edges) ───────────────────────
 

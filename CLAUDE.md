@@ -36,7 +36,8 @@ uv run tracefork validate --check    # regression-gate vs experiments/validation
 uv run tracefork bench                # long-tape competing-fault discrimination benchmark
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy
+uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy,
+                                      # export, ingest, prune, coverage, bundle-export, bundle-import
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 bash scripts/e2e.sh                  # single-receipt gate: sync, lint, type-check, tests+coverage,
                                       # validate --check, replay --check, bench, build+twine, one PASS banner
@@ -139,8 +140,14 @@ The product lives in `src/tracefork/`:
   `TapeConflictError` instead of silently clobbering the prior tape, unless the
   caller passes `overwrite=True`. The check-then-write stays inside the
   existing `BEGIN IMMEDIATE`/`_write_lock` transaction — no second lock.
-  `save_branch` needs no equivalent: `branch_id` is always a fresh uuid, so a
-  real collision already raises `sqlite3.IntegrityError` today. `prune()` is a
+  `save_branch` gains an optional `branch_id=` parameter (default `None`,
+  generating a fresh uuid exactly as every existing caller already gets):
+  passing it applies the same install-or-verify-same-content CAS guard as
+  `save_tape` (idempotent no-op on identical content, `TapeConflictError` on
+  a genuine collision) so a caller that needs to preserve a branch's id
+  across stores (`bundle.py`'s `import_bundle`) gets the same safety
+  `save_tape` already has, instead of the raw `sqlite3.IntegrityError` a bare
+  collision would otherwise raise. `prune()` is a
   soft-archive-only retention pass (git gc / borg prune's mark-and-sweep-with-
   soft-archive discipline, never a hard delete): a tape matching
   `older_than_iso` (lexical `created_at` cutoff) and/or an explicit `run_ids`
@@ -173,7 +180,33 @@ The product lives in `src/tracefork/`:
   check, never a hard dependency; `all_branch_parents` returns every
   `(branch_id, parent_run_id)` pair regardless of parent liveness, since
   `list_branches(parent_run_id)` alone can never surface a branch whose parent
-  tape row was force-deleted directly (`foreign_keys=OFF`).
+  tape row was force-deleted directly (`foreign_keys=OFF`). `raw_tape_row`/
+  `raw_branch_rows` (read) and `install_raw_tape_row`/`install_raw_branch_row`
+  (write) are four more small `TapeStore`-only helpers, for `bundle.py`'s
+  byte-for-byte export: the read pair returns a stored row's raw BLOB column
+  exactly as stored (zero `Tape.from_bytes`/`to_bytes` decode-reencode); the
+  write pair is a plain `INSERT OR REPLACE` with no CAS guard, deliberately
+  not general-purpose (unlike `save_tape`/`save_branch`) — safe only because
+  `export_bundle` always points it at a fresh bundle file, never a live store.
+- `bundle.py` — lossless tape+branch trajectory export/import: a bundle is
+  literally a second, smaller `store.db` (same DDL, same
+  `Tape.to_bytes()` envelope) — `git bundle`'s model, a scoped-down valid
+  store any `TapeStore` can open directly rather than a bespoke archive
+  format. `export_bundle(store, run_id, output_path)` copies `run_id` and its
+  DIRECT branches' BLOB columns byte-for-byte via `store.py`'s four raw-row
+  helpers above — never a `Tape` decode/re-encode round trip, so the bundle's
+  bytes are identical to the source store's, not merely digest-equal.
+  `import_bundle(target, bundle_path)` goes the other way through the
+  EXISTING CAS-guarded `save_tape`/`save_branch` write path (never a raw
+  `INSERT`), preserving each branch's id via `save_branch`'s new `branch_id=`
+  parameter — a genuine content collision on an existing `run_id`/`branch_id`
+  raises `TapeConflictError` instead of silently clobbering; reusing the same
+  ids with byte-identical content is an idempotent no-op. `tracefork
+  bundle-export <run_id> [-o bundle.db] [--store store.db]` / `tracefork
+  bundle-import <bundle.db> [--store store.db]` are the CLI surface,
+  distinct from the lossy OTel/OpenInference `export`/`ingest` commands
+  (`interop.py`) — a bundle is bit-exact replayable, an OTel/OpenInference
+  export is not. Offline/$0, pure local file I/O.
 - `fsck.py` — `store_fsck()` is a read-only, git-fsck-style STRUCTURAL check
   over a `TapeStore` (distinct from `replay.py`'s replay-FIDELITY
   verification): every tape must decode via `load_tape`, every branch under a
@@ -289,7 +322,7 @@ The product lives in `src/tracefork/`:
   violation regardless of guard state). `tracefork coverage <tape>
   [--agent-source FILE]` is the CLI surface. Read-only: never touches
   `Tape.digest()`/`to_bytes()`/`from_bytes()`.
-- `cli.py` — Typer entry point for all thirteen commands.
+- `cli.py` — Typer entry point for all fifteen commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
@@ -303,7 +336,7 @@ sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest
 plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
 base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
 documented scope boundaries called out explicitly, not papered over) — all
-offline/$0. `tests/test_cli_smoke.py` invokes every one of the thirteen CLI
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the fifteen CLI
 subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
 call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
 to a no-op (proving the CLI's own wiring without binding a socket) plus a
