@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Property-based fuzz tests (Hypothesis)** (`tests/test_property_tape.py`,
+  `tests/test_property_matcher.py`, `pyproject.toml`'s `dev` extra) — generalize
+  three of `tape.py`/`matcher.py`'s fixed-input pins into proven invariants over
+  generated inputs: `Tape.to_bytes()`/`from_bytes()` round-trip losslessness +
+  `digest()` stability, `digest()`'s exclusion of every metadata-only field
+  (`boundary`/`agent_name`/`content_redacted`/`async_batches`/`provenance`), and
+  `IdentityMatcher`'s `stored_fingerprint(stored_request(R)) ==
+  live_fingerprint(R)` contract over arbitrary JSON request bodies. Test-only
+  (`hypothesis>=6`, never imported by `src/tracefork`); `derandomize=True` +
+  bounded `max_examples` keep every run deterministic and fast, offline/$0
+  (`tracefork-bge.13`).
+
 - **Fork-tree panel in the report UI** (`report.py`, `cli.py`, `server.py`,
   `web/report.html`) — a fourth panel renders a run's saved branches as a
   git-graph-style row layout (inline SVG, no new JS library/CDN), ranked by
