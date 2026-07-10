@@ -407,6 +407,9 @@ def blame(
     )
     typer.echo(f"  Report saved to {report_path}")
 
+    edge_ids = db.save_blame_report(run_id, report)
+    typer.echo(f"  Causal edges persisted   {len(edge_ids)}")
+
 
 @app.command()
 def validate(

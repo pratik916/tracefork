@@ -130,6 +130,20 @@ The product lives in `src/tracefork/`:
   space is a distinct, out-of-scope, higher-risk step. `StorageBackend` is
   deliberately NOT extended with `prune` (kept `TapeStore`-only for now); the
   `tracefork prune` CLI command always exits 0 (a maintenance op, not a gate).
+  `save_blame_report`/`save_shapley_report` persist `blame.py`'s
+  `FlipRateResult`/`ShapleyResult`s into a `causal_edges` table (upsert-by-
+  replace on `edge_id=f"{run_id}:{step_index}:{method}"`, so a re-blame
+  replaces rather than duplicates) instead of letting every blame run be
+  computed and discarded; `causal_edges_for_run`/`cited_by`/`causal_closure`
+  read them back — `cited_by` derives citing branch ids straight from the
+  existing `branches` table, and `causal_closure` BFS-walks
+  `branches.parent_run_id` chains (where a branch was promoted to its own
+  tape via `save_tape(delta_tape, run_id=branch_id)`) unioning each
+  generation's `responsible=1` edges. `StorageBackend` gains the same 5
+  signatures; `causal_edges` has no FK to `tapes` (unlike `branches`,
+  `prune()` doesn't need to know about it) and is never fed into
+  `Tape.digest()`. `cli.py`'s `blame` command calls `save_blame_report`
+  additively after its existing JSON write.
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and

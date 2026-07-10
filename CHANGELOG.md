@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persistent causal graph store: `causal_edges` table** (`store.py`,
+  `cli.py`) — `TapeStore.save_blame_report()`/`save_shapley_report()` persist
+  every `FlipRateResult`/`ShapleyResult` (flip_rate, Wilson CI, BH-FDR
+  `q_value`/`responsible`, or Shapley value + necessity/sufficiency) instead
+  of letting a blame run be computed and discarded; upsert-by-replace keyed on
+  `edge_id=f"{run_id}:{step_index}:{method}"` means a re-blame replaces the
+  prior row set rather than accumulating stale rows. `causal_edges_for_run()`
+  reads them back; `cited_by(run_id, step)` derives citing branch ids
+  directly from the existing `branches` table (no new citation concept);
+  `causal_closure(run_id)` BFS-walks `branches.parent_run_id` chains — where a
+  branch was itself promoted to its own tape via `save_tape(delta_tape,
+  run_id=branch_id)` — unioning each generation's `responsible=1` edges into
+  one causal graph strictly stronger than a bare caused_by DAG. `causal_edges`
+  has no `FOREIGN KEY` to `tapes` (unlike `branches`, `prune()` need not know
+  about it). `StorageBackend` gains the same 5 signatures; `tracefork blame`
+  calls `save_blame_report()` additively after its existing
+  `blame_<run_id>.json` write. Store-level metadata only — never fed into
+  `Tape.digest()`.
+
 - **Confined fork/blame execution via `boundary_guard=` on `ForkEngine`/
   `BlameEngine`** (`fork.py`, `blame.py`) — `ForkEngine.fork()` and
   `fork_coalition()` gain an opt-in `boundary_guard: bool = False` kwarg that

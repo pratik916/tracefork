@@ -1,4 +1,5 @@
-"""TapeStore — SQLite-backed persistence for tapes and branch metadata.
+"""TapeStore — SQLite-backed persistence for tapes, branch metadata, and the
+persistent causal graph.
 
 Schema:
   tapes   (run_id TEXT PK, agent_name TEXT, tape_bytes BLOB, created_at TEXT)
@@ -6,12 +7,25 @@ Schema:
            delta_tape_bytes BLOB, mutation_desc TEXT, created_at TEXT)
   tapes_archived   (tapes + archived_at TEXT) — `prune()`'s soft-archive target
   branches_archived(branches + archived_at TEXT, no FK — see `prune()`)
+  causal_edges(edge_id TEXT PK, run_id TEXT, step_index INT, method TEXT,
+               flip_rate REAL, ci_lo/ci_hi REAL, ci_method TEXT,
+               p_value/q_value REAL, responsible INT, necessity/sufficiency INT,
+               shapley_value REAL, created_at TEXT)
 
 `prune()` is a soft-archive-only retention pass (git gc / borg prune's
 mark-and-sweep-with-soft-archive discipline): a pruned row moves from a live
 table to its ``_archived`` twin and stays queryable there forever. There is
 no hard-delete anywhere in this module — reclaiming that space is a
 deliberately separate, out-of-scope, higher-risk step.
+
+``causal_edges`` persists every blame/Shapley result computed by ``blame.py``
+instead of discarding it once the CLI/caller has printed or JSON-dumped it —
+a causal graph strictly stronger than a bare caused_by DAG, since every edge
+carries its Wilson-CI flip-rate (or Shapley value) and BH-FDR ``q_value``.
+It deliberately has no ``FOREIGN KEY`` back to ``tapes``: unlike ``branches``,
+which `prune()` must archive in FK order, causal edges are independent
+metadata `prune()` need not know about (see ``prune()``'s own docstring —
+this module makes no attempt to keep the two in sync).
 """
 
 from __future__ import annotations
@@ -20,9 +34,12 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .tape import Tape, open_sqlite
+
+if TYPE_CHECKING:
+    from .blame import BlameReport, ShapleyReport
 
 
 class TapeConflictError(RuntimeError):
@@ -70,6 +87,20 @@ class StorageBackend(Protocol):
 
     def list_branches(self, parent_run_id: str) -> list[dict]: ...
 
+    def save_blame_report(
+        self, run_id: str, report: BlameReport, *, created_at: str = ""
+    ) -> list[str]: ...
+
+    def save_shapley_report(
+        self, run_id: str, report: ShapleyReport, *, created_at: str = ""
+    ) -> list[str]: ...
+
+    def causal_edges_for_run(self, run_id: str) -> list[dict]: ...
+
+    def cited_by(self, run_id: str, step_index: int) -> list[str]: ...
+
+    def causal_closure(self, run_id: str) -> list[dict]: ...
+
     def close(self) -> None: ...
 
 
@@ -113,7 +144,60 @@ CREATE TABLE IF NOT EXISTS branches_archived (
     created_at        TEXT NOT NULL,
     archived_at       TEXT NOT NULL
 );
+
+-- Persistent causal graph: one row per (run_id, step_index, method) blame or
+-- Shapley result. No FOREIGN KEY to `tapes` — see module docstring.
+CREATE TABLE IF NOT EXISTS causal_edges (
+    edge_id       TEXT PRIMARY KEY,
+    run_id        TEXT NOT NULL,
+    step_index    INTEGER NOT NULL,
+    method        TEXT NOT NULL,
+    flip_rate     REAL,
+    ci_lo         REAL,
+    ci_hi         REAL,
+    ci_method     TEXT,
+    p_value       REAL,
+    q_value       REAL,
+    responsible   INTEGER,
+    necessity     INTEGER,
+    sufficiency   INTEGER,
+    shapley_value REAL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_causal_edges_run ON causal_edges(run_id);
 """
+
+_EDGE_COLUMNS = (
+    "edge_id, run_id, step_index, method, flip_rate, ci_lo, ci_hi, ci_method, "
+    "p_value, q_value, responsible, necessity, sufficiency, shapley_value, created_at"
+)
+
+_INSERT_EDGE_SQL = (
+    f"INSERT INTO causal_edges({_EDGE_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def _edge_row_to_dict(row: tuple) -> dict[str, Any]:
+    """Map a raw ``causal_edges`` row (see ``_EDGE_COLUMNS`` order) to a dict,
+    restoring the nullable INTEGER boolean columns to ``bool | None``."""
+    return {
+        "edge_id": row[0],
+        "run_id": row[1],
+        "step_index": row[2],
+        "method": row[3],
+        "flip_rate": row[4],
+        "ci_lo": row[5],
+        "ci_hi": row[6],
+        "ci_method": row[7],
+        "p_value": row[8],
+        "q_value": row[9],
+        "responsible": None if row[10] is None else bool(row[10]),
+        "necessity": None if row[11] is None else bool(row[11]),
+        "sufficiency": None if row[12] is None else bool(row[12]),
+        "shapley_value": row[13],
+        "created_at": row[14],
+    }
 
 
 @dataclass
@@ -261,6 +345,154 @@ class TapeStore:
             {"branch_id": r[0], "divergence_step": r[1], "mutation_desc": r[2], "created_at": r[3]}
             for r in rows
         ]
+
+    # ── causal graph (persistent blame/Shapley edges) ───────────────────────
+
+    def save_blame_report(
+        self, run_id: str, report: BlameReport, *, created_at: str = ""
+    ) -> list[str]:
+        """Persist every ``FlipRateResult`` in ``report`` as a ``causal_edges``
+        row (``method="blame"``, ``edge_id=f"{run_id}:{step_index}:blame"``).
+
+        Upsert-by-replace: any blame edges previously saved for ``run_id`` are
+        deleted first, so re-calling this after a re-blame REPLACES the row
+        set rather than accumulating stale steps alongside fresh ones.
+        """
+        ci_method = report.ci_method.value
+        edge_ids: list[str] = []
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    "DELETE FROM causal_edges WHERE run_id=? AND method='blame'", (run_id,)
+                )
+                for r in report.results:
+                    edge_id = f"{run_id}:{r.step_index}:blame"
+                    edge_ids.append(edge_id)
+                    self._con.execute(
+                        _INSERT_EDGE_SQL,
+                        (
+                            edge_id,
+                            run_id,
+                            r.step_index,
+                            "blame",
+                            r.flip_rate,
+                            r.ci_lo,
+                            r.ci_hi,
+                            ci_method,
+                            r.p_value,
+                            r.q_value,
+                            int(r.responsible),
+                            None,
+                            None,
+                            None,
+                            created_at,
+                        ),
+                    )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+        return edge_ids
+
+    def save_shapley_report(
+        self, run_id: str, report: ShapleyReport, *, created_at: str = ""
+    ) -> list[str]:
+        """Persist every ``ShapleyResult`` in ``report`` as a ``causal_edges``
+        row (``method="shapley"``); same replace-not-duplicate upsert
+        discipline as :meth:`save_blame_report`.
+        """
+        edge_ids: list[str] = []
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    "DELETE FROM causal_edges WHERE run_id=? AND method='shapley'", (run_id,)
+                )
+                for r in report.results:
+                    edge_id = f"{run_id}:{r.step_index}:shapley"
+                    edge_ids.append(edge_id)
+                    self._con.execute(
+                        _INSERT_EDGE_SQL,
+                        (
+                            edge_id,
+                            run_id,
+                            r.step_index,
+                            "shapley",
+                            None,
+                            r.ci_lo,
+                            r.ci_hi,
+                            None,
+                            None,
+                            None,
+                            None,
+                            int(r.necessity),
+                            int(r.sufficiency),
+                            r.shapley_value,
+                            created_at,
+                        ),
+                    )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+        return edge_ids
+
+    def causal_edges_for_run(self, run_id: str) -> list[dict]:
+        """All causal edges (blame and Shapley) saved for ``run_id``, ordered
+        by ``step_index`` then ``method``."""
+        rows = self._con.execute(
+            f"SELECT {_EDGE_COLUMNS} FROM causal_edges WHERE run_id=? ORDER BY step_index, method",
+            (run_id,),
+        ).fetchall()
+        return [_edge_row_to_dict(r) for r in rows]
+
+    def cited_by(self, run_id: str, step_index: int) -> list[str]:
+        """Branch ids created via :meth:`save_branch` that diverged from
+        ``run_id`` at ``step_index`` — derived directly from the existing
+        ``branches`` table, no separate citation concept."""
+        rows = self._con.execute(
+            "SELECT branch_id FROM branches WHERE parent_run_id=? AND divergence_step=? "
+            "ORDER BY created_at DESC",
+            (run_id, step_index),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def causal_closure(self, run_id: str) -> list[dict]:
+        """BFS the fork graph reachable from ``run_id``: each hop follows
+        ``branches`` rows whose ``parent_run_id`` is the current frontier run
+        and whose ``branch_id`` was itself later persisted as its own tape
+        (i.e. promoted to a re-blamable run via
+        ``save_tape(delta_tape, run_id=branch_id)``) — unioned with every
+        hop's ``responsible=1`` blame edges.
+
+        Returns the union of :meth:`causal_edges_for_run`-shaped dicts
+        (``method="blame"``, ``responsible`` true) across every generation
+        reachable from ``run_id``, deduplicated by ``edge_id`` and sorted by
+        ``(run_id, step_index)``. A branch never promoted to its own tape is a
+        dead end — the closure simply doesn't walk into it.
+        """
+        visited = {run_id}
+        frontier = [run_id]
+        edges: dict[str, dict] = {}
+        while frontier:
+            current = frontier.pop(0)
+            for edge in self.causal_edges_for_run(current):
+                if edge["method"] == "blame" and edge["responsible"]:
+                    edges[edge["edge_id"]] = edge
+            branch_rows = self._con.execute(
+                "SELECT branch_id FROM branches WHERE parent_run_id=?", (current,)
+            ).fetchall()
+            for (branch_id,) in branch_rows:
+                if branch_id in visited:
+                    continue
+                promoted = self._con.execute(
+                    "SELECT 1 FROM tapes WHERE run_id=?", (branch_id,)
+                ).fetchone()
+                if promoted is not None:
+                    visited.add(branch_id)
+                    frontier.append(branch_id)
+        return sorted(edges.values(), key=lambda e: (e["run_id"], e["step_index"]))
 
     # ── prune (soft-archive, never hard-delete) ─────────────────────────────
 
