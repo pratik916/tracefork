@@ -88,7 +88,15 @@ def verify(
     tape_path: Path = typer.Argument(None, help="Single tape to verify"),  # noqa: B008
     agent: str = typer.Option(None, "--agent", "-a", help="Import path of agent fn"),
     corpus: bool = typer.Option(
-        False, "--corpus", help="Verify all tapes in experiments/validation_tapes/"
+        False,
+        "--corpus",
+        help="Gate a committed fixture corpus (replay-as-regression); see --corpus-dir",
+    ),
+    corpus_dir: Path = typer.Option(  # noqa: B008
+        Path("experiments/replay_fixtures"),
+        "--corpus-dir",
+        help="Fixture corpus dir for --corpus (default: experiments/replay_fixtures, "
+        "the same corpus 'replay --check' and CI already use)",
     ),
     store: Path = typer.Option(  # noqa: B008
         None,
@@ -100,7 +108,8 @@ def verify(
 ) -> None:
     """Verify bit-exact replay (single tape or --corpus), or run a read-only
     structural fsck over a store with --store <db path>. Exit 1 on drift, on
-    any fsck row failure, or if both --corpus and --store are passed."""
+    any fsck row failure, on any --corpus fixture failure, or if both
+    --corpus and --store are passed."""
     import importlib
 
     from tracefork.certificate import certificate_from_verification
@@ -116,15 +125,8 @@ def verify(
         return
 
     if corpus:
-        corpus_dir = Path("experiments/validation_tapes")
-        tapes = list(corpus_dir.glob("*.tape.sqlite"))
-        if not tapes:
-            typer.echo("No tapes found in experiments/validation_tapes/")
-            raise typer.Exit(1)
-        for tp in sorted(tapes):
-            typer.echo(f"  {tp.name}: skipped (agent not specified per-tape)")
-        typer.echo(f"Corpus: {len(tapes)} tapes scanned")
-        raise typer.Exit(0)
+        _run_replay_check(corpus_dir)
+        return
 
     if tape_path is None or agent is None:
         typer.echo("Provide --agent and a tape path, or use --corpus/--store")

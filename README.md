@@ -143,6 +143,7 @@ uv run tracefork --help
 | `replay  <tape> --agent pkg.mod:fn` | Replay a tape and print the bit-exact verification receipt. |
 | `replay  --check <fixtures dir>` | Replay-as-regression gate: assert every fixture in a committed tape corpus replays bit-exact and its `digest()` matches. |
 | `verify  <tape> --agent pkg.mod:fn` | Verify replay; exit non-zero on drift (CI gate). |
+| `verify  --corpus [--corpus-dir <dir>]` | Gate a committed fixture corpus (default `experiments/replay_fixtures`) — same check as `replay --check`, exit non-zero on any fixture failure. |
 | `fork    <run_id> --step N --response f --agent pkg.mod:fn` | Fork a run at step N with a mutated response; record the counterfactual branch. |
 | `coalition-fork <run_id> --intervene N:f [--intervene M:g ...] --agent pkg.mod:fn` | Fork a run at a SET of steps forced jointly (`do(S)`) — the public what-if DSL over the already-tested `CoalitionSpec`/`fork_coalition`. |
 | `diff    <parent_run_id> <branch_id> [--store]` | Structural diff of a branch's `delta_tape` against its parent, from the divergence step onward. |

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`verify --corpus` is now a real fixture-corpus regression gate**
+  (`cli.py`) — replaces the unconditional-pass stub (globbed a nonexistent
+  `experiments/validation_tapes/` dir, printed "skipped" per tape, always
+  exited 0) with a direct call to the existing `_run_replay_check()` /
+  `replay.run_fixture_corpus_check()` helper `replay --check` already uses.
+  Adds `--corpus-dir` (default: `experiments/replay_fixtures`, the same
+  corpus `replay --check` and CI already gate on) so `verify --corpus` now
+  genuinely asserts bit-exact replay AND a `digest()` match per fixture,
+  and exits 1 on a missing manifest or a corrupted/mismatched fixture —
+  never silently passes. Zero new engine code.
+
 ### Added
 
 - **Property-based fuzz tests (Hypothesis)** (`tests/test_property_tape.py`,

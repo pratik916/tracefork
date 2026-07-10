@@ -108,10 +108,39 @@ def test_cli_verify_drift_is_the_documented_nonzero_exit(tmp_path):
     assert result.exit_code == 1
 
 
-def test_cli_verify_corpus_no_tapes_is_the_documented_nonzero_exit():
+def test_cli_verify_corpus_default_dir_exits_zero_and_reports_fixtures_passed():
+    """`verify --corpus` with no `--corpus-dir` gates the same committed
+    corpus `replay --check` already uses (tracefork-bge.24) — no more
+    unconditional-pass stub."""
     result = runner.invoke(app, ["verify", "--corpus"])
+    assert result.exit_code == 0, result.output
+    assert "fixtures passed" in result.output
+
+
+def test_cli_verify_corpus_missing_manifest_is_nonzero_exit(tmp_path):
+    result = runner.invoke(app, ["verify", "--corpus", "--corpus-dir", str(tmp_path)])
     assert result.exit_code == 1
-    assert "No tapes found" in result.output
+    assert "No manifest.json found" in result.output
+
+
+def test_cli_verify_corpus_corrupted_digest_fixture_is_nonzero_exit(tmp_path):
+    """Direct regression coverage for the exact bug this bead fixes: a
+    corrupted/mismatched fixture must exit 1, never silently pass."""
+    manifest = json.loads((FIXTURES_DIR / "manifest.json").read_text())
+    entry = manifest[0]
+
+    tamper_dir = tmp_path / "fixtures"
+    tamper_dir.mkdir()
+    tape = Tape.load(str(FIXTURES_DIR / entry["tape"]))
+    req, resp = tape.exchanges[0]
+    tape.exchanges[0] = (req, resp + b" ")  # corrupt the recorded response bytes
+    tape.save(str(tamper_dir / entry["tape"]))
+    # Manifest keeps the ORIGINAL (now-stale) digest.
+    (tamper_dir / "manifest.json").write_text(json.dumps([entry]))
+
+    result = runner.invoke(app, ["verify", "--corpus", "--corpus-dir", str(tamper_dir)])
+    assert result.exit_code == 1
+    assert "FAIL" in result.output
 
 
 def test_cli_verify_store_healthy_exits_zero_and_prints_run_id(tmp_path):
