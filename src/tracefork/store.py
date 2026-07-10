@@ -70,6 +70,30 @@ It deliberately has no ``FOREIGN KEY`` back to ``tapes``: unlike ``branches``,
 which `prune()` must archive in FK order, causal edges are independent
 metadata `prune()` need not know about (see ``prune()``'s own docstring —
 this module makes no attempt to keep the two in sync).
+
+``sessions``/``spawn_edges`` model cross-AGENT orchestration/delegation
+lineage — a SEPARATE graph from ``branches`` (the fork/counterfactual DAG)
+and from ``Tape.async_batches`` (a single agent's own per-run asyncio
+fan-out; unrelated, never conflate the two). A session is rooted at one
+``run_id`` (``sessions.root_run_id``); ``spawn_edges`` records each
+``parent_run_id -> child_run_id`` delegation within that session, along with
+an optional free-text ``spawn_reason``. Modeling delegation as its OWN graph
+(rather than collapsing it into ``causal_edges``/``branches`` or a single
+trace id) follows 2026 delegated-execution observability practice: an
+execution/causal graph and an authority/delegation graph diverge under async
+fan-out and re-delegation, which ``fork.py``/``blame.py`` do constantly.
+``spawn_edges.parent_run_id``/``child_run_id`` (and ``sessions.root_run_id``)
+carry a ``FOREIGN KEY`` back to ``tapes(run_id)`` — a spawn edge or session
+may only reference a tape that's actually stored, enforced by SQLite
+(``foreign_keys=ON``, see ``open_sqlite``), never a soft/unchecked reference.
+:class:`SessionStore` is a NEW, separate ``runtime_checkable`` Protocol
+(``TapeStore`` satisfies it) rather than folding these methods into
+:class:`StorageBackend` — so no third-party ``StorageBackend`` implementer
+is broken by this addition; ``StorageBackend`` itself is completely
+unchanged. See :meth:`TapeStore.create_session`, :meth:`TapeStore.
+add_spawn_edge`, :meth:`TapeStore.session_tapes` (a BFS over the spawn
+graph reachable from a session's root), and :meth:`TapeStore.spawn_children`/
+:meth:`TapeStore.spawn_parent`.
 """
 
 from __future__ import annotations
@@ -186,6 +210,41 @@ class StorageBackend(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class SessionStore(Protocol):
+    """The orchestration-session / spawn-lineage persistence interface
+    ``TapeStore`` also satisfies — kept SEPARATE from :class:`StorageBackend`
+    (additive-only: naming a new seam here, rather than growing that
+    Protocol) so an existing third-party ``StorageBackend`` implementation
+    keeps working unmodified. See the module docstring for why spawn
+    lineage is its own graph, distinct from ``branches``/``causal_edges``
+    and from ``Tape.async_batches``.
+    """
+
+    def create_session(
+        self, *, root_run_id: str, session_id: str | None = None, created_at: str = ""
+    ) -> str: ...
+
+    def get_session(self, session_id: str) -> dict: ...
+
+    def add_spawn_edge(
+        self,
+        *,
+        session_id: str,
+        parent_run_id: str,
+        child_run_id: str,
+        spawn_reason: str = "",
+        edge_id: str | None = None,
+        created_at: str = "",
+    ) -> str: ...
+
+    def session_tapes(self, session_id: str) -> list[str]: ...
+
+    def spawn_children(self, run_id: str) -> list[str]: ...
+
+    def spawn_parent(self, run_id: str) -> str | None: ...
+
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS tapes (
     run_id       TEXT PRIMARY KEY,
@@ -252,6 +311,32 @@ CREATE TABLE IF NOT EXISTS causal_edges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_causal_edges_run ON causal_edges(run_id);
+
+-- Orchestration/spawn-lineage graph — cross-AGENT delegation, distinct from
+-- `branches` (the fork/counterfactual DAG) and from `Tape.async_batches`
+-- (per-agent asyncio fan-out). See module docstring.
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id   TEXT PRIMARY KEY,
+    root_run_id  TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY(root_run_id) REFERENCES tapes(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS spawn_edges (
+    edge_id        TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    parent_run_id  TEXT NOT NULL,
+    child_run_id   TEXT NOT NULL,
+    spawn_reason   TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id),
+    FOREIGN KEY(child_run_id) REFERENCES tapes(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spawn_edges_session ON spawn_edges(session_id);
+CREATE INDEX IF NOT EXISTS idx_spawn_edges_parent ON spawn_edges(parent_run_id);
+CREATE INDEX IF NOT EXISTS idx_spawn_edges_child ON spawn_edges(child_run_id);
 """
 
 _EDGE_COLUMNS = (
@@ -963,6 +1048,137 @@ class TapeStore:
                 raise
 
         return PruneReport(dry_run=False, tapes_archived=candidates, branches_archived=branch_ids)
+
+    # ── sessions / spawn_edges (orchestration spawn-lineage graph) ──────────
+
+    def create_session(
+        self, *, root_run_id: str, session_id: str | None = None, created_at: str = ""
+    ) -> str:
+        """Create a new orchestration session rooted at ``root_run_id`` (a
+        fresh ``session_id`` if omitted).
+
+        ``root_run_id`` must already be a stored tape — enforced by the
+        ``sessions.root_run_id`` ``FOREIGN KEY`` to ``tapes(run_id)``, raising
+        ``sqlite3.IntegrityError`` for an unknown ``run_id`` rather than
+        silently accepting a dangling reference. Mirrors :meth:`save_tape`'s
+        ``BEGIN IMMEDIATE`` + ``self._write_lock`` write discipline.
+        """
+        sid = session_id or uuid.uuid4().hex[:12]
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    "INSERT INTO sessions(session_id, root_run_id, created_at) VALUES(?,?,?)",
+                    (sid, root_run_id, created_at),
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+        return sid
+
+    def get_session(self, session_id: str) -> dict:
+        """Load a session's own row (``session_id``/``root_run_id``/
+        ``created_at``) — not its spawn graph, see :meth:`session_tapes`.
+        Raises ``KeyError`` for an unknown ``session_id``, mirroring
+        :meth:`load_tape`/:meth:`load_branch`."""
+        row = self._con.execute(
+            "SELECT session_id, root_run_id, created_at FROM sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"session_id {session_id!r} not found")
+        return {"session_id": row[0], "root_run_id": row[1], "created_at": row[2]}
+
+    def add_spawn_edge(
+        self,
+        *,
+        session_id: str,
+        parent_run_id: str,
+        child_run_id: str,
+        spawn_reason: str = "",
+        edge_id: str | None = None,
+        created_at: str = "",
+    ) -> str:
+        """Record a ``parent_run_id -> child_run_id`` delegation edge within
+        ``session_id`` (a fresh ``edge_id`` if omitted).
+
+        ``session_id``/``parent_run_id``/``child_run_id`` must already exist
+        (a live session and two stored tapes) — each enforced by its own
+        ``FOREIGN KEY``, raising ``sqlite3.IntegrityError`` on any dangling
+        reference rather than silently accepting one. Mirrors
+        :meth:`save_branch`'s ``BEGIN IMMEDIATE`` + ``self._write_lock``
+        write discipline.
+        """
+        eid = edge_id or uuid.uuid4().hex[:12]
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                self._con.execute(
+                    """INSERT INTO spawn_edges
+                       (edge_id, session_id, parent_run_id, child_run_id,
+                        spawn_reason, created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (eid, session_id, parent_run_id, child_run_id, spawn_reason, created_at),
+                )
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+        return eid
+
+    def session_tapes(self, session_id: str) -> list[str]:
+        """BFS the spawn graph reachable from ``session_id``'s
+        ``root_run_id``, following ``spawn_edges.parent_run_id ->
+        child_run_id`` hops within this session only.
+
+        Returns every reachable ``run_id`` (including the root) in BFS
+        discovery order, deduplicated — a run reached via more than one path
+        (e.g. a diamond: two parents delegating to the same child) appears
+        exactly once. Raises ``KeyError`` (via :meth:`get_session`) for an
+        unknown ``session_id``.
+        """
+        root_run_id = self.get_session(session_id)["root_run_id"]
+        order = [root_run_id]
+        seen = {root_run_id}
+        frontier = [root_run_id]
+        while frontier:
+            current = frontier.pop(0)
+            rows = self._con.execute(
+                "SELECT DISTINCT child_run_id FROM spawn_edges "
+                "WHERE session_id=? AND parent_run_id=? ORDER BY child_run_id",
+                (session_id, current),
+            ).fetchall()
+            for (child,) in rows:
+                if child not in seen:
+                    seen.add(child)
+                    order.append(child)
+                    frontier.append(child)
+        return order
+
+    def spawn_children(self, run_id: str) -> list[str]:
+        """Direct spawn children of ``run_id`` — every ``child_run_id`` from
+        a ``spawn_edges`` row whose ``parent_run_id`` is ``run_id``, across
+        ALL sessions, ordered by ``created_at`` then ``child_run_id``. ``[]``
+        for a leaf (never spawned anything)."""
+        rows = self._con.execute(
+            "SELECT child_run_id FROM spawn_edges WHERE parent_run_id=? "
+            "ORDER BY created_at, child_run_id",
+            (run_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def spawn_parent(self, run_id: str) -> str | None:
+        """The spawn parent of ``run_id`` — the ``parent_run_id`` of the
+        (oldest, by ``created_at``) ``spawn_edges`` row whose ``child_run_id``
+        is ``run_id``, or ``None`` for a session root (never spawned by
+        anything)."""
+        row = self._con.execute(
+            "SELECT parent_run_id FROM spawn_edges WHERE child_run_id=? "
+            "ORDER BY created_at, edge_id LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return None if row is None else row[0]
 
     def close(self) -> None:
         self._con.close()

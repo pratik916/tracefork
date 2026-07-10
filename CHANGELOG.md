@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Orchestration session model: `sessions`/`spawn_edges` spawn-lineage
+  schema** (`store.py`, `cli.py`, `server.py`) — a new, FK-checked schema
+  for cross-agent orchestration/delegation lineage, distinct from
+  `Tape.async_batches` (per-agent asyncio fan-out) and from the
+  fork/counterfactual `branches` DAG. `TapeStore.create_session`/
+  `add_spawn_edge`/`session_tapes` (BFS over the spawn graph)/
+  `spawn_children`/`spawn_parent` mirror `save_tape`/`save_branch`'s
+  `BEGIN IMMEDIATE` + `self._write_lock` write discipline; a NEW, separate
+  `runtime_checkable` `SessionStore` Protocol names this seam so
+  `StorageBackend` itself, and any third-party implementer, stays
+  unchanged. `tracefork session create|spawn|show` is the CLI surface;
+  `GET /api/session/{session_id}` is an additive JSON endpoint on
+  `server.py` (out of scope for `report.html`'s UI itself).
+
 - **`ConfinementSpec`-lite: declared writable-roots + network policy**
   (`boundary_guard.py`, `fork.py`) — `BoundaryGuard` gains an opt-in
   `confinement: ConfinementSpec | None = None` parameter alongside its

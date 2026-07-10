@@ -1,7 +1,8 @@
 """FastAPI server for tracefork live mode.
 
-Serves the report HTML at / and JSON endpoints at /api/run/{run_id}
-and /api/branch/{branch_id}. Single-threaded (uvicorn --workers 1).
+Serves the report HTML at / and JSON endpoints at /api/run/{run_id},
+/api/branch/{branch_id}, and /api/session/{session_id}. Single-threaded
+(uvicorn --workers 1).
 """
 
 from __future__ import annotations
@@ -77,3 +78,19 @@ async def get_branch(branch_id: str) -> JSONResponse:
     data["mutation_desc"] = branch["mutation_desc"]
     data["branch_digest"] = branch["branch_digest"]
     return JSONResponse(data)
+
+
+@app.get("/api/session/{session_id}")
+async def get_session(session_id: str) -> JSONResponse:
+    """A session's root run_id/created_at plus every tape reachable via its
+    spawn edges (`TapeStore.session_tapes`'s BFS) — out of scope for
+    report.html's UI itself (see store.py's module docstring), an
+    additive JSON surface for a future/external consumer of the
+    orchestration graph."""
+    store = get_store()
+    try:
+        session = store.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"session {session_id!r} not found") from None
+    session["tapes"] = store.session_tapes(session_id)
+    return JSONResponse(session)

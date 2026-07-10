@@ -4,7 +4,7 @@
 
 Commands: replay, verify, fork, coalition-fork, diff, report, serve, blame,
 tournament, validate, bench, export, ingest, prune, proxy, coverage,
-bundle-export, bundle-import.
+bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show).
 """
 
 from __future__ import annotations
@@ -1339,6 +1339,117 @@ def tournament(
         )
     )
     typer.echo(f"  Report saved to {report_path}")
+
+
+# ── session (orchestration spawn-lineage) sub-app ───────────────────────────
+
+session_app = typer.Typer(
+    name="session", help="Orchestration session / spawn-lineage commands (create/spawn/show)."
+)
+app.add_typer(session_app, name="session")
+
+
+@session_app.command("create")
+def session_create(
+    root_run_id: str = typer.Argument(..., help="run_id of the session's root tape"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Create a new orchestration session rooted at ROOT_RUN_ID.
+
+    ROOT_RUN_ID must already be a stored tape (`FOREIGN KEY` to `tapes`); an
+    unknown run_id is rejected rather than silently accepted.
+    """
+    import sqlite3
+
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        session_id = db.create_session(root_run_id=root_run_id)
+    except sqlite3.IntegrityError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  Session created")
+    typer.echo(f"  session_id   {session_id}")
+    typer.echo(f"  root_run_id  {root_run_id}\n")
+
+
+@session_app.command("spawn")
+def session_spawn(
+    session_id: str = typer.Argument(..., help="Session id to add the spawn edge to"),
+    parent_run_id: str = typer.Argument(..., help="Delegating run_id"),
+    child_run_id: str = typer.Argument(..., help="Spawned/delegated-to run_id"),
+    reason: str = typer.Option("", "--reason", help="Human-readable spawn reason"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Record a spawn/delegation edge from PARENT_RUN_ID to CHILD_RUN_ID
+    within SESSION_ID.
+
+    SESSION_ID/PARENT_RUN_ID/CHILD_RUN_ID must already exist (a live session
+    and two stored tapes) — each enforced by its own `FOREIGN KEY`.
+    """
+    import sqlite3
+
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        edge_id = db.add_spawn_edge(
+            session_id=session_id,
+            parent_run_id=parent_run_id,
+            child_run_id=child_run_id,
+            spawn_reason=reason,
+        )
+    except sqlite3.IntegrityError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  Spawn edge recorded")
+    typer.echo(f"  edge_id        {edge_id}")
+    typer.echo(f"  session_id     {session_id}")
+    typer.echo(f"  parent_run_id  {parent_run_id}")
+    typer.echo(f"  child_run_id   {child_run_id}\n")
+
+
+@session_app.command("show")
+def session_show(
+    session_id: str = typer.Argument(..., help="Session id to show"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Show a session's root tape and every tape reachable via spawn edges
+    (a BFS over `spawn_edges`, see `store.py`'s `session_tapes`)."""
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            session = db.get_session(session_id)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        tapes = db.session_tapes(session_id)
+    finally:
+        db.close()
+
+    typer.echo("\n  Session")
+    typer.echo(f"  session_id   {session['session_id']}")
+    typer.echo(f"  root_run_id  {session['root_run_id']}")
+    typer.echo(f"  created_at   {session['created_at']}")
+    typer.echo(f"  tapes ({len(tapes)}):")
+    for rid in tapes:
+        typer.echo(f"    {rid}")
+    typer.echo("")
 
 
 def _print_receipt(tape_path: Path, result, tape) -> None:

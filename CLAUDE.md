@@ -214,7 +214,26 @@ The product lives in `src/tracefork/`:
   signatures; `causal_edges` has no FK to `tapes` (unlike `branches`,
   `prune()` doesn't need to know about it) and is never fed into
   `Tape.digest()`. `cli.py`'s `blame` command calls `save_blame_report`
-  additively after its existing JSON write. `stored_digest`/`all_branch_parents`
+  additively after its existing JSON write. `sessions`/`spawn_edges` are a
+  SEPARATE new schema for cross-agent orchestration/delegation lineage — NOT
+  `Tape.async_batches` (a single agent's own per-run asyncio fan-out;
+  unrelated, never conflate the two) and NOT the fork/counterfactual
+  `branches` DAG. A session is rooted at one `run_id`; each `spawn_edges`
+  row is a `parent_run_id -> child_run_id` delegation edge (+ optional
+  `spawn_reason`), both FK-checked against `tapes(run_id)` (an unknown
+  run_id raises `sqlite3.IntegrityError`, never silently accepted).
+  Modeling delegation as its OWN graph — distinct from the causal/execution
+  graph `causal_edges` already covers — follows 2026 delegated-execution
+  observability practice: collapsing the two breaks under async fan-out and
+  re-delegation, which `fork.py`/`blame.py` do constantly.
+  `create_session`/`add_spawn_edge` mirror `save_tape`/`save_branch`'s
+  `BEGIN IMMEDIATE` + `self._write_lock` write discipline; `session_tapes`
+  BFS-walks the spawn graph reachable from a session's root (deduplicated —
+  a run reached via more than one path, e.g. a diamond, appears once);
+  `spawn_children`/`spawn_parent` answer the direct-neighbor queries. A NEW,
+  separate `runtime_checkable` `SessionStore` Protocol (not merged into
+  `StorageBackend`, so no third-party `StorageBackend` implementer breaks)
+  names this seam; `TapeStore` satisfies both. `stored_digest`/`all_branch_parents`
   are two small `TapeStore`-only read helpers (same "not on `StorageBackend`
   yet" precedent as `prune`) for `fsck.py`: `stored_digest` gates on `PRAGMA
   table_info(tapes)` so a future `digest` column is an opportunistic stronger
@@ -356,6 +375,10 @@ The product lives in `src/tracefork/`:
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
   three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).
+  `server.py` also exposes an additive `GET /api/session/{session_id}`
+  (`store.py`'s `sessions`/`spawn_edges`, mirroring `get_run`'s
+  404-on-`KeyError` pattern) — explicitly out of scope for `report.html`'s
+  UI itself (tracefork-bge.12), a JSON-only surface for now.
 - `wire.py` / `synthetic.py` — Anthropic wire-format builders and the offline
   Scripted/FaultAware fake transports, in the **package** so production never imports from
   `tests/`; `tests/fakes.py` re-exports them.
@@ -425,7 +448,9 @@ The product lives in `src/tracefork/`:
   violation regardless of guard state). `tracefork coverage <tape>
   [--agent-source FILE]` is the CLI surface. Read-only: never touches
   `Tape.digest()`/`to_bytes()`/`from_bytes()`.
-- `cli.py` — Typer entry point for all sixteen commands.
+- `cli.py` — Typer entry point for all top-level commands, plus a nested
+  `session` sub-app (`create`/`spawn`/`show`) for `store.py`'s
+  orchestration-session/spawn-lineage schema.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
