@@ -71,7 +71,21 @@ The product lives in `src/tracefork/`:
   SDK's `platform_headers()` `lru_cache` on `__enter__` so its one internal
   `subprocess.Popen` call (uncached platform detection) doesn't trip the guard on the first
   real API call. Wired into `Recorder`/`AsyncRecorder` via `boundary_guard=` (tri-state:
-  explicit wins over `TraceforkConfig.boundary_guard`, both default `False`).
+  explicit wins over `TraceforkConfig.boundary_guard`, both default `False`). A second,
+  independently opt-in `confinement: ConfinementSpec | None = None` parameter
+  additionally patches `builtins.open` (reject write-mode opens resolving outside
+  `writable_roots`; reads always allowed) and `socket.socket.connect` (reject hosts
+  outside `allowed_hosts`, raised before any DNS/TCP attempt) for the guard's active
+  window, restored symmetrically on exit; `confinement=None` (the default) leaves both
+  completely unpatched. `ConfinementViolationError` subclasses `BoundaryViolationError`.
+  Capabilities are declared as data (`ConfinementSpec`, a frozen dataclass) and verified
+  independently at this boundary rather than derived from the agent's own tool-call
+  args (the confused-deputy hole); this is a fixed local allowlist, not a full OS
+  sandbox — Landlock/Seatbelt-grade backends are an explicit future tier.
+  `ForkEngine.fork()`/`fork_coalition()` (`fork.py`) take a matching `confinement=`
+  kwarg that forces the guard active for the re-executed agent even when
+  `boundary_guard=False`, confining a fork's tail-record phase to a declared
+  writable/network surface.
 - `transport.py` — `TraceforkTransport` (sync) + `AsyncTraceforkTransport` (async) are the
   capture seam, streaming-SSE capable (buffer via `.read()`/`.aread()`). Record mode tees
   request+response bytes into the tape; replay mode serves recorded bytes and

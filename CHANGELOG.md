@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ConfinementSpec`-lite: declared writable-roots + network policy**
+  (`boundary_guard.py`, `fork.py`) — `BoundaryGuard` gains an opt-in
+  `confinement: ConfinementSpec | None = None` parameter alongside its
+  existing thread/subprocess/random/clock guards. When set, it additionally
+  patches `builtins.open` (rejecting write-mode opens whose resolved path
+  falls outside the spec's `writable_roots`; reads are never restricted)
+  and `socket.socket.connect` (rejecting hosts outside `allowed_hosts`,
+  raised before any DNS/TCP attempt — offline/$0 even for the rejection
+  path), restored symmetrically on `__exit__`. `ConfinementViolationError`
+  subclasses `BoundaryViolationError` so existing `pytest.raises(
+  BoundaryViolationError, ...)` patterns keep matching. `confinement=None`
+  (the default everywhere) leaves both `open`/`socket.connect` completely
+  unpatched — byte-identical to pre-bead behavior; the full pre-existing
+  `test_boundary_guard.py`/`test_fork.py` suites pass unchanged.
+  `ForkEngine.fork()`/`fork_coalition()` gain a matching `confinement=`
+  kwarg that FORCES the guard active for the re-executed agent's
+  tail-record phase even when `boundary_guard=False`, declaring the exact
+  filesystem/network surface a forked run may touch. Capabilities are
+  declared as data and verified independently at this boundary — never
+  derived from the agent's own tool-call arguments (the classic
+  confused-deputy hole); this targets a fixed local allowlist, not a full
+  OS sandbox (Landlock/Seatbelt-grade backends are an explicitly
+  out-of-scope future escalation tier — see `boundary_guard.py`'s module
+  docstring).
+
 - **`NEW_EPISODES` record mode + fork-tree rebase** (`transport.py`,
   `record_mode.py`, `store.py`, `fork.py`) — `TraceforkTransport` gains a
   third, additive mode: `"new_episodes"` replays a tape's recorded prefix

@@ -75,7 +75,7 @@ from dataclasses import dataclass, field
 import anthropic
 import httpx
 
-from .boundary_guard import BoundaryGuard
+from .boundary_guard import BoundaryGuard, ConfinementSpec
 from .nondet import DivergenceError
 from .observability import instrument
 from .tape import Tape, sha256_hex
@@ -469,6 +469,7 @@ class ForkEngine:
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
+        confinement: ConfinementSpec | None = None,
     ) -> Branch:
         """Fork `parent_tape` at `spec.divergence_step`.
 
@@ -483,6 +484,12 @@ class ForkEngine:
         (see `boundary_guard.py`) — confining the re-executed agent's own
         tool-call/thread/random/subprocess surface for this fork, without
         touching the prefix-replay/mutation-injection transport logic above.
+
+        `confinement` (default `None`, byte-identical to before when left off)
+        is a `ConfinementSpec` (see `boundary_guard.py`) that FORCES the guard
+        active for the `agent_fn(client)` call even when `boundary_guard` is
+        left `False` — declaring the writable-roots/allowed-hosts surface the
+        re-executed agent may touch during this fork's tail-record phase.
 
         Returns a `Branch` whose `delta_tape` holds only the exchanges from the
         divergence step onward.
@@ -504,7 +511,10 @@ class ForkEngine:
             http_client=httpx.Client(transport=fork_transport),
             max_retries=0,
         )
-        if boundary_guard:
+        if confinement is not None:
+            with BoundaryGuard(confinement=confinement):
+                agent_fn(client)
+        elif boundary_guard:
             with BoundaryGuard():
                 agent_fn(client)
         else:
@@ -537,6 +547,7 @@ class ForkEngine:
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
+        confinement: ConfinementSpec | None = None,
     ) -> Branch:
         """Fork `parent_tape` at a coalition of steps, forcing each to its own response.
 
@@ -550,6 +561,11 @@ class ForkEngine:
 
         `boundary_guard` (default `False`, byte-identical to before when left
         off) wraps *only* the `agent_fn(client)` call in a fresh `BoundaryGuard`,
+        same as `fork()`.
+
+        `confinement` (default `None`, byte-identical to before when left off)
+        is a `ConfinementSpec` that FORCES the guard active for the
+        `agent_fn(client)` call even when `boundary_guard` is left `False`,
         same as `fork()`.
         """
         n = len(parent_tape.exchanges)
@@ -569,7 +585,10 @@ class ForkEngine:
             http_client=httpx.Client(transport=fork_transport),
             max_retries=0,
         )
-        if boundary_guard:
+        if confinement is not None:
+            with BoundaryGuard(confinement=confinement):
+                agent_fn(client)
+        elif boundary_guard:
             with BoundaryGuard():
                 agent_fn(client)
         else:

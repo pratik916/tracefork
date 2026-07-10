@@ -4,10 +4,13 @@ cases below (the same violating agent must NOT raise without the flag)."""
 
 from __future__ import annotations
 
+import builtins
 import random
+import socket
 import subprocess
 import threading
 import time
+from unittest import mock
 
 import anthropic
 import httpx
@@ -15,7 +18,12 @@ import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork import Recorder
-from tracefork.boundary_guard import BoundaryGuard, BoundaryViolationError
+from tracefork.boundary_guard import (
+    BoundaryGuard,
+    BoundaryViolationError,
+    ConfinementSpec,
+    ConfinementViolationError,
+)
 from tracefork.config import TraceforkConfig
 
 TEXT_RESP = make_text_response("Done.")
@@ -187,3 +195,85 @@ def test_config_from_env_boundary_guard(monkeypatch):
 def test_config_from_env_boundary_guard_unset_matches_default(monkeypatch):
     monkeypatch.delenv("TRACEFORK_BOUNDARY_GUARD", raising=False)
     assert TraceforkConfig.from_env().boundary_guard == TraceforkConfig().boundary_guard
+
+
+# ── ConfinementSpec-lite: writable-roots + network policy (tracefork-bge.17) ─
+
+
+def test_confinement_none_leaves_open_and_socket_unpatched():
+    """The default (`confinement=None`) must leave `builtins.open` and
+    `socket.socket.connect` byte-identical to pre-bead behavior."""
+    orig_open = builtins.open
+    orig_connect = socket.socket.connect
+    with BoundaryGuard():
+        assert builtins.open is orig_open
+        assert socket.socket.connect is orig_connect
+    assert builtins.open is orig_open
+    assert socket.socket.connect is orig_connect
+
+
+def test_confinement_blocks_write_outside_writable_roots_allows_inside(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside_file = tmp_path / "outside.txt"
+    inside_file = allowed / "inside.txt"
+    spec = ConfinementSpec(writable_roots=(str(allowed),))
+
+    with BoundaryGuard(confinement=spec):
+        with (
+            pytest.raises(ConfinementViolationError, match="writable_roots"),
+            open(outside_file, "w"),
+        ):
+            pass
+        with open(inside_file, "w") as f:
+            f.write("ok")
+
+    assert inside_file.read_text() == "ok"
+    assert not outside_file.exists()
+
+
+def test_confinement_allows_reads_regardless_of_writable_roots(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    readable = tmp_path / "readable.txt"
+    readable.write_text("hello")
+    spec = ConfinementSpec(writable_roots=(str(allowed),))
+
+    with BoundaryGuard(confinement=spec), open(readable) as f:
+        assert f.read() == "hello"
+
+
+def test_confinement_blocks_connect_to_disallowed_host_allows_configured_host():
+    """No test here ever makes a real DNS/TCP attempt: the disallowed-host
+    case must raise BEFORE the underlying connect is invoked at all, and the
+    allowed-host case is routed to a locally-patched fake connect (never the
+    real one) so this stays offline/$0."""
+    calls: list[object] = []
+
+    def _fake_connect(_self: socket.socket, address: object) -> None:
+        calls.append(address)
+
+    spec = ConfinementSpec(allowed_hosts=("allowed.example",))
+    with (
+        mock.patch.object(socket.socket, "connect", _fake_connect),
+        BoundaryGuard(confinement=spec),
+    ):
+        with pytest.raises(ConfinementViolationError, match="allowed_hosts"):
+            socket.socket().connect(("disallowed.example", 80))
+        socket.socket().connect(("allowed.example", 80))
+    assert calls == [("allowed.example", 80)]
+
+
+def test_confinement_restores_open_and_socket_connect_on_exit():
+    orig_open = builtins.open
+    orig_connect = socket.socket.connect
+    with BoundaryGuard(confinement=ConfinementSpec()):
+        pass
+    assert builtins.open is orig_open
+    assert socket.socket.connect is orig_connect
+
+
+def test_confinement_violation_error_is_a_boundary_violation_error():
+    """Existing `pytest.raises(BoundaryViolationError, ...)` patterns must
+    keep working against the new, more specific error."""
+    assert issubclass(ConfinementViolationError, BoundaryViolationError)

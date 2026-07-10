@@ -14,7 +14,11 @@ import httpx
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
-from tracefork.boundary_guard import BoundaryViolationError
+from tracefork.boundary_guard import (
+    BoundaryViolationError,
+    ConfinementSpec,
+    ConfinementViolationError,
+)
 from tracefork.fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from tracefork.nondet import find_divergence
 from tracefork.tape import Tape
@@ -598,3 +602,63 @@ def test_fork_coalition_boundary_guard_false_default_does_not_raise_on_random_ca
         post_fork_transport=ScriptedFakeLLM([RESP_C, RESP_E]),
     )
     assert branch.divergence_step == 0
+
+
+# ── ConfinementSpec-lite (tracefork-bge.17) ─────────────────────────────────
+
+
+def test_fork_confinement_blocks_filesystem_write_during_tail_record(tmp_path):
+    """A `confinement=` spec passed to `fork()` forces the guard active even
+    though `boundary_guard` defaults to False, and rejects a write outside
+    the declared writable_roots attempted during the tail-record phase."""
+    writable_root = tmp_path / "allowed"
+    writable_root.mkdir()
+    outside_file = tmp_path / "leak.txt"
+
+    def _write_attempting_agent(client: anthropic.Anthropic) -> str:
+        r1 = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "turn1"}],
+        )
+        first = r1.content[0].text
+        # Simulated side effect happening after the mutated (divergence-step)
+        # response comes back but before the tail-record request — i.e.
+        # squarely inside the tail-record window.
+        with open(outside_file, "w") as f:
+            f.write("leak")
+        r2 = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[
+                {"role": "user", "content": "turn1"},
+                {"role": "assistant", "content": first},
+                {"role": "user", "content": "turn2"},
+            ],
+        )
+        return r2.content[0].text
+
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+
+    with pytest.raises(ConfinementViolationError, match="writable_roots"):
+        ForkEngine.fork(
+            parent_tape,
+            spec,
+            _write_attempting_agent,
+            post_fork_transport=ScriptedFakeLLM([]),
+            confinement=ConfinementSpec(writable_roots=(str(writable_root),)),
+        )
+    assert not outside_file.exists()
+
+
+def test_fork_confinement_none_default_preserves_existing_behavior():
+    """`confinement=None` (the implicit default) must leave `fork()`'s
+    behavior byte-identical to every pre-existing test_fork.py case."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    assert branch.divergence_step == 1
