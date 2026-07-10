@@ -584,10 +584,11 @@ async def test_base_url_proxy_record_replay_round_trip_is_bit_exact():
 
 
 def test_bench_competing_fault_discrimination_matches_documented_scope():
-    """8/9 planted, causally-distinct faults on one longer tape resolve
-    exactly as planted; the one that doesn't (`gate_half_of_conjunction`) is
-    a NAMED, explained limitation — surfaced, never hidden as an
-    `unexpected_failure`."""
+    """10/11 planted, causally-distinct faults on one longer tape resolve
+    exactly as planted; the one that doesn't (`gate_half_of_conjunction`,
+    a strictly SEQUENTIAL tape's conjunction) is a NAMED, explained
+    limitation — surfaced, never hidden as an `unexpected_failure`. The two
+    genuinely-concurrent GATE/PAYLOAD cases (`tracefork-bge.10`) both resolve."""
     report = run_bench(k=2, m_samples=1)
     unresolved = [c.name for c in report.cases if not c.resolved]
     assert unresolved == ["gate_half_of_conjunction"]

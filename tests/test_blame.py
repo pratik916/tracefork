@@ -1,5 +1,6 @@
 """Blame engine tests — all offline, zero API spend."""
 
+import itertools
 import threading
 
 import anthropic
@@ -13,6 +14,8 @@ from tracefork.blame import (
     BudgetGovernor,
     CIMethod,
     StringMatchOracle,
+    _batch_blocks,
+    _block_orderings,
     benjamini_hochberg,
     binom_sf_ge,
     proportion_ci,
@@ -579,6 +582,32 @@ def test_budget_governor_coalition_samples_multiplies_estimate():
     assert default == base
 
 
+def test_budget_governor_async_batches_inflates_by_block_factorial():
+    """A recorded batch of size b costs b! more per coalition_samples repeat
+    (see BudgetGovernor.estimate's docstring); a falsy async_batches (the
+    default) is byte-for-byte the pre-existing estimate."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    base = BudgetGovernor.estimate(tape, k=10, cost_per_fork_usd=0.01, coalition_samples=3)
+    with_batch = BudgetGovernor.estimate(
+        tape, k=10, cost_per_fork_usd=0.01, coalition_samples=3, async_batches=[[0, 1]]
+    )
+    # multiplier goes from (1 + 3) = 4 to (1 + 3 * 2!) = 7.
+    assert with_batch.n_forks == base.n_forks / 4 * 7
+    assert with_batch.est_usd == pytest.approx(base.est_usd / 4 * 7)
+    assert (
+        BudgetGovernor.estimate(
+            tape, k=10, cost_per_fork_usd=0.01, coalition_samples=3, async_batches=None
+        )
+        == base
+    )
+    assert (
+        BudgetGovernor.estimate(
+            tape, k=10, cost_per_fork_usd=0.01, coalition_samples=3, async_batches=[]
+        )
+        == base
+    )
+
+
 # ── the echo-fault discrimination test (the point of this PR) ────────────────
 #
 # Independent single-step flip-rate cannot separate a true root cause from a
@@ -776,3 +805,230 @@ def test_shapley_rank_forwards_boundary_guard_to_sufficiency_pass():
     for r in guarded.results:
         assert r.sufficiency_score == 0.0
         assert r.shapley_value == 0.0
+
+
+# ── async_batches-aware coalition ordering (tracefork-bge.10) ──────────────
+
+
+def test_shapley_rank_async_batches_none_matches_pre_existing_behavior():
+    """Regression pin: leaving `async_batches` at its default (`None`), or
+    passing it explicitly, must reproduce the EXACT numbers
+    `test_temporal_shapley_discriminates_root_from_echo` already pins — the
+    single-ordering algorithm is completely unchanged on this path."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    for async_batches in (None, []):
+        report = BlameEngine.shapley_rank(
+            tape,
+            _booking_agent,
+            oracle,
+            perturb_factory=_echo_fault_perturb_factory,
+            k=3,
+            m_samples=2,
+            budget_usd=100.0,
+            async_batches=async_batches,
+        )
+        step0 = next(r for r in report.results if r.step_index == 0)
+        step1 = next(r for r in report.results if r.step_index == 1)
+        assert step0.shapley_value == 1.0
+        assert step1.shapley_value == 0.0
+        assert step0.necessity is True
+        assert step1.necessity is False
+        assert report.top().step_index == 0
+
+
+# ── _batch_blocks / _block_orderings (pure helpers) ─────────────────────────
+
+
+def test_batch_blocks_all_singletons_when_no_batches():
+    assert _batch_blocks(4, None) == [[0], [1], [2], [3]]
+    assert _batch_blocks(4, []) == [[0], [1], [2], [3]]
+
+
+def test_batch_blocks_orders_by_smallest_member():
+    assert _batch_blocks(7, [[3, 4]]) == [[0], [1], [2], [3, 4], [5], [6]]
+    assert _batch_blocks(5, [[1, 2]]) == [[0], [1, 2], [3], [4]]
+
+
+def test_batch_blocks_rejects_overlapping_batches():
+    with pytest.raises(ValueError, match="more than one"):
+        _batch_blocks(5, [[0, 1], [1, 2]])
+
+
+def test_batch_blocks_rejects_out_of_range_step():
+    with pytest.raises(ValueError, match="out of range"):
+        _batch_blocks(3, [[1, 5]])
+
+
+def test_batch_blocks_rejects_single_member_batch():
+    with pytest.raises(ValueError, match=">=2 distinct members"):
+        _batch_blocks(3, [[1]])
+
+
+def test_block_orderings_singleton_has_one_trivial_ordering():
+    assert _block_orderings([2]) == [(2,)]
+
+
+def test_block_orderings_covers_every_permutation_of_a_batch():
+    assert set(_block_orderings([0, 1])) == {(0, 1), (1, 0)}
+    assert set(_block_orderings([2, 5, 9])) == set(itertools.permutations([2, 5, 9]))
+
+
+def test_coalition_trials_respect_the_batch_partial_order(monkeypatch):
+    """Property: every coalition SET `shapley_rank` actually evaluates (spied
+    directly off the real `_run_coalition_trials` calls a run makes) is
+    consistent with the batch partial order — a step from a STRICTLY LATER
+    block never appears in a coalition unless every member of every STRICTLY
+    EARLIER block is already present too."""
+    blocks = _batch_blocks(3, [[0, 1]])  # block0={0,1} (batch), block1={2}
+    seen: list[tuple[int, ...]] = []
+    original = BlameEngine._run_coalition_trials
+
+    def _spy(tape, steps, *args, **kwargs):
+        seen.append(tuple(sorted(steps)))
+        return original(tape, steps, *args, **kwargs)
+
+    monkeypatch.setattr(BlameEngine, "_run_coalition_trials", staticmethod(_spy))
+
+    tape = _record_and_conjunction()
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+    BlameEngine.shapley_rank(
+        tape,
+        _and_conjunction_agent,
+        oracle,
+        perturb_factory=_and_conjunction_perturb_factory,
+        k=1,
+        m_samples=1,
+        async_batches=[[0, 1]],
+    )
+    assert blocks == [[0, 1], [2]]  # the fixture this property is checked against
+    assert seen  # the spy actually fired
+    for coalition in seen:
+        if 2 in coalition:
+            assert 0 in coalition and 1 in coalition, (
+                f"step2 (later block) present without both of block0's members: {coalition}"
+            )
+
+
+# ── the synthetic 2-member-batch conjunction fixture ────────────────────────
+#
+# A 3-exchange tape: steps 0 and 1 form ONE concurrent batch (an AND-
+# conjunction — the terminal step 2 only fails once BOTH markers are in its
+# accumulated request); step 2 is never asserted on (same caveat as
+# `competing_faults.py`'s FINAL role — forcing the terminal exchange directly
+# bypasses the tail's own adjudication). Without `async_batches`, the single
+# fixed ordering `(0, 1, 2)` under-credits step 0 exactly like
+# `competing_faults.py`'s documented GATE limitation; with it, both halves
+# converge to equal (0.5) credit — the fix this bead ships.
+
+_AND_GATE_MARKER = b"AND_GATE_MARK"
+_AND_PAYLOAD_MARKER = b"AND_PAYLOAD_MARK"
+
+
+def _and_conjunction_agent(client: anthropic.Anthropic) -> str:
+    r0 = client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=100, messages=[{"role": "user", "content": "start"}]
+    )
+    text0 = r0.content[0].text
+    r1 = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": text0},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    text1 = r1.content[0].text
+    r2 = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": text0},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": text1},
+            {"role": "user", "content": "finish"},
+        ],
+    )
+    return r2.content[0].text
+
+
+def _record_and_conjunction() -> Tape:
+    fake = ScriptedFakeLLM([NEUTRAL_RESP, NEUTRAL_RESP, SUCCESS_RESP])
+    tape = Tape()
+    transport = TraceforkTransport("record", tape, fake)
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=transport),
+        max_retries=0,
+    )
+    _and_conjunction_agent(client)
+    return tape
+
+
+class _AndConjunctionTail(httpx.BaseTransport):
+    """The one failure rule: FAIL iff BOTH markers are present anywhere in the
+    (already-cumulative) request body — a genuine AND, never anything else."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        body = request.content
+        fails = _AND_GATE_MARKER in body and _AND_PAYLOAD_MARKER in body
+        content = FAIL_RESP if fails else SUCCESS_RESP
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=content)
+
+
+def _and_conjunction_perturb_factory(step_idx: int) -> tuple[bytes, object]:
+    if step_idx == 0:
+        return make_text_response(f"gate {_AND_GATE_MARKER.decode()}"), _AndConjunctionTail()
+    if step_idx == 1:
+        return make_text_response(f"payload {_AND_PAYLOAD_MARKER.decode()}"), _AndConjunctionTail()
+    return NEUTRAL_RESP, _AndConjunctionTail()
+
+
+def test_single_ordering_undercredits_the_earlier_half_of_a_conjunction():
+    """Baseline (no async_batches): the fixed (0, 1, 2) walk credits ONLY the
+    later-joining half (step 1), exactly the documented limitation."""
+    tape = _record_and_conjunction()
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    report = BlameEngine.shapley_rank(
+        tape,
+        _and_conjunction_agent,
+        oracle,
+        perturb_factory=_and_conjunction_perturb_factory,
+        k=1,
+        m_samples=2,
+    )
+    gate = next(r for r in report.results if r.step_index == 0)
+    payload = next(r for r in report.results if r.step_index == 1)
+    assert gate.necessity is False
+    assert payload.necessity is True
+
+
+@pytest.mark.parametrize("m_samples", [1, 2, 4])
+def test_async_batches_credits_both_halves_of_a_symmetric_conjunction(m_samples):
+    """The fix: telling `shapley_rank` steps 0 and 1 raced (`async_batches=
+    [[0, 1]]`) makes it average BOTH join orders EXACTLY every repeat,
+    converging both halves to equal (0.5) necessity credit — unlike the
+    sequential case above, and — unlike a round-robin-across-repeats design
+    would be — regardless of `m_samples`, including `m_samples=1`."""
+    tape = _record_and_conjunction()
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    report = BlameEngine.shapley_rank(
+        tape,
+        _and_conjunction_agent,
+        oracle,
+        perturb_factory=_and_conjunction_perturb_factory,
+        k=1,
+        m_samples=m_samples,
+        async_batches=[[0, 1]],
+    )
+    gate = next(r for r in report.results if r.step_index == 0)
+    payload = next(r for r in report.results if r.step_index == 1)
+    assert gate.necessity is True
+    assert payload.necessity is True
+    assert gate.shapley_value == pytest.approx(0.5)
+    assert payload.shapley_value == pytest.approx(0.5)

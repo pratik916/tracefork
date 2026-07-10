@@ -10,20 +10,22 @@ from tracefork.cli import app
 runner = CliRunner()
 
 
-def test_run_bench_scores_nine_cases():
+def test_run_bench_scores_eleven_cases():
     report = run_bench(k=3, m_samples=2)
-    assert report.n_cases == 9
-    assert len(report.cases) == 9
+    assert report.n_cases == 11
+    assert len(report.cases) == 11
 
 
 def test_run_bench_matches_ground_truth_except_the_documented_limitation():
-    """8/9 cases resolve cleanly; the one that doesn't is the documented,
-    named limitation (`gate_half_of_conjunction`), never a surprise miss."""
+    """10/11 cases resolve cleanly; the one that doesn't is the documented,
+    named limitation (`gate_half_of_conjunction`) of a strictly SEQUENTIAL
+    tape -- the two concurrent-tape cases (`tracefork-bge.10`) both resolve,
+    never a surprise miss."""
     report = run_bench(k=3, m_samples=2)
     unresolved = [c.name for c in report.cases if not c.resolved]
     assert unresolved == ["gate_half_of_conjunction"]
-    assert report.n_resolved == 8
-    assert report.accuracy == 8 / 9
+    assert report.n_resolved == 10
+    assert report.accuracy == 10 / 11
     assert report.unexpected_failures() == []
 
 
@@ -55,8 +57,8 @@ def test_bench_cli_runs_offline_and_exits_zero(tmp_path):
     assert "LIMITATION" in result.output
 
     data = json.loads(out.read_text())
-    assert data["n_cases"] == 9
-    assert data["n_resolved"] == 8
+    assert data["n_cases"] == 11
+    assert data["n_resolved"] == 10
     resolved_by_name = {c["name"]: c["resolved"] for c in data["cases"]}
     assert resolved_by_name["gate_half_of_conjunction"] is False
     assert all(v for name, v in resolved_by_name.items() if name != "gate_half_of_conjunction")

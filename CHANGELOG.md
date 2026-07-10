@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DAG-aware (async-batch) Shapley estimator** (`blame.py`,
+  `competing_faults.py`, `bench.py`) — `shapley_rank`/`BudgetGovernor.estimate`
+  gain an optional `async_batches: list[list[int]] | None = None` parameter
+  (default `None`, byte-for-byte unchanged single-ordering behavior): when a
+  tape's `async_batches` (see `transport.py`) marks a genuinely-concurrent
+  fan-out, `_batch_blocks` turns it into an admissible partial order and
+  `_block_orderings` computes each member's EXACT marginal contribution
+  averaged over every internal join order of that block — the local Shapley
+  value of the small sub-game, independent of `m_samples`. This closes the
+  documented single-ordering blind spot where a strictly sequential tape
+  structurally under-credits the earlier half of a symmetric AND-conjunction.
+  `competing_faults.py` gains `build_concurrent_gate_payload_tape`/
+  `run_shapley_concurrent`, recording the SAME GATE/PAYLOAD conjunction
+  through a REAL `asyncio.gather` (never a hand-constructed `async_batches`);
+  `bench.py` adds two cases asserting both halves now read `necessity=True`.
+  `BudgetGovernor.estimate` inflates its pre-flight cost estimate by the
+  batch's `b!` so real spend never outruns it. The existing sequential
+  `gate_half_of_conjunction` case and its documented limitation are unchanged.
+
 - **Orchestration session model: `sessions`/`spawn_edges` spawn-lineage
   schema** (`store.py`, `cli.py`, `server.py`) — a new, FK-checked schema
   for cross-agent orchestration/delegation lineage, distinct from

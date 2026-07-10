@@ -4,7 +4,11 @@ engine (`BlameEngine.shapley_rank`) over the long-tape competing-fault fixture
 engine's (necessity, sufficiency) classification matches ground truth --
 including the ONE case that does NOT resolve cleanly (see
 `competing_faults.py`'s module docstring), reported honestly rather than
-excluded.
+excluded. Two more cases (`concurrent_gate_completes_conjunction` /
+`concurrent_payload_completes_conjunction`, `tracefork-bge.10`) run the SAME
+GATE/PAYLOAD conjunction over a genuinely-concurrent tape and both resolve --
+the documented limitation is a property of a strictly SEQUENTIAL tape, not of
+the coalition/Shapley engine itself.
 
 This is contextualized against the published Who&When (ICML 2025) log-based
 step-attribution anchor (~14.2% top-1) as scale-of-the-gap CONTEXT ONLY. It is
@@ -27,6 +31,7 @@ from .competing_faults import (
     SCENARIO_ROOT_ECHO,
     StepRole,
     run_shapley,
+    run_shapley_concurrent,
 )
 
 # Published anchor: Zhang et al., "Who&When: Uncover the Whodunit and When of
@@ -97,12 +102,17 @@ def _case(
 
 
 def run_bench(*, k: int = 3, m_samples: int = 2) -> BenchReport:
-    """Run the three competing-fault scenarios and score all nine cases
-    against their planted ground truth. See `competing_faults.py`'s module
-    docstring for exactly why each case is expected to resolve the way it is."""
+    """Run the competing-fault scenarios and score every case against its
+    planted ground truth, including the genuinely-concurrent GATE/PAYLOAD
+    fixture (`tracefork-bge.10`) that closes the sequential scenario's one
+    documented limitation. See `competing_faults.py`'s module docstring for
+    exactly why each case is expected to resolve the way it does."""
     root_echo = run_shapley(SCENARIO_ROOT_ECHO, k=k, m_samples=m_samples)
     gate_payload = run_shapley(SCENARIO_GATE_PAYLOAD, k=k, m_samples=m_samples)
     all_active = run_shapley(SCENARIO_ALL, k=k, m_samples=m_samples)
+    concurrent_gate_payload = run_shapley_concurrent(
+        SCENARIO_GATE_PAYLOAD, k=k, m_samples=m_samples
+    )
 
     cases = [
         _case("root", root_echo, 0, StepRole.ROOT, True, True),
@@ -141,6 +151,29 @@ def run_bench(*, k: int = 3, m_samples: int = 2) -> BenchReport:
         ),
         _case("overdetermined_payload", all_active, 4, StepRole.PAYLOAD, False, False),
         _case("root_under_competing_load", all_active, 0, StepRole.ROOT, True, True),
+        _case(
+            "concurrent_gate_completes_conjunction",
+            concurrent_gate_payload,
+            3,
+            StepRole.GATE,
+            True,
+            False,
+            note=(
+                "tracefork-bge.10: recorded through a REAL asyncio.gather (see "
+                "competing_faults.py's build_concurrent_gate_payload_tape), so "
+                "tape.async_batches lets shapley_rank sample BOTH join orders of "
+                "the GATE/PAYLOAD pair -- unlike gate_half_of_conjunction above, "
+                "the earlier-joining half is no longer structurally under-credited."
+            ),
+        ),
+        _case(
+            "concurrent_payload_completes_conjunction",
+            concurrent_gate_payload,
+            4,
+            StepRole.PAYLOAD,
+            True,
+            False,
+        ),
     ]
 
     n_resolved = sum(1 for c in cases if c.resolved)

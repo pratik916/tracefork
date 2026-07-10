@@ -570,7 +570,7 @@ def test_cli_bench_runs_offline_and_exits_zero(tmp_path):
     assert result.exit_code == 0, result.output
     assert "competing-fault discrimination" in result.output
     data = json.loads(out.read_text())
-    assert data["n_resolved"] == 8
+    assert data["n_resolved"] == 10
 
 
 # ── export / ingest ─────────────────────────────────────────────────────

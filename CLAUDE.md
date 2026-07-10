@@ -344,13 +344,26 @@ The product lives in `src/tracefork/`:
   7-exchange tape with several causally-DISTINCT faults planted at once (a root,
   a downstream echo, and a two-part necessary-not-sufficient AND-conjunction), scored
   against `blame.py`'s coalition/temporal-Shapley engine (`shapley_rank`) via `tracefork
-  bench`. 8/9 planted cases resolve correctly; the 9th is a documented, NOT hidden,
-  limitation of single-ordering temporal Shapley (it under-credits the earlier half of a
-  symmetric conjunction) — see `competing_faults.py`'s module docstring and README →
-  Validation scope. Cites, but does not reproduce, the published Who&When (ICML 2025)
-  ~14.2% log-based step-attribution anchor as context only — no external dataset is ever
-  downloaded (offline/$0 invariant applies here too). Zero-diff over the engines: both
-  modules only call `blame.py`'s existing public API.
+  bench`. 10/11 planted cases resolve correctly; the one that doesn't is a documented,
+  NOT hidden, limitation of single-ordering temporal Shapley over a strictly SEQUENTIAL
+  tape (it under-credits the earlier half of a symmetric conjunction) — see
+  `competing_faults.py`'s module docstring and README → Validation scope. Cites, but does
+  not reproduce, the published Who&When (ICML 2025) ~14.2% log-based step-attribution
+  anchor as context only — no external dataset is ever downloaded (offline/$0 invariant
+  applies here too). Zero-diff over the engines: both modules only call `blame.py`'s
+  existing public API. `shapley_rank`'s optional `async_batches` parameter
+  (`tracefork-bge.10`) closes that limitation for tapes recorded through
+  `AsyncTraceforkTransport`: a batch's members genuinely raced, so `_batch_blocks`/
+  `_block_orderings` compute each member's EXACT marginal contribution averaged over
+  every one of the batch's internal join orders (the local Shapley value of that small
+  sub-game), independent of `m_samples`; a falsy `async_batches` (every pre-existing
+  caller) is byte-for-byte the original single-ordering algorithm.
+  `build_concurrent_gate_payload_tape`/`run_shapley_concurrent` record the SAME
+  GATE/PAYLOAD conjunction through a REAL `asyncio.gather` (not a hand-constructed
+  `tape.async_batches`) and both halves now resolve `necessity=True`.
+  `BudgetGovernor.estimate` gains a matching `async_batches` parameter that inflates its
+  pre-flight cost estimate by the batch's `b!` — a safe, if loose, upper bound on the new
+  walk's true (per-position-varying) cost, so real spend never outruns it.
 - `tournament.py` — `TournamentEngine.run()` ranks N pre-specified `Variant`
   candidate continuations at ONE fixed `step_index` (a different axis from
   `blame.py`'s per-step-across-runs comparison): each variant is forked `k`

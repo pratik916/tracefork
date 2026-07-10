@@ -520,22 +520,29 @@ against each one's known ground truth:
 |---|---|---|
 | a **root cause** (necessary *and* sufficient) | necessary, sufficient | matches |
 | a **downstream echo** of the root — independently "sufficient" under naive single-step flip-rate (ties the root exactly), must not be blamed as root | sufficient, NOT necessary | matches |
-| a **two-part AND-conjunction** — neither half alone is sufficient; both halves are genuinely necessary | necessary, NOT sufficient (both halves) | the **later**-joining half matches; the **earlier** half reads `necessity=False` |
+| a **two-part AND-conjunction** on a strictly SEQUENTIAL tape — neither half alone is sufficient; both halves are genuinely necessary | necessary, NOT sufficient (both halves) | the **later**-joining half matches; the **earlier** half reads `necessity=False` |
+| the SAME two-part AND-conjunction, recorded through a genuinely-concurrent `asyncio.gather` (`tape.async_batches` carries a real batch) | necessary, NOT sufficient (both halves) | both halves match — `shapley_rank`'s `async_batches` parameter closes the sequential-tape blind spot above |
 | the same root cause re-run **alongside** the AND-conjunction (an over-determined run) | root: necessary + sufficient; conjunction halves: correctly NOT necessary, since the root alone already guarantees failure | matches |
-| 4 unrelated decoy steps across the three scenarios above | neither necessary nor sufficient | matches |
+| 4 unrelated decoy steps across the four scenarios above | neither necessary nor sufficient | matches |
 
-**8 of 9 cases resolve exactly as planted** (Wilson 95% CI on that 8/9 at the CLI's
-defaults, `--k 3 --m-samples 2`: roughly `[0.56, 0.98]` — small-n, read the interval, not
+**10 of 11 cases resolve exactly as planted** (Wilson 95% CI on that 10/11 at the CLI's
+defaults, `--k 3 --m-samples 2`: roughly `[0.62, 0.98]` — small-n, read the interval, not
 just the point estimate; `tracefork bench` prints it exactly). The one documented exception:
-`shapley_rank`'s necessity check is a **temporal-order-restricted** Shapley walk with
-exactly one valid permutation (an explicit design trade-off — see the function's
-docstring), so for a *symmetric* two-part conjunction it can only detect the marginal
-contribution of the **later**-joining half; the earlier half is genuinely necessary too, but
-its own marginal is measured *before* the conjunction completes, so it reads
-`necessity=False`. `tracefork bench` reports this itself (`[LIMITATION]`, never silently
-passed), and it's pinned by
+on a strictly SEQUENTIAL tape, `shapley_rank`'s necessity check is a
+**temporal-order-restricted** Shapley walk with exactly one valid permutation (an explicit
+design trade-off — see the function's docstring), so for a *symmetric* two-part conjunction
+it can only detect the marginal contribution of the **later**-joining half; the earlier half
+is genuinely necessary too, but its own marginal is measured *before* the conjunction
+completes, so it reads `necessity=False`. `tracefork bench` reports this itself
+(`[LIMITATION]`, never silently passed), and it's pinned by
 [`tests/test_competing_faults.py::test_temporal_order_undercredits_the_earlier_half_of_a_conjunction`](tests/test_competing_faults.py)
-— see `src/tracefork/competing_faults.py`'s module docstring for the full mechanism.
+— see `src/tracefork/competing_faults.py`'s module docstring for the full mechanism. This is
+a property of a strictly sequential tape, not of the engine itself: the SAME conjunction
+recorded through a genuine `asyncio.gather` (`build_concurrent_gate_payload_tape`) gives
+`shapley_rank`'s `async_batches` parameter a real partial order to sample both join orders
+of, and both halves correctly read `necessity=True` — see the `concurrent_gate_completes_
+conjunction`/`concurrent_payload_completes_conjunction` cases in `tracefork bench`'s own
+output.
 
 **Where this sits next to the field.** Zhang et al., "Who&When: Uncover the Whodunit and
 When of LLM Multi-Agent Failures" (ICML 2025), report
