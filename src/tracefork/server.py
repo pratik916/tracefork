@@ -70,4 +70,5 @@ async def get_branch(branch_id: str) -> JSONResponse:
     data["parent_run_id"] = branch["parent_run_id"]
     data["divergence_step"] = branch["divergence_step"]
     data["mutation_desc"] = branch["mutation_desc"]
+    data["branch_digest"] = branch["branch_digest"]
     return JSONResponse(data)

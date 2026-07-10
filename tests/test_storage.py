@@ -309,6 +309,167 @@ def test_storage_backend_full_round_trip_through_the_protocol_surface(tmp_path):
         backend.close()
 
 
+# ── branch_digest (content-addressed fork DAG) ──────────────────────────────
+
+
+def test_save_branch_persists_branch_digest_and_load_branch_returns_it(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            mutation_desc="test",
+            branch_digest="deadbeef",
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["branch_digest"] == "deadbeef"
+    finally:
+        store.close()
+
+
+def test_save_branch_default_branch_digest_is_empty_string(tmp_path):
+    """Existing callers that omit branch_digest keep working — default ''."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            mutation_desc="test",
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["branch_digest"] == ""
+    finally:
+        store.close()
+
+
+def test_find_branch_by_digest_resolves_the_right_branch(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            branch_digest="findme123",
+        )
+        found = store.find_branch_by_digest("findme123")
+        assert found is not None
+        assert found["branch_id"] == branch_id
+    finally:
+        store.close()
+
+
+def test_find_branch_by_digest_nonexistent_returns_none(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        assert store.find_branch_by_digest("nope-not-there") is None
+    finally:
+        store.close()
+
+
+def test_branches_forked_from_finds_fork_of_fork(tmp_path):
+    """Fork A, save A's delta_tape as its own tape X, fork X as B --
+    branches_forked_from(A.branch_digest) surfaces B (fork-of-fork,
+    end-to-end via the inverse-citation query)."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"root"), run_id="root-run")
+        branch_a_delta = _small_tape(b"branch-a")
+        branch_a_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=branch_a_delta,
+            branch_digest="digest-a",
+        )
+        # Promote A's delta_tape to its own tape under run_id == branch_a_id
+        # (same convention `causal_closure` already relies on).
+        store.save_tape(branch_a_delta, run_id=branch_a_id)
+
+        branch_b_id = store.save_branch(
+            parent_run_id=branch_a_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch-b"),
+            branch_digest="digest-b",
+        )
+
+        result = store.branches_forked_from("digest-a")
+        assert branch_b_id in result
+    finally:
+        store.close()
+
+
+def test_branch_digest_migration_adds_column_without_losing_rows(tmp_path):
+    """A store.db built with the OLD schema (no `branch_digest` column)
+    neither crashes nor loses rows when opened by the new `TapeStore` --
+    the column gets added via a guarded `ALTER TABLE`."""
+    db_path = str(tmp_path / "old_store.db")
+
+    # Build an old-schema store.db by hand (no branch_digest column at all).
+    old_con = open_sqlite(db_path)
+    old_con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tapes (
+            run_id       TEXT PRIMARY KEY,
+            agent_name   TEXT NOT NULL,
+            tape_bytes   BLOB NOT NULL,
+            created_at   TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS branches (
+            branch_id         TEXT PRIMARY KEY,
+            parent_run_id     TEXT NOT NULL,
+            divergence_step   INTEGER NOT NULL,
+            delta_tape_bytes  BLOB NOT NULL,
+            mutation_desc     TEXT NOT NULL DEFAULT '',
+            created_at        TEXT NOT NULL,
+            FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
+        );
+        """
+    )
+    old_tape = _small_tape(b"pre-existing")
+    old_con.execute(
+        "INSERT INTO tapes(run_id, agent_name, tape_bytes, created_at) VALUES(?,?,?,?)",
+        ("old-run", "w", old_tape.to_bytes(), "2020-01-01T00:00:00+00:00"),
+    )
+    old_con.execute(
+        """INSERT INTO branches
+           (branch_id, parent_run_id, divergence_step, delta_tape_bytes, mutation_desc, created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (
+            "old-branch",
+            "old-run",
+            0,
+            _small_tape(b"pre-branch").to_bytes(),
+            "",
+            "2020-01-01T00:00:00+00:00",
+        ),
+    )
+    cols_before = {row[1] for row in old_con.execute("PRAGMA table_info(branches)").fetchall()}
+    assert "branch_digest" not in cols_before
+
+    old_con.commit()
+    old_con.close()
+
+    # Opening with the new TapeStore must not crash and must not lose rows.
+    store = TapeStore(db_path)
+    try:
+        assert store.load_tape("old-run").exchanges == old_tape.exchanges
+        loaded_branch = store.load_branch("old-branch")
+        assert loaded_branch["parent_run_id"] == "old-run"
+        assert loaded_branch["branch_digest"] == ""  # migrated column defaults to ''
+
+        cols_after = {
+            row[1] for row in store._con.execute("PRAGMA table_info(branches)").fetchall()
+        }
+        assert "branch_digest" in cols_after
+    finally:
+        store.close()
+
+
 # ── prune (soft-archive, never hard-delete) ─────────────────────────────────
 
 

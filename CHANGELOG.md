@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fork tree as a content-addressed DAG** (`fork.py`, `store.py`) — every
+  `Branch` now carries a `branch_digest`: `sha256(parent_tape.digest() +
+  delta_tape.digest() + repr(intervened_steps))`, computed in
+  `ForkEngine.fork()`/`fork_coalition()`. Two forks with byte-identical
+  (parent tape, delta content, intervened steps) get the SAME digest; any
+  difference — including a different mutated response — changes it
+  (Git/IPLD Merkle-DAG identity: a node's hash folds in its children's
+  hashes, giving identity==integrity==addressability in one field).
+  `store.py`'s `branches` table gains a `branch_digest` column + index, with
+  a `PRAGMA table_info`-guarded `ALTER TABLE` migration in `TapeStore.__init__`
+  so a pre-existing `store.db` (built before this column existed) is
+  migrated in place without losing rows. `save_branch`/`load_branch` gain a
+  `branch_digest=` parameter/return key (default `''`, so every existing
+  caller keeps working unmodified); `find_branch_by_digest` resolves the
+  branch with a given digest, and `branches_forked_from` answers the
+  inverse-citation query — which branches used a given digest's branch as
+  their own parent, once that branch's `delta_tape` is itself promoted to a
+  tape via `save_tape(delta_tape, run_id=branch_id)` — enabling fork-of-fork
+  chains as a plain reachability walk. `cli.py`'s `fork`/`coalition-fork`
+  commands and `server.py`'s `/api/branch/{id}` pass/return `branch_digest`
+  additively. `Tape.digest()` itself is completely untouched — `branch_digest`
+  is Branch/store-level metadata only.
+
 - **`tracefork diff`: generalized point-to-point / fork-branch diff**
   (`diff.py`, new module; zero changes to `divergence.py`'s public surface) —
   a real structural diff over a RANGE of steps, built entirely on

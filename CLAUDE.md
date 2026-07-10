@@ -133,7 +133,14 @@ The product lives in `src/tracefork/`:
 - `fork.py` — `ForkTransport` runs three phases: prefix-replay ($0, request asserted to
   match the parent), mutation-injection (same request, swapped response), tail-record (the
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.
-  `ForkEngine.fork()` re-runs the **same** agent that produced the tape.
+  `ForkEngine.fork()` re-runs the **same** agent that produced the tape. Every `Branch` also
+  carries a content-addressed `branch_digest` (`compute_branch_digest`): `sha256(parent_tape
+  .digest() + delta_tape.digest() + repr(intervened_steps))`, computed in `fork()`/
+  `fork_coalition()` right before constructing the returned `Branch` — Merkle-DAG identity
+  (a node's hash folds in its children's), so identical (parent, delta, intervened_steps)
+  always produce the same digest and `store.py` can key branches by content, resolve
+  fork-of-fork chains, and answer inverse-citation queries as reachability walks. Branch/
+  store-level metadata only — `Tape.digest()` itself is completely untouched.
 - `diff.py` — generalized point-to-point / fork-branch diff, purely a
   sequence-of-steps orchestration layer on top of `divergence.py`'s existing
   single-step structural-diff primitive (`diff_json`/`diff_request_bytes`/
@@ -203,6 +210,20 @@ The product lives in `src/tracefork/`:
   write pair is a plain `INSERT OR REPLACE` with no CAS guard, deliberately
   not general-purpose (unlike `save_tape`/`save_branch`) — safe only because
   `export_bundle` always points it at a fresh bundle file, never a live store.
+  The `branches` table also carries `fork.py`'s content-addressed
+  `branch_digest` (a column + index; Branch/store-level metadata only, never
+  fed into `Tape.digest()`), migrated onto a pre-existing `store.db` via a
+  `PRAGMA table_info`-guarded `ALTER TABLE` in `TapeStore.__init__` (a fresh
+  database gets the column straight from `CREATE TABLE`; an old one is
+  altered in place, no row lost). `save_branch`/`load_branch` gain a
+  `branch_digest=` parameter/return key defaulting to `''`, so every
+  existing caller is unaffected; `find_branch_by_digest` resolves the branch
+  with a given digest, and `branches_forked_from` is the inverse-citation
+  query — which branches used a given digest's branch as their own parent,
+  once that branch's `delta_tape` is itself promoted to a tape via
+  `save_tape(delta_tape, run_id=branch_id)` (the same promotion convention
+  `causal_closure` already relies on) — enabling fork-of-fork chains as a
+  plain reachability walk.
 - `bundle.py` — lossless tape+branch trajectory export/import: a bundle is
   literally a second, smaller `store.db` (same DDL, same
   `Tape.to_bytes()` envelope) — `git bundle`'s model, a scoped-down valid

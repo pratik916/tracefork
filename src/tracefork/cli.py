@@ -211,6 +211,7 @@ def fork(
         divergence_step=step,
         delta_tape=branch.delta_tape,
         mutation_desc=desc,
+        branch_digest=branch.branch_digest,
     )
 
     typer.echo("\n  Fork created")
@@ -304,6 +305,7 @@ def coalition_fork(
         divergence_step=branch.divergence_step,
         delta_tape=branch.delta_tape,
         mutation_desc=mutation_desc_json,
+        branch_digest=branch.branch_digest,
     )
 
     typer.echo("\n  Coalition fork created")

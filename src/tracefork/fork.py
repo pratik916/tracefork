@@ -26,6 +26,13 @@ divergence); every later intervention in the coalition is forced unconditionally
 since by then the agent's requests already diverge from the parent because an
 earlier step was perturbed. `BranchSpec`/`ForkTransport`/`ForkEngine.fork()` are
 unchanged — `fork_coalition` is purely additive.
+
+Every `Branch` also carries a content-addressed `branch_digest`
+(`compute_branch_digest`) folding the parent tape's and delta tape's own
+digests plus the intervened steps into one sha256 — Merkle-DAG identity, so
+`store.py` can key branches by content, resolve fork-of-fork chains, and
+answer inverse-citation queries as plain reachability walks. Branch/store-
+level metadata only: `Tape.digest()` itself is completely untouched.
 """
 
 from __future__ import annotations
@@ -59,6 +66,28 @@ class Branch:
     # Steps that were force-set to a specified response (coalition forks set
     # more than one; a classic single-step `fork()` sets exactly `(divergence_step,)`).
     intervened_steps: tuple[int, ...] = field(default_factory=tuple)
+    # Content-addressed identity of this fork (Branch/store-level metadata
+    # only — `Tape.digest()` itself is completely untouched by this field).
+    # See `compute_branch_digest()`.
+    branch_digest: str = ""
+
+
+def compute_branch_digest(
+    parent_tape: Tape, delta_tape: Tape, intervened_steps: tuple[int, ...]
+) -> str:
+    """A content-addressed fingerprint of one fork: ``sha256(parent_tape.digest()
+    + delta_tape.digest() + repr(intervened_steps))``.
+
+    Git/IPLD Merkle-DAG identity — folding a node's children's hashes into its
+    own hash gives identity==integrity==addressability in one field, so two
+    forks with byte-identical (parent, delta content, intervened steps) are
+    the SAME branch_digest (fork-of-fork and inverse-citation queries become
+    plain reachability walks), while any difference in any of the three
+    inputs — including which response was mutated — changes it. Purely
+    additive: `Tape.digest()` never reads this value or vice versa.
+    """
+    payload = (parent_tape.digest() + delta_tape.digest() + repr(intervened_steps)).encode()
+    return sha256_hex(payload)
 
 
 class ForkTransport(httpx.BaseTransport):
@@ -322,6 +351,7 @@ class ForkEngine:
         else:
             agent_fn(client)
 
+        intervened_steps = (step,)
         return Branch(
             parent_tape=parent_tape,
             divergence_step=step,
@@ -329,7 +359,8 @@ class ForkEngine:
             mutation_desc=spec.mutation_desc,
             prefix_replayed=fork_transport.prefix_replayed,
             tail_recorded=fork_transport.tail_recorded,
-            intervened_steps=(step,),
+            intervened_steps=intervened_steps,
+            branch_digest=compute_branch_digest(parent_tape, delta_tape, intervened_steps),
         )
 
     @staticmethod
@@ -388,4 +419,5 @@ class ForkEngine:
             prefix_replayed=fork_transport.prefix_replayed,
             tail_recorded=fork_transport.tail_recorded,
             intervened_steps=spec.steps,
+            branch_digest=compute_branch_digest(parent_tape, delta_tape, spec.steps),
         )

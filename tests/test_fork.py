@@ -126,6 +126,41 @@ def test_branch_spec_mutation_desc():
     assert spec.mutation_desc == "flip seats to 0"
 
 
+# ── branch_digest (content-addressed fork identity) ─────────────────────────
+
+
+def test_fork_branch_digest_is_deterministic_for_identical_inputs():
+    """Two forks with the SAME (parent_tape, divergence_step, delta content,
+    intervened_steps) produce the identical branch_digest."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch1 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch2 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch1.branch_digest
+    assert branch1.branch_digest == branch2.branch_digest
+
+
+def test_fork_branch_digest_differs_for_different_mutated_response():
+    parent_tape = _build_two_turn_tape()
+    spec_b = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+    spec_other = BranchSpec(divergence_step=1, mutated_response=make_text_response("Different"))
+
+    branch_b = ForkEngine.fork(
+        parent_tape, spec_b, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch_other = ForkEngine.fork(
+        parent_tape, spec_other, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch_b.branch_digest != branch_other.branch_digest
+
+
 # ── coalition forks (joint, multi-step interventions) ───────────────────────
 
 
