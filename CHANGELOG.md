@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`tracefork prune`** (`store.py`, `cli.py`) — a retention/GC command for
+  tapes and branches, mirroring git gc / borg prune's mark-and-sweep-with-
+  soft-archive discipline: nothing is ever hard-deleted. `TapeStore.prune(*,
+  older_than_iso=None, run_ids=None, dry_run=False) -> PruneReport` archives a
+  matching tape's branches, then the tape row, into new
+  `branches_archived`/`tapes_archived` tables (both stay queryable forever)
+  inside one `BEGIN IMMEDIATE`/`_write_lock` transaction — branches first, so
+  the live `branches -> tapes` foreign key is never violated. `dry_run=True`
+  computes the candidate set with zero writes. The new `tracefork prune
+  [--older-than-days N] [--run-id id ...] [--dry-run]` CLI command always
+  exits 0. `save_tape`/`save_branch`/`load_tape`/`load_branch`/`list_runs`/
+  `list_branches` signatures are completely unchanged; `StorageBackend` is
+  deliberately not extended with `prune` (kept `TapeStore`-only for now).
+
 ### Fixed
 
 - **CAS-guarded `save_tape`** (`store.py`) — reusing a `run_id` no longer

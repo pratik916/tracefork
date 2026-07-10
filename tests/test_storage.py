@@ -264,6 +264,122 @@ def test_storage_backend_full_round_trip_through_the_protocol_surface(tmp_path):
         backend.close()
 
 
+# ── prune (soft-archive, never hard-delete) ─────────────────────────────────
+
+
+def test_prune_older_than_cutoff_archives_only_matching_tapes(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(
+            _small_tape(b"old"), run_id="old-run", created_at="2020-01-01T00:00:00+00:00"
+        )
+        store.save_tape(
+            _small_tape(b"new"), run_id="new-run", created_at="2030-01-01T00:00:00+00:00"
+        )
+
+        report = store.prune(older_than_iso="2025-01-01T00:00:00+00:00")
+
+        assert report.dry_run is False
+        assert report.tapes_archived == ["old-run"]
+        assert report.branches_archived == []
+
+        assert [r["run_id"] for r in store.list_runs()] == ["new-run"]
+        with pytest.raises(KeyError):
+            store.load_tape("old-run")
+
+        archived = store._con.execute("SELECT run_id FROM tapes_archived").fetchall()
+        assert [a[0] for a in archived] == ["old-run"]
+    finally:
+        store.close()
+
+
+def test_prune_archives_branches_with_their_tape_atomically_no_fk_violation(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(
+            _small_tape(b"parent"), run_id="parent-run", created_at="2020-01-01T00:00:00+00:00"
+        )
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            mutation_desc="test branch",
+            created_at="2020-01-01T00:00:00+00:00",
+        )
+
+        report = store.prune(older_than_iso="2025-01-01T00:00:00+00:00")
+
+        assert report.tapes_archived == ["parent-run"]
+        assert report.branches_archived == [branch_id]
+
+        archived_tapes = {
+            r[0] for r in store._con.execute("SELECT run_id FROM tapes_archived").fetchall()
+        }
+        archived_branches = store._con.execute(
+            "SELECT branch_id, parent_run_id FROM branches_archived"
+        ).fetchall()
+        assert run_id in archived_tapes
+        assert archived_branches == [(branch_id, run_id)]  # no orphaned archived branch row
+
+        # Live tables fully cleaned up, no FK violation was raised getting here.
+        remaining = store._con.execute(
+            "SELECT COUNT(*) FROM branches WHERE parent_run_id=?", (run_id,)
+        ).fetchone()[0]
+        assert remaining == 0
+        with pytest.raises(KeyError):
+            store.load_tape(run_id)
+        with pytest.raises(KeyError):
+            store.load_branch(branch_id)
+    finally:
+        store.close()
+
+
+def test_prune_dry_run_computes_candidates_with_zero_mutation(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        tape = _small_tape(b"old")
+        store.save_tape(tape, run_id="old-run", created_at="2020-01-01T00:00:00+00:00")
+
+        report = store.prune(older_than_iso="2025-01-01T00:00:00+00:00", dry_run=True)
+
+        assert report.dry_run is True
+        assert report.tapes_archived == ["old-run"]
+
+        # Zero mutation: the live tape still reloads, no archived row exists.
+        assert store.load_tape("old-run").exchanges == tape.exchanges
+        n_archived = store._con.execute("SELECT COUNT(*) FROM tapes_archived").fetchone()[0]
+        assert n_archived == 0
+    finally:
+        store.close()
+
+
+def test_prune_by_explicit_run_ids_ignores_created_at(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(_small_tape(b"a"), run_id="run-a", created_at="2030-01-01T00:00:00+00:00")
+        store.save_tape(_small_tape(b"b"), run_id="run-b", created_at="2030-01-01T00:00:00+00:00")
+
+        report = store.prune(run_ids=["run-a"])
+
+        assert report.tapes_archived == ["run-a"]
+        assert [r["run_id"] for r in store.list_runs()] == ["run-b"]
+    finally:
+        store.close()
+
+
+def test_prune_with_no_filters_is_a_safe_noop(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(_small_tape(b"a"), run_id="run-a")
+        report = store.prune()
+        assert report.dry_run is False
+        assert report.tapes_archived == []
+        assert report.branches_archived == []
+        assert len(store.list_runs()) == 1
+    finally:
+        store.close()
+
+
 def test_concurrent_writers_shared_store_serialized(tmp_path):
     """One shared connection across threads: the write lock must serialize the
     fan-out so two threads never open a transaction on it at once."""

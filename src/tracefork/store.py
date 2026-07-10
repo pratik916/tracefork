@@ -4,12 +4,22 @@ Schema:
   tapes   (run_id TEXT PK, agent_name TEXT, tape_bytes BLOB, created_at TEXT)
   branches(branch_id TEXT PK, parent_run_id TEXT, divergence_step INT,
            delta_tape_bytes BLOB, mutation_desc TEXT, created_at TEXT)
+  tapes_archived   (tapes + archived_at TEXT) — `prune()`'s soft-archive target
+  branches_archived(branches + archived_at TEXT, no FK — see `prune()`)
+
+`prune()` is a soft-archive-only retention pass (git gc / borg prune's
+mark-and-sweep-with-soft-archive discipline): a pruned row moves from a live
+table to its ``_archived`` twin and stays queryable there forever. There is
+no hard-delete anywhere in this module — reclaiming that space is a
+deliberately separate, out-of-scope, higher-risk step.
 """
 
 from __future__ import annotations
 
 import threading
 import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from .tape import Tape, open_sqlite
@@ -80,7 +90,45 @@ CREATE TABLE IF NOT EXISTS branches (
     created_at        TEXT NOT NULL,
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
 );
+
+-- Soft-archive targets for `TapeStore.prune()` — a pruned row is moved here,
+-- never hard-deleted (mirrors git gc / borg prune's mark-and-sweep-with-
+-- soft-archive discipline). No FOREIGN KEY back to the live tables: an
+-- archived row must stay queryable even after its live counterpart, and any
+-- of its own live relations, are long gone.
+CREATE TABLE IF NOT EXISTS tapes_archived (
+    run_id       TEXT PRIMARY KEY,
+    agent_name   TEXT NOT NULL,
+    tape_bytes   BLOB NOT NULL,
+    created_at   TEXT NOT NULL,
+    archived_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS branches_archived (
+    branch_id         TEXT PRIMARY KEY,
+    parent_run_id     TEXT NOT NULL,
+    divergence_step   INTEGER NOT NULL,
+    delta_tape_bytes  BLOB NOT NULL,
+    mutation_desc     TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    archived_at       TEXT NOT NULL
+);
 """
+
+
+@dataclass
+class PruneReport:
+    """Outcome of a :meth:`TapeStore.prune` call.
+
+    ``tapes_archived``/``branches_archived`` are the run_ids/branch_ids that
+    matched the prune filters — populated identically whether or not
+    ``dry_run`` was set, so a caller can preview the exact candidate set
+    before committing to it.
+    """
+
+    dry_run: bool
+    tapes_archived: list[str] = field(default_factory=list)
+    branches_archived: list[str] = field(default_factory=list)
 
 
 class TapeStore:
@@ -213,6 +261,96 @@ class TapeStore:
             {"branch_id": r[0], "divergence_step": r[1], "mutation_desc": r[2], "created_at": r[3]}
             for r in rows
         ]
+
+    # ── prune (soft-archive, never hard-delete) ─────────────────────────────
+
+    def prune(
+        self,
+        *,
+        older_than_iso: str | None = None,
+        run_ids: list[str] | None = None,
+        dry_run: bool = False,
+    ) -> PruneReport:
+        """Archive tapes (and their branches) — never hard-delete.
+
+        A tape qualifies for pruning if EITHER filter matches it: its
+        ``created_at`` sorts before ``older_than_iso`` (plain lexical ISO-8601
+        comparison, exclusive of the cutoff), or its ``run_id`` is in
+        ``run_ids``. Passing neither filter matches nothing — pruning is
+        opt-in per call, never "everything" by accident.
+
+        For each qualifying tape, inside one ``BEGIN IMMEDIATE`` transaction,
+        its branches are copied into ``branches_archived`` and deleted from
+        the live ``branches`` table FIRST, then the tape row is copied into
+        ``tapes_archived`` and deleted from the live ``tapes`` table — the
+        order ``branches`` live-table's ``FOREIGN KEY(parent_run_id)
+        REFERENCES tapes(run_id)`` requires under ``foreign_keys=ON``.
+        Archived rows are never deleted by this method or any other: they
+        stay queryable in ``tapes_archived``/``branches_archived``
+        indefinitely (reclaiming that space is a distinct, higher-risk,
+        deliberately out-of-scope step — see the module docstring's git
+        gc / borg prune comparison).
+
+        ``dry_run=True`` computes the exact candidate set and returns it
+        without opening a write transaction — zero mutation, safe to call
+        speculatively. ``save_tape``/``save_branch``/``load_tape``/
+        ``load_branch``/``list_runs``/``list_branches`` are all unaffected by
+        this method's existence: a pruned ``run_id`` simply stops appearing
+        in ``list_runs()``, and ``load_tape``/``load_branch`` raise the same
+        ``KeyError`` they already raise for any unknown id.
+        """
+        run_id_filter = set(run_ids or [])
+        rows = self._con.execute("SELECT run_id, created_at FROM tapes").fetchall()
+        candidates = [
+            run_id
+            for run_id, created_at in rows
+            if (older_than_iso is not None and created_at < older_than_iso)
+            or run_id in run_id_filter
+        ]
+
+        branch_ids: list[str] = []
+        for run_id in candidates:
+            branch_ids.extend(
+                row[0]
+                for row in self._con.execute(
+                    "SELECT branch_id FROM branches WHERE parent_run_id=?", (run_id,)
+                ).fetchall()
+            )
+
+        if dry_run or not candidates:
+            return PruneReport(
+                dry_run=dry_run, tapes_archived=candidates, branches_archived=branch_ids
+            )
+
+        archived_at = datetime.now(UTC).isoformat()
+        with self._write_lock:
+            self._con.execute("BEGIN IMMEDIATE")
+            try:
+                for run_id in candidates:
+                    self._con.execute(
+                        """INSERT INTO branches_archived
+                           (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+                            mutation_desc, created_at, archived_at)
+                           SELECT branch_id, parent_run_id, divergence_step, delta_tape_bytes,
+                                  mutation_desc, created_at, ?
+                           FROM branches WHERE parent_run_id=?""",
+                        (archived_at, run_id),
+                    )
+                    self._con.execute("DELETE FROM branches WHERE parent_run_id=?", (run_id,))
+                    self._con.execute(
+                        """INSERT INTO tapes_archived
+                           (run_id, agent_name, tape_bytes, created_at, archived_at)
+                           SELECT run_id, agent_name, tape_bytes, created_at, ?
+                           FROM tapes WHERE run_id=?""",
+                        (archived_at, run_id),
+                    )
+                    self._con.execute("DELETE FROM tapes WHERE run_id=?", (run_id,))
+                self._con.execute("COMMIT")
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+
+        return PruneReport(dry_run=False, tapes_archived=candidates, branches_archived=branch_ids)
 
     def close(self) -> None:
         self._con.close()

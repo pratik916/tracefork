@@ -2,7 +2,8 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, validate, bench, export, ingest.
+Commands: replay, verify, fork, report, serve, blame, validate, bench, export,
+ingest, prune, proxy.
 """
 
 from __future__ import annotations
@@ -670,6 +671,66 @@ def ingest(
     typer.echo("  NOTE: step structure only, reconstructed from span attributes — NOT")
     typer.echo("  tracefork's own recorded bytes. Supports blame-by-re-execution, NOT $0")
     typer.echo("  bit-exact replay (`replay`/`fork` will diverge on this tape).\n")
+
+
+@app.command()
+def prune(
+    older_than_days: float = typer.Option(
+        None,
+        "--older-than-days",
+        help="Archive tapes with created_at older than N days ago",
+    ),
+    run_id: list[str] = typer.Option(  # noqa: B008
+        [], "--run-id", help="Explicit run_id to archive (repeatable)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Compute the candidate set; mutate nothing"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Archive tapes (and their branches) — never hard-delete.
+
+    Mirrors git gc / borg prune's mark-and-sweep-with-soft-archive
+    discipline: matching rows move to tapes_archived/branches_archived and
+    stay queryable there forever; reclaiming that space is a distinct,
+    out-of-scope, higher-risk step. A tape matches if it's older than
+    --older-than-days OR named by a repeatable --run-id; passing neither
+    matches nothing. --dry-run previews the candidate set with zero writes.
+
+    NOTE: report links for a pruned run_id go stale — server.py's
+    list_runs/get_run/get_branch correctly 404 it via the existing KeyError
+    path, same as any unknown run_id.
+
+    Always exits 0: pruning is a maintenance operation, not a pass/fail gate.
+    """
+    import datetime as _dt
+
+    from tracefork.store import TapeStore
+
+    older_than_iso = None
+    if older_than_days is not None:
+        cutoff = _dt.datetime.now(_dt.UTC) - _dt.timedelta(days=older_than_days)
+        older_than_iso = cutoff.isoformat()
+
+    db = TapeStore(str(store))
+    report = db.prune(older_than_iso=older_than_iso, run_ids=list(run_id), dry_run=dry_run)
+
+    label = "prune [dry-run]" if dry_run else "prune"
+    typer.echo(f"\n  tracefork {label}")
+    typer.echo(f"  {'─' * 50}")
+    if not report.tapes_archived:
+        typer.echo("  no candidates matched (nothing archived)")
+    else:
+        for rid in report.tapes_archived:
+            typer.echo(f"    {rid}")
+        verb = "would archive" if dry_run else "Archived"
+        typer.echo(
+            f"\n  {verb} {len(report.tapes_archived)} tape(s), "
+            f"{len(report.branches_archived)} branch(es)"
+        )
+    typer.echo("")
 
 
 @app.command()

@@ -151,6 +151,7 @@ uv run tracefork --help
 | `bench   [--k 3] [--m-samples 2]` | Long-tape competing-fault benchmark: does the coalition/temporal-Shapley engine discriminate *several* simultaneously planted causes, not just detect one? See [Validation scope](#validation-scope). |
 | `export  <run_id> --otel\|--openinference -o out.json` | Export a tape (+ optional `--blame-report`) as an OTel GenAI trace or an OpenInference dataset. |
 | `ingest  <trace.json> --otel\|--openinference -o out.tape.sqlite` | Build a tape's step structure from an externally-produced trace — blame-by-re-execution only, **not** bit-exact replayable. |
+| `prune   [--older-than-days N] [--run-id id ...] [--dry-run]` | Archive tapes (and their branches) older than a cutoff and/or by explicit `run_id` — soft-archive only, never a hard delete; see [Prune / retention](#prune--retention-opt-in). |
 | `proxy   record\|replay --tape <tape> [--upstream url] [--port 8899]` | Localhost base-URL record/replay proxy for non-Python clients (curl, Node, Go, ...) — see [Localhost record/replay proxy](#localhost-recordreplay-proxy-for-non-python-clients-opt-in). |
 
 Replay, verify, fork, and the offline demos need no key. `blame` against a *real* run
@@ -300,6 +301,33 @@ a **structlog JSON** logging pipeline (`observability.configure_structlog_json()
 **OTel self-instrumentation** of `record`/`replay`/`fork`/`blame` — off by default, and
 double opt-in even when installed (`enable_otel_instrumentation()` or
 `TRACEFORK_OTEL_ENABLED=1`), so merely installing the extra changes nothing.
+
+## Prune / retention (opt-in)
+
+Tapes and branches otherwise accumulate forever. `tracefork prune` mirrors git
+gc / borg prune's mark-and-sweep-with-**soft-archive** discipline: it never
+hard-deletes anything. A matching tape (and its branches) moves from the live
+`tapes`/`branches` tables into `tapes_archived`/`branches_archived` — both
+stay queryable there indefinitely; reclaiming that space is a deliberately
+separate, out-of-scope, higher-risk step.
+
+```bash
+# Preview what a 30-day retention window would archive -- zero writes.
+uv run tracefork prune --older-than-days 30 --dry-run
+
+# Archive it for real, and/or name specific run_ids explicitly (repeatable).
+uv run tracefork prune --older-than-days 30
+uv run tracefork prune --run-id abc123 --run-id def456
+```
+
+A tape matches if it's older than `--older-than-days` **or** named by
+`--run-id` — passing neither matches nothing (never "everything" by
+accident). `TapeStore.prune()` does the real work inside one transaction:
+branches are archived-and-deleted first, then their parent tape, satisfying
+the live `branches -> tapes` foreign key. The CLI always exits 0 — pruning is
+a maintenance operation, not a pass/fail gate. A pruned `run_id`'s report
+links go stale: `serve`'s `list_runs`/`get_run`/`get_branch` correctly 404 it
+via the same `KeyError` path any unknown id already takes.
 
 ## Framework adapters (opt-in)
 

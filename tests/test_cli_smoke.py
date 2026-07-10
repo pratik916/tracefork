@@ -317,6 +317,36 @@ def test_cli_export_requires_exactly_one_format_flag_is_documented_nonzero(tmp_p
     assert "exactly one" in result.output
 
 
+# ── prune ────────────────────────────────────────────────────────────────
+
+
+def test_cli_prune_dry_run_older_than_days_exits_zero_no_row_count_change(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    result = runner.invoke(
+        app, ["prune", "--older-than-days", "0", "--dry-run", "--store", str(db)]
+    )
+    assert result.exit_code == 0, result.output
+
+    store = TapeStore(str(db))
+    try:
+        assert any(r["run_id"] == run_id for r in store.list_runs())
+    finally:
+        store.close()
+
+
+def test_cli_prune_by_run_id_archives_it_and_still_exits_zero(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    result = runner.invoke(app, ["prune", "--run-id", run_id, "--store", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "Archived" in result.output
+
+    store = TapeStore(str(db))
+    try:
+        assert store.list_runs() == []
+    finally:
+        store.close()
+
+
 # ── proxy ────────────────────────────────────────────────────────────────
 
 

@@ -117,7 +117,19 @@ The product lives in `src/tracefork/`:
   caller passes `overwrite=True`. The check-then-write stays inside the
   existing `BEGIN IMMEDIATE`/`_write_lock` transaction — no second lock.
   `save_branch` needs no equivalent: `branch_id` is always a fresh uuid, so a
-  real collision already raises `sqlite3.IntegrityError` today.
+  real collision already raises `sqlite3.IntegrityError` today. `prune()` is a
+  soft-archive-only retention pass (git gc / borg prune's mark-and-sweep-with-
+  soft-archive discipline, never a hard delete): a tape matching
+  `older_than_iso` (lexical `created_at` cutoff) and/or an explicit `run_ids`
+  allowlist has its branches copied into `branches_archived` and deleted from
+  the live `branches` table FIRST, then its row copied into `tapes_archived`
+  and deleted from the live `tapes` table — the order the live `branches` ->
+  `tapes` foreign key requires — all inside one `BEGIN IMMEDIATE`/
+  `_write_lock` transaction. `dry_run=True` computes the candidate set with
+  zero writes. Archived rows are never deleted by anything; reclaiming that
+  space is a distinct, out-of-scope, higher-risk step. `StorageBackend` is
+  deliberately NOT extended with `prune` (kept `TapeStore`-only for now); the
+  `tracefork prune` CLI command always exits 0 (a maintenance op, not a gate).
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and
@@ -195,7 +207,7 @@ The product lives in `src/tracefork/`:
   framework's exact internal attribute names/event shapes aren't a documented
   stable API, injection is defensive (a short candidate list, never one
   hard-coded name) — see each module's docstring.
-- `cli.py` — Typer entry point for all eleven commands.
+- `cli.py` — Typer entry point for all twelve commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
@@ -209,7 +221,7 @@ sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest
 plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
 base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
 documented scope boundaries called out explicitly, not papered over) — all
-offline/$0. `tests/test_cli_smoke.py` invokes every one of the eleven CLI
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the twelve CLI
 subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
 call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
 to a no-op (proving the CLI's own wiring without binding a socket) plus a
