@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Determinism-coverage report** (`coverage.py`, `cli.py`) — `tracefork
+  coverage <tape> [--agent-source FILE]` turns "is this replay actually
+  complete?" into a checkable artifact: `tape_draw_coverage` tallies
+  `nondet.py`'s draw kinds and whether concurrency (`async_batches`) /
+  `BoundaryGuard` (`provenance["boundary_guard"]`) were recorded/active for
+  an already-loaded `Tape`; `scan_source_for_nondeterminism_calls` is a
+  read-only, best-effort `ast.parse`-only lint (never imports or executes
+  the given source) over agent source text for call sites shaped like what
+  `boundary_guard.py` itself patches, vs. that module's own documented,
+  permanent exclusions (`datetime.datetime.now()`/`time.time()`, always
+  informational, never a violation). New capability, no existing consumer
+  to break; `Tape.digest()`/`to_bytes()`/`from_bytes()` untouched.
+
 - **Recording provenance/witness block on `Tape`** (`tape.py`, `recorder.py`,
   `replay.py`) — `Tape.provenance` (matcher fingerprint, boundary-guard state,
   nondet mode) is a small `dict[str, str]` `Recorder`/`AsyncRecorder` populate

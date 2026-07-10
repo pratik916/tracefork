@@ -238,7 +238,21 @@ The product lives in `src/tracefork/`:
   framework's exact internal attribute names/event shapes aren't a documented
   stable API, injection is defensive (a short candidate list, never one
   hard-coded name) — see each module's docstring.
-- `cli.py` — Typer entry point for all twelve commands.
+- `coverage.py` — determinism-coverage report for an already-loaded `Tape`:
+  `tape_draw_coverage` tallies `nondet.py`'s three draw kinds
+  (`clock`/`uuid`/`random`, only kinds that occurred — no zero-filled
+  entries) and whether concurrency (`async_batches`) / `BoundaryGuard`
+  (`provenance["boundary_guard"]`) were recorded/active; plus, given the
+  agent's source *text*, `scan_source_for_nondeterminism_calls` is a
+  best-effort `ast.parse`-only lint (never imports/executes the source) for
+  call sites shaped like what `boundary_guard.py` itself patches
+  (`Thread.start`/`Popen.__init__`/`random.random`/`time.monotonic`/
+  `time.sleep`) vs. that module's own documented, permanent exclusions
+  (`datetime.datetime.now()`/`time.time()`, always informational, never a
+  violation regardless of guard state). `tracefork coverage <tape>
+  [--agent-source FILE]` is the CLI surface. Read-only: never touches
+  `Tape.digest()`/`to_bytes()`/`from_bytes()`.
+- `cli.py` — Typer entry point for all thirteen commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
@@ -252,7 +266,7 @@ sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest
 plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
 base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
 documented scope boundaries called out explicitly, not papered over) — all
-offline/$0. `tests/test_cli_smoke.py` invokes every one of the twelve CLI
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the thirteen CLI
 subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
 call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
 to a no-op (proving the CLI's own wiring without binding a socket) plus a

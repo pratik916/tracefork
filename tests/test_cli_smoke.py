@@ -388,3 +388,41 @@ def test_cli_proxy_replay_wires_without_binding_a_real_port(tmp_path, monkeypatc
 def test_cli_proxy_rejects_invalid_mode_is_documented_nonzero(tmp_path):
     result = runner.invoke(app, ["proxy", "bogus", "--tape", str(tmp_path / "t.tape.sqlite")])
     assert result.exit_code == 1
+
+
+# ── coverage ─────────────────────────────────────────────────────────────
+
+
+def test_cli_coverage_prints_report_and_exits_zero(tmp_path):
+    tape_path = tmp_path / "run.tape.sqlite"
+    _record_clean_tape().save(str(tape_path))
+    result = runner.invoke(app, ["coverage", str(tape_path)])
+    assert result.exit_code == 0, result.output
+    assert "boundary_guard_active" in result.output
+    assert "concurrency_recorded" in result.output
+
+
+def test_cli_coverage_with_agent_source_scans_and_writes_json(tmp_path):
+    tape_path = tmp_path / "run.tape.sqlite"
+    _record_clean_tape().save(str(tape_path))
+    agent_src = tmp_path / "agent.py"
+    agent_src.write_text("import random\nrandom.random()\n")
+    out_path = tmp_path / "coverage.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "coverage",
+            str(tape_path),
+            "--agent-source",
+            str(agent_src),
+            "--output",
+            str(out_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "GUARDABLE" in result.output
+    assert out_path.exists()
+
+    data = json.loads(out_path.read_text())
+    assert data["findings"][0]["call"] == "random.random"

@@ -3,7 +3,7 @@
     tracefork <command> [args]
 
 Commands: replay, verify, fork, report, serve, blame, validate, bench, export,
-ingest, prune, proxy.
+ingest, prune, proxy, coverage.
 """
 
 from __future__ import annotations
@@ -815,6 +815,82 @@ def proxy(
     typer.echo(f"\n  tracefork proxy replay -> http://127.0.0.1:{port}")
     typer.echo(f"  tape: {tape_path} ({len(tape.exchanges)} exchange(s))\n")
     uvicorn.run(replay_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
+
+
+@app.command()
+def coverage(
+    tape_path: Path = typer.Argument(..., help="Path to a .tape.sqlite file"),  # noqa: B008
+    agent_source: Path = typer.Option(  # noqa: B008
+        None,
+        "--agent-source",
+        help="Path to the agent's Python source file: a best-effort static "
+        "AST scan (never imported or executed) for known-uncapturable "
+        "nondeterminism call sites not covered by BoundaryGuard",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Optional JSON output path"
+    ),
+) -> None:
+    """Print a determinism-coverage report for a recorded tape.
+
+    Reports which nondeterminism draw kinds occurred, whether concurrency was
+    recorded, and whether `BoundaryGuard` was active at record time -- plus,
+    with --agent-source, a best-effort static AST scan for known-uncapturable
+    nondeterminism calls not covered by the active guard. See
+    `coverage.py`'s module docstring for the scan's scope limits.
+    """
+    from tracefork.coverage import coverage_report
+    from tracefork.tape import Tape
+
+    tape = Tape.load(str(tape_path))
+    source = agent_source.read_text() if agent_source is not None else None
+    result = coverage_report(tape, agent_source=source)
+
+    typer.echo(f"\n  tracefork coverage — {tape_path.name}")
+    typer.echo(f"  {'─' * 50}")
+    typer.echo(f"  boundary_guard_active   {result.boundary_guard_active}")
+    typer.echo(f"  concurrency_recorded    {result.concurrency_recorded}")
+    typer.echo("  draw counts:")
+    if result.draw_counts:
+        for kind, count in sorted(result.draw_counts.items()):
+            typer.echo(f"    {kind:<10} {count}")
+    else:
+        typer.echo("    (no draws recorded)")
+
+    if agent_source is not None:
+        typer.echo(f"\n  AST scan of {agent_source.name} (best-effort lint):")
+        if result.findings:
+            for f in result.findings:
+                tag = "GUARDABLE" if f.guardable else "informational"
+                typer.echo(f"    line {f.lineno:<4} [{tag:<13}] {f.call} -- {f.note}")
+        else:
+            typer.echo("    no known-uncapturable call sites found")
+    typer.echo("")
+
+    if output is not None:
+        import json as _json
+
+        output.write_text(
+            _json.dumps(
+                {
+                    "draw_counts": result.draw_counts,
+                    "concurrency_recorded": result.concurrency_recorded,
+                    "boundary_guard_active": result.boundary_guard_active,
+                    "findings": [
+                        {
+                            "call": f.call,
+                            "lineno": f.lineno,
+                            "guardable": f.guardable,
+                            "caught": f.caught,
+                            "note": f.note,
+                        }
+                        for f in result.findings
+                    ],
+                },
+                indent=2,
+            )
+        )
+        typer.echo(f"  Report saved to {output}\n")
 
 
 def _print_receipt(tape_path: Path, result) -> None:
