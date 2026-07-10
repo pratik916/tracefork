@@ -459,6 +459,66 @@ def test_server_app_renders_ui_and_serves_run_json_same_origin(tmp_path):
     assert missing.status_code == 404
 
 
+def test_server_get_branch_returns_json_and_404s_on_unknown_branch(tmp_path):
+    """/api/branch/{id} happy path: a branch whose parent hasn't drifted
+    returns 200 with its digests; an unknown branch_id is still a 404 --
+    unaffected by the new ForkPointDriftError handling below."""
+    from fastapi.testclient import TestClient
+
+    from tracefork.server import app as fastapi_app
+    from tracefork.server import init_store
+
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    parent_tape = store.load_tape(run_id)
+    branch_id = store.save_branch(
+        parent_run_id=run_id,
+        divergence_step=0,
+        delta_tape=parent_tape,
+        parent_tape_digest=parent_tape.digest(),
+    )
+    store.close()
+
+    init_store(str(db))
+    client = TestClient(fastapi_app)
+
+    ok = client.get(f"/api/branch/{branch_id}")
+    assert ok.status_code == 200
+    assert ok.json()["branch_id"] == branch_id
+
+    missing = client.get("/api/branch/does-not-exist")
+    assert missing.status_code == 404
+
+
+def test_server_get_branch_maps_fork_point_drift_to_409(tmp_path):
+    """A branch whose cited parent tape has drifted since the fork was made
+    must surface as a 409 -- not a 500, not a silent 200 -- from get_branch."""
+    from fastapi.testclient import TestClient
+
+    from tracefork.server import app as fastapi_app
+    from tracefork.server import init_store
+
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    parent_tape = store.load_tape(run_id)
+    branch_id = store.save_branch(
+        parent_run_id=run_id,
+        divergence_step=0,
+        delta_tape=parent_tape,
+        parent_tape_digest=parent_tape.digest(),
+    )
+    mutated = Tape(agent_name="mutated")
+    mutated.append_exchange(b"req-mutated", b"resp-mutated")
+    store._con.execute("UPDATE tapes SET tape_bytes=? WHERE run_id=?", (mutated.to_bytes(), run_id))
+    store.close()
+
+    init_store(str(db))
+    client = TestClient(fastapi_app)
+
+    resp = client.get(f"/api/branch/{branch_id}")
+    assert resp.status_code == 409
+
+
 # ── blame (offline pre-flight gate only — see module docstring) ───────────
 
 

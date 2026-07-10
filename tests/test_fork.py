@@ -161,6 +161,59 @@ def test_fork_branch_digest_differs_for_different_mutated_response():
     assert branch_b.branch_digest != branch_other.branch_digest
 
 
+# ── fork-point verification (parent_tape_digest / divergence_exchange_digest) ──
+
+
+def test_fork_parent_tape_digest_equals_parent_tape_digest_at_fork_time():
+    """Branch.parent_tape_digest is the parent tape's own digest() at fork
+    time -- the citable fork-point store.py's load_branch re-verifies."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch.parent_tape_digest == parent_tape.digest()
+
+
+def test_fork_divergence_exchange_digest_stable_across_two_forks_same_step_and_parent():
+    """Two forks at the SAME (parent, divergence_step, mutated_response)
+    produce the identical divergence_exchange_digest."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch1 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+    branch2 = ForkEngine.fork(
+        parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch1.divergence_exchange_digest
+    assert branch1.divergence_exchange_digest == branch2.divergence_exchange_digest
+
+
+def test_fork_divergence_exchange_digest_changes_when_divergence_step_differs():
+    """The same mutated_response forked at a DIFFERENT step yields a different
+    divergence_exchange_digest -- the request half of the pair differs."""
+    parent_tape = _build_two_turn_tape()
+    spec_step0 = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+    spec_step1 = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch_step0 = ForkEngine.fork(
+        parent_tape,
+        spec_step0,
+        _conversation_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_C]),
+    )
+    branch_step1 = ForkEngine.fork(
+        parent_tape, spec_step1, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
+    )
+
+    assert branch_step0.divergence_exchange_digest != branch_step1.divergence_exchange_digest
+
+
 # ── coalition forks (joint, multi-step interventions) ───────────────────────
 
 
@@ -263,6 +316,8 @@ def test_fork_coalition_single_step_matches_classic_fork():
     coalition_resps = [e[1] for e in coalition.delta_tape.exchanges]
     classic_resps = [e[1] for e in classic.delta_tape.exchanges]
     assert coalition_resps == classic_resps
+    assert coalition.parent_tape_digest == classic.parent_tape_digest
+    assert coalition.divergence_exchange_digest == classic.divergence_exchange_digest
 
 
 def test_fork_coalition_forces_two_steps_jointly():

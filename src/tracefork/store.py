@@ -34,6 +34,21 @@ used a given digest's branch as THEIR OWN parent, once that branch's
 run_id=branch_id)`` (same promotion convention ``causal_closure`` already
 relies on) — enabling fork-of-fork chains as a plain reachability walk.
 
+``parent_tape_digest``/``divergence_exchange_digest`` are ``fork.py``'s
+citable fork-point metadata (``Branch.parent_tape_digest`` — the parent
+tape's own ``digest()`` at fork time — and ``Branch.divergence_exchange_digest``
+— sha256 of the exact request+response bytes at the first divergence point),
+migrated onto the ``branches`` table in the SAME guarded ``ALTER TABLE`` pass
+as ``branch_digest`` (see ``_migrate_fork_point_columns``). ``load_branch`` is
+the re-verification point: it recomputes the CURRENT digest of the tape
+referenced by ``parent_run_id`` and compares it against the stored
+``parent_tape_digest`` (skipped when that column is ``''`` — a legacy branch,
+or one created via ``cli.py``'s fork command, which does not pass it, has
+nothing to re-verify against). A mismatch is a hard error
+(:class:`ForkPointDriftError`), never a silently logged-and-continued
+divergence — the retrospective, read-time complement to ``save_tape``'s
+write-time CAS guard.
+
 ``causal_edges`` persists every blame/Shapley result computed by ``blame.py``
 instead of discarding it once the CLI/caller has printed or JSON-dumped it —
 a causal graph strictly stronger than a bare caused_by DAG, since every edge
@@ -62,6 +77,20 @@ class TapeConflictError(RuntimeError):
     """Raised by ``save_tape`` when a ``run_id`` is reused with content whose
     ``Tape.digest()`` differs from what's already stored, and ``overwrite`` was
     not set. Pass ``overwrite=True`` to replace the stored tape explicitly.
+    """
+
+
+class ForkPointDriftError(RuntimeError):
+    """Raised by ``load_branch`` when a branch's stored ``parent_tape_digest``
+    (the parent tape's ``Tape.digest()`` at fork time) no longer matches the
+    parent tape's CURRENT digest — i.e. the fork point this branch cites has
+    silently drifted since the fork was made (e.g. the parent tape row was
+    overwritten out-of-band). Hard error, never silently logged and
+    continued: a branch whose cited ancestry no longer matches what's
+    actually stored is not safe to trust. Only raised when the branch
+    recorded a non-empty ``parent_tape_digest`` — a legacy branch (default
+    ``''``, e.g. one created via ``cli.py``'s fork command, which does not
+    pass this field) has nothing to re-verify against and is never checked.
     """
 
 
@@ -99,6 +128,8 @@ class StorageBackend(Protocol):
         created_at: str = "",
         branch_id: str | None = None,
         branch_digest: str = "",
+        parent_tape_digest: str = "",
+        divergence_exchange_digest: str = "",
     ) -> str: ...
 
     def load_branch(self, branch_id: str) -> dict: ...
@@ -138,6 +169,8 @@ CREATE TABLE IF NOT EXISTS branches (
     mutation_desc     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     branch_digest     TEXT NOT NULL DEFAULT '',
+    parent_tape_digest          TEXT NOT NULL DEFAULT '',
+    divergence_exchange_digest  TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
 );
 
@@ -246,27 +279,39 @@ class TapeStore:
         self._con = open_sqlite(db_path)
         self._write_lock = threading.Lock()
         self._con.executescript(_DDL)
-        self._migrate_branch_digest_column()
+        self._migrate_fork_point_columns()
 
-    def _migrate_branch_digest_column(self) -> None:
+    def _migrate_fork_point_columns(self) -> None:
         """Guarded ``ALTER TABLE`` for a ``store.db`` built before
-        ``branch_digest`` existed on the ``branches`` table.
+        ``branch_digest``/``parent_tape_digest``/``divergence_exchange_digest``
+        existed on the ``branches`` table.
 
         ``CREATE TABLE IF NOT EXISTS`` (in ``_DDL``, above) only ever creates
-        the column on a BRAND NEW database — it is a no-op against an
-        existing ``branches`` table, so a pre-existing store.db needs an
-        explicit ``ADD COLUMN`` here. Gated on ``PRAGMA table_info`` so this
-        is idempotent (a fresh DB, whose ``CREATE TABLE`` already has the
-        column, takes the early return) and never destructive — no row is
-        touched, only a new column with a ``''`` default is appended. The
-        index is created here too (after the column is guaranteed to exist)
-        rather than inside ``_DDL``, since ``CREATE INDEX`` on a column that
-        doesn't exist yet would raise on a genuinely old database.
+        these columns on a BRAND NEW database — it is a no-op against an
+        existing ``branches`` table, so a pre-existing store.db needs
+        explicit ``ADD COLUMN``s here. All three columns share ONE
+        ``PRAGMA table_info`` read (not three separate migration passes) so
+        an old database is altered once, atomically enough for SQLite's
+        autocommit DDL, with each ``ADD COLUMN`` independently guarded —
+        never destructive: no row is touched, only new columns with a ``''``
+        default are appended. The index is created here too (after the
+        columns are guaranteed to exist) rather than inside ``_DDL``, since
+        ``CREATE INDEX`` on a column that doesn't exist yet would raise on a
+        genuinely old database.
         """
         cols = {row[1] for row in self._con.execute("PRAGMA table_info(branches)").fetchall()}
         if "branch_digest" not in cols:
             self._con.execute(
                 "ALTER TABLE branches ADD COLUMN branch_digest TEXT NOT NULL DEFAULT ''"
+            )
+        if "parent_tape_digest" not in cols:
+            self._con.execute(
+                "ALTER TABLE branches ADD COLUMN parent_tape_digest TEXT NOT NULL DEFAULT ''"
+            )
+        if "divergence_exchange_digest" not in cols:
+            self._con.execute(
+                "ALTER TABLE branches ADD COLUMN divergence_exchange_digest "
+                "TEXT NOT NULL DEFAULT ''"
             )
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_branches_branch_digest ON branches(branch_digest)"
@@ -360,6 +405,8 @@ class TapeStore:
         created_at: str = "",
         branch_id: str | None = None,
         branch_digest: str = "",
+        parent_tape_digest: str = "",
+        divergence_exchange_digest: str = "",
     ) -> str:
         """Persist ``delta_tape`` as a new branch of ``parent_run_id`` (a fresh
         ``branch_id`` if omitted).
@@ -379,6 +426,15 @@ class TapeStore:
         metadata only, never fed into ``Tape.digest()``. Every existing caller
         that omits it keeps storing ``''`` exactly as before this parameter
         existed. See :meth:`find_branch_by_digest`/:meth:`branches_forked_from`.
+
+        ``parent_tape_digest``/``divergence_exchange_digest`` (optional,
+        default ``''``) are ``fork.py``'s citable fork-point metadata —
+        ``Branch.parent_tape_digest`` (the parent tape's own ``digest()`` at
+        fork time) and ``Branch.divergence_exchange_digest`` (sha256 of the
+        exact request+response bytes at the first divergence point). Every
+        existing caller that omits them keeps storing ``''`` exactly as
+        before these parameters existed. See :meth:`load_branch`, the
+        re-verification point for ``parent_tape_digest``.
         """
         bid = branch_id or uuid.uuid4().hex[:12]
         blob = delta_tape.to_bytes()
@@ -401,8 +457,9 @@ class TapeStore:
                 self._con.execute(
                     """INSERT INTO branches
                        (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
-                        mutation_desc, created_at, branch_digest)
-                       VALUES(?,?,?,?,?,?,?)""",
+                        mutation_desc, created_at, branch_digest, parent_tape_digest,
+                        divergence_exchange_digest)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
                     (
                         bid,
                         parent_run_id,
@@ -411,6 +468,8 @@ class TapeStore:
                         mutation_desc,
                         created_at,
                         branch_digest,
+                        parent_tape_digest,
+                        divergence_exchange_digest,
                     ),
                 )
                 self._con.execute("COMMIT")
@@ -420,14 +479,39 @@ class TapeStore:
         return bid
 
     def load_branch(self, branch_id: str) -> dict:
+        """Load ``branch_id`` and re-verify its cited fork point.
+
+        This is the re-verification point for ``parent_tape_digest``: when a
+        branch recorded a non-empty value (i.e. it wasn't produced by a
+        legacy caller that omits it), the tape currently stored under
+        ``parent_run_id`` is loaded and its CURRENT ``digest()`` compared
+        against the stored value. A mismatch — the cited parent tape has
+        changed since this branch was forked — raises
+        :class:`ForkPointDriftError` naming the drifted ``parent_run_id``; it
+        is never silently logged and continued. A branch with an empty
+        ``parent_tape_digest`` has nothing to re-verify against and skips the
+        check entirely.
+        """
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
-                      delta_tape_bytes, mutation_desc, created_at, branch_digest
+                      delta_tape_bytes, mutation_desc, created_at, branch_digest,
+                      parent_tape_digest, divergence_exchange_digest
                FROM branches WHERE branch_id=?""",
             (branch_id,),
         ).fetchone()
         if row is None:
             raise KeyError(f"branch_id {branch_id!r} not found")
+        parent_run_id = row[1]
+        stored_parent_tape_digest = row[7]
+        if stored_parent_tape_digest:
+            current_parent_digest = self.load_tape(parent_run_id).digest()
+            if current_parent_digest != stored_parent_tape_digest:
+                raise ForkPointDriftError(
+                    f"parent tape {parent_run_id!r} has drifted since branch "
+                    f"{branch_id!r} was forked (recorded digest "
+                    f"{stored_parent_tape_digest[:12]}, current "
+                    f"{current_parent_digest[:12]})"
+                )
         return {
             "branch_id": row[0],
             "parent_run_id": row[1],
@@ -436,6 +520,8 @@ class TapeStore:
             "mutation_desc": row[4],
             "created_at": row[5],
             "branch_digest": row[6],
+            "parent_tape_digest": row[7],
+            "divergence_exchange_digest": row[8],
         }
 
     def find_branch_by_digest(self, branch_digest: str) -> dict | None:
@@ -443,12 +529,17 @@ class TapeStore:
         ``branch_digest`` matches, or ``None`` if no branch has that digest
         (an empty ``branch_digest`` never matches — old, pre-migration rows
         all share ``''`` and must not collide with each other or a query for
-        ``''``)."""
+        ``''``).
+
+        Unlike :meth:`load_branch`, this is a plain lookup — it does NOT
+        re-verify ``parent_tape_digest`` against the parent tape's current
+        digest (:meth:`load_branch` is the sole re-verification point)."""
         if not branch_digest:
             return None
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
-                      delta_tape_bytes, mutation_desc, created_at, branch_digest
+                      delta_tape_bytes, mutation_desc, created_at, branch_digest,
+                      parent_tape_digest, divergence_exchange_digest
                FROM branches WHERE branch_digest=?""",
             (branch_digest,),
         ).fetchone()
@@ -462,6 +553,8 @@ class TapeStore:
             "mutation_desc": row[4],
             "created_at": row[5],
             "branch_digest": row[6],
+            "parent_tape_digest": row[7],
+            "divergence_exchange_digest": row[8],
         }
 
     def branches_forked_from(self, branch_digest: str) -> list[str]:

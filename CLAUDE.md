@@ -140,7 +140,12 @@ The product lives in `src/tracefork/`:
   (a node's hash folds in its children's), so identical (parent, delta, intervened_steps)
   always produce the same digest and `store.py` can key branches by content, resolve
   fork-of-fork chains, and answer inverse-citation queries as reachability walks. Branch/
-  store-level metadata only — `Tape.digest()` itself is completely untouched.
+  store-level metadata only — `Tape.digest()` itself is completely untouched. Every `Branch`
+  also carries `parent_tape_digest` (the parent tape's own `digest()` at fork time) and
+  `divergence_exchange_digest` (`compute_divergence_exchange_digest`: sha256 of the exact
+  request+response bytes at the first divergence point) — a Certificate-Transparency-style
+  citable fork point, re-verified independently on every `store.py` `load_branch` (see
+  below) rather than trusted once at write time.
 - `diff.py` — generalized point-to-point / fork-branch diff, purely a
   sequence-of-steps orchestration layer on top of `divergence.py`'s existing
   single-step structural-diff primitive (`diff_json`/`diff_request_bytes`/
@@ -223,7 +228,19 @@ The product lives in `src/tracefork/`:
   once that branch's `delta_tape` is itself promoted to a tape via
   `save_tape(delta_tape, run_id=branch_id)` (the same promotion convention
   `causal_closure` already relies on) — enabling fork-of-fork chains as a
-  plain reachability walk.
+  plain reachability walk. `branches` also carries `fork.py`'s
+  `parent_tape_digest`/`divergence_exchange_digest`, migrated in the SAME
+  guarded `ALTER TABLE` pass as `branch_digest` (one migration, not two);
+  `save_branch` gains matching optional parameters (default `''`, every
+  existing caller — including `cli.py`'s fork command, which does not pass
+  them — unaffected). `load_branch` is the re-verification point: when a
+  branch recorded a non-empty `parent_tape_digest`, it recomputes the parent
+  tape's CURRENT digest and compares it against the stored value, raising
+  `ForkPointDriftError` (hard error, never silently logged and continued) on
+  a mismatch; an empty `parent_tape_digest` has nothing to re-verify against
+  and skips the check. `server.py`'s `get_branch` catches
+  `ForkPointDriftError` and maps it to HTTP 409, alongside its existing
+  `KeyError` → 404.
 - `bundle.py` — lossless tape+branch trajectory export/import: a bundle is
   literally a second, smaller `store.db` (same DDL, same
   `Tape.to_bytes()` envelope) — `git bundle`'s model, a scoped-down valid

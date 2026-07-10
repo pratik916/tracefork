@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from tracefork.constants import TAPE_FORMAT_VERSION, TAPE_MAGIC
-from tracefork.store import StorageBackend, TapeConflictError, TapeStore
+from tracefork.store import ForkPointDriftError, StorageBackend, TapeConflictError, TapeStore
 from tracefork.tape import Tape, open_sqlite
 
 # The exact digest of `_golden_tape()`, frozen at the pre-header format. If a change
@@ -466,6 +466,190 @@ def test_branch_digest_migration_adds_column_without_losing_rows(tmp_path):
             row[1] for row in store._con.execute("PRAGMA table_info(branches)").fetchall()
         }
         assert "branch_digest" in cols_after
+    finally:
+        store.close()
+
+
+# ── fork-point verification (parent_tape_digest / divergence_exchange_digest) ──
+
+
+def test_save_branch_persists_fork_point_digests_and_load_branch_returns_them(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        parent_tape = _small_tape(b"parent")
+        run_id = store.save_tape(parent_tape, run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            parent_tape_digest=parent_tape.digest(),
+            divergence_exchange_digest="exch-digest",
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["parent_tape_digest"] == parent_tape.digest()
+        assert loaded["divergence_exchange_digest"] == "exch-digest"
+    finally:
+        store.close()
+
+
+def test_save_branch_default_fork_point_digests_are_empty_string(tmp_path):
+    """Existing callers (e.g. cli.py's fork command) that omit the new
+    digests keep working exactly as before -- default ''."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["parent_tape_digest"] == ""
+        assert loaded["divergence_exchange_digest"] == ""
+    finally:
+        store.close()
+
+
+def test_load_branch_no_drift_succeeds_baseline_regression(tmp_path):
+    """save_branch then immediate load_branch with no tape mutation succeeds
+    -- no ForkPointDriftError (baseline regression)."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        parent_tape = _small_tape(b"parent")
+        run_id = store.save_tape(parent_tape, run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            parent_tape_digest=parent_tape.digest(),
+        )
+        loaded = store.load_branch(branch_id)  # must not raise
+        assert loaded["branch_id"] == branch_id
+    finally:
+        store.close()
+
+
+def test_load_branch_raises_fork_point_drift_error_on_parent_mutation(tmp_path):
+    """A raw-SQL mutation of the cited parent tape's content after the fork
+    was made must be caught -- re-verified, not trusted -- at the next
+    load_branch, naming the mismatched parent_run_id."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        parent_tape = _small_tape(b"parent")
+        run_id = store.save_tape(parent_tape, run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            parent_tape_digest=parent_tape.digest(),
+        )
+
+        # Simulate silent drift: raw-SQL swap the parent tape's stored bytes.
+        mutated_tape = _small_tape(b"mutated-parent")
+        store._con.execute(
+            "UPDATE tapes SET tape_bytes=? WHERE run_id=?", (mutated_tape.to_bytes(), run_id)
+        )
+        store._con.commit()
+
+        with pytest.raises(ForkPointDriftError, match=run_id):
+            store.load_branch(branch_id)
+    finally:
+        store.close()
+
+
+def test_load_branch_skips_reverification_when_parent_tape_digest_is_empty(tmp_path):
+    """Legacy/pre-migration branches (parent_tape_digest == '', e.g. produced
+    by cli.py's fork command, which does not pass it) have nothing to
+    re-verify against -- load_branch must not raise even if the parent has
+    since changed."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+        )
+        mutated_tape = _small_tape(b"mutated-parent")
+        store._con.execute(
+            "UPDATE tapes SET tape_bytes=? WHERE run_id=?", (mutated_tape.to_bytes(), run_id)
+        )
+        store._con.commit()
+
+        loaded = store.load_branch(branch_id)  # must not raise
+        assert loaded["parent_tape_digest"] == ""
+    finally:
+        store.close()
+
+
+def test_fork_point_columns_migration_adds_all_three_in_one_pass_without_losing_rows(tmp_path):
+    """A store.db built with the OLD schema (no branch_digest,
+    parent_tape_digest, or divergence_exchange_digest columns at all) neither
+    crashes nor loses rows -- all three are added via one PRAGMA-guarded
+    ADD COLUMN pass."""
+    db_path = str(tmp_path / "old_store2.db")
+
+    old_con = open_sqlite(db_path)
+    old_con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tapes (
+            run_id       TEXT PRIMARY KEY,
+            agent_name   TEXT NOT NULL,
+            tape_bytes   BLOB NOT NULL,
+            created_at   TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS branches (
+            branch_id         TEXT PRIMARY KEY,
+            parent_run_id     TEXT NOT NULL,
+            divergence_step   INTEGER NOT NULL,
+            delta_tape_bytes  BLOB NOT NULL,
+            mutation_desc     TEXT NOT NULL DEFAULT '',
+            created_at        TEXT NOT NULL,
+            FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
+        );
+        """
+    )
+    old_tape = _small_tape(b"pre-existing2")
+    old_con.execute(
+        "INSERT INTO tapes(run_id, agent_name, tape_bytes, created_at) VALUES(?,?,?,?)",
+        ("old-run2", "w", old_tape.to_bytes(), "2020-01-01T00:00:00+00:00"),
+    )
+    old_con.execute(
+        """INSERT INTO branches
+           (branch_id, parent_run_id, divergence_step, delta_tape_bytes, mutation_desc, created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (
+            "old-branch2",
+            "old-run2",
+            0,
+            _small_tape(b"pre-branch2").to_bytes(),
+            "",
+            "2020-01-01T00:00:00+00:00",
+        ),
+    )
+    cols_before = {row[1] for row in old_con.execute("PRAGMA table_info(branches)").fetchall()}
+    assert "branch_digest" not in cols_before
+    assert "parent_tape_digest" not in cols_before
+    assert "divergence_exchange_digest" not in cols_before
+
+    old_con.commit()
+    old_con.close()
+
+    store = TapeStore(db_path)
+    try:
+        assert store.load_tape("old-run2").exchanges == old_tape.exchanges
+        loaded_branch = store.load_branch("old-branch2")
+        assert loaded_branch["parent_run_id"] == "old-run2"
+        assert loaded_branch["branch_digest"] == ""
+        assert loaded_branch["parent_tape_digest"] == ""
+        assert loaded_branch["divergence_exchange_digest"] == ""
+
+        cols_after = {
+            row[1] for row in store._con.execute("PRAGMA table_info(branches)").fetchall()
+        }
+        assert "branch_digest" in cols_after
+        assert "parent_tape_digest" in cols_after
+        assert "divergence_exchange_digest" in cols_after
     finally:
         store.close()
 

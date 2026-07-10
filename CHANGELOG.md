@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Immutable, citable fork-point verification** (`fork.py`, `store.py`,
+  `server.py`) — every `Branch` now also carries `parent_tape_digest` (the
+  parent tape's own `digest()` at fork time) and `divergence_exchange_digest`
+  (sha256 of the exact request+response bytes at the first divergence point),
+  computed in `ForkEngine.fork()`/`fork_coalition()` alongside `branch_digest`
+  — the retrospective, read-time complement to the CAS write-time guard.
+  `store.py`'s `branches` table gains both columns (migrated onto a
+  pre-existing `store.db` in the SAME `PRAGMA table_info`-guarded `ALTER
+  TABLE` pass as `branch_digest` — one migration, not two); `save_branch`
+  gains matching optional parameters (default `''`, every existing caller
+  unaffected). `load_branch` is now the re-verification point: when a branch
+  recorded a non-empty `parent_tape_digest`, it recomputes the CURRENT digest
+  of the tape stored under `parent_run_id` and compares it against the
+  recorded value — a mismatch raises a new `ForkPointDriftError` naming the
+  drifted `parent_run_id` (a hard error, never silently logged and
+  continued); an empty `parent_tape_digest` (legacy branches, or ones created
+  via `cli.py`'s fork command, which doesn't pass it) has nothing to
+  re-verify against and skips the check. `server.py`'s `get_branch` endpoint
+  catches `ForkPointDriftError` and maps it to HTTP 409, alongside its
+  existing `KeyError` → 404 handling. `Tape.digest()` itself is completely
+  untouched — both new fields are Branch/store-level metadata only.
+
 - **Fork tree as a content-addressed DAG** (`fork.py`, `store.py`) — every
   `Branch` now carries a `branch_digest`: `sha256(parent_tape.digest() +
   delta_tape.digest() + repr(intervened_steps))`, computed in

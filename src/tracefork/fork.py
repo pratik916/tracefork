@@ -33,6 +33,17 @@ digests plus the intervened steps into one sha256 — Merkle-DAG identity, so
 `store.py` can key branches by content, resolve fork-of-fork chains, and
 answer inverse-citation queries as plain reachability walks. Branch/store-
 level metadata only: `Tape.digest()` itself is completely untouched.
+
+`Branch.parent_tape_digest` (the parent tape's own `digest()` at fork time)
+and `Branch.divergence_exchange_digest` (`compute_divergence_exchange_digest`
+— sha256 of the exact request+response bytes at the fork's first divergence
+point) are the citable, write-time half of a Certificate-Transparency-style
+inclusion proof: `store.py`'s `load_branch` re-verifies `parent_tape_digest`
+against the parent tape's CURRENT digest on every read, hard-erroring
+(`ForkPointDriftError`) if the two no longer match — the retrospective
+complement to the CAS write-time guard, catching drift a write-time-only
+check would leave undetected. Branch/store-level metadata only, same as
+`branch_digest`.
 """
 
 from __future__ import annotations
@@ -70,6 +81,23 @@ class Branch:
     # only — `Tape.digest()` itself is completely untouched by this field).
     # See `compute_branch_digest()`.
     branch_digest: str = ""
+    # The parent tape's own `digest()` at fork time — the citable fork-point
+    # `store.py`'s `load_branch` re-verifies on every read. Branch/store-level
+    # metadata only, same as `branch_digest`.
+    parent_tape_digest: str = ""
+    # sha256 of the exact (request, response) bytes pair at the fork's first
+    # divergence point. See `compute_divergence_exchange_digest()`.
+    divergence_exchange_digest: str = ""
+
+
+def compute_divergence_exchange_digest(request_bytes: bytes, response_bytes: bytes) -> str:
+    """sha256 of the exact ``(request, response)`` byte pair at a fork's first
+    divergence point — the exchange that actually diverged from the parent
+    (the same request the parent recorded, paired with the response that was
+    forced/mutated instead of the parent's own). Purely additive metadata,
+    same as `compute_branch_digest`: `Tape.digest()` never reads it.
+    """
+    return sha256_hex(request_bytes + response_bytes)
 
 
 def compute_branch_digest(
@@ -352,6 +380,7 @@ class ForkEngine:
             agent_fn(client)
 
         intervened_steps = (step,)
+        divergence_request, _ = parent_tape.exchange(step)
         return Branch(
             parent_tape=parent_tape,
             divergence_step=step,
@@ -361,6 +390,10 @@ class ForkEngine:
             tail_recorded=fork_transport.tail_recorded,
             intervened_steps=intervened_steps,
             branch_digest=compute_branch_digest(parent_tape, delta_tape, intervened_steps),
+            parent_tape_digest=parent_tape.digest(),
+            divergence_exchange_digest=compute_divergence_exchange_digest(
+                divergence_request, spec.mutated_response
+            ),
         )
 
     @staticmethod
@@ -411,6 +444,8 @@ class ForkEngine:
         else:
             agent_fn(client)
 
+        first_request, _ = parent_tape.exchange(spec.first_step)
+        first_mutated_response = spec.interventions[0].mutated_response
         return Branch(
             parent_tape=parent_tape,
             divergence_step=spec.first_step,
@@ -420,4 +455,8 @@ class ForkEngine:
             tail_recorded=fork_transport.tail_recorded,
             intervened_steps=spec.steps,
             branch_digest=compute_branch_digest(parent_tape, delta_tape, spec.steps),
+            parent_tape_digest=parent_tape.digest(),
+            divergence_exchange_digest=compute_divergence_exchange_digest(
+                first_request, first_mutated_response
+            ),
         )
