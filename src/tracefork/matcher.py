@@ -48,7 +48,18 @@ class RequestMatcher(Protocol):
     and compares ``stored_fingerprint(recorded_bytes)`` against
     ``live_fingerprint(replay_request)`` on the replay side. Implementations must
     keep the invariant ``stored_fingerprint(stored_request(R)) == live_fingerprint(R)``.
+
+    ``name`` is every built-in matcher's registry key (``"identity"``,
+    ``"gemini"``, ...) and doubles as the value ``Recorder``/``AsyncRecorder``
+    write into ``Tape.provenance["matcher_name"]`` (see ``tape.py``) and
+    ``ReplayVerifier`` compares it against at replay time (see ``replay.py``).
     """
+
+    @property
+    def name(self) -> str:
+        """This matcher's registry key (read-only: some implementations are
+        frozen dataclasses, e.g. ``CanonicalizingMatcher``)."""
+        ...
 
     def stored_request(self, request: httpx.Request) -> bytes:
         """The request bytes to persist in the tape for this exchange."""

@@ -16,6 +16,10 @@ subprocess spawn or direct `random`/clock reads that bypass `NondetSource` —
 see `boundary_guard.py`. Default is off; behavior is unchanged unless a caller
 opts in.
 
+Both recorders also populate `tape.provenance` (matcher_name/boundary_guard/
+nondet_mode — see `tape.py`) from values already in scope, a witness block
+`ReplayVerifier` can optionally check against the replay-time configuration.
+
 Usage (sync):
     with Recorder(client, agent_name="my-agent") as rec:
         result = my_agent(rec.client)
@@ -38,7 +42,7 @@ import httpx
 
 from .boundary_guard import BoundaryGuard
 from .config import TraceforkConfig
-from .matcher import RequestMatcher
+from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import RecordingNondet
 from .observability import traced_span
 from .redact import Redactor
@@ -163,6 +167,15 @@ class Recorder:
         if guard_enabled:
             self._guard = BoundaryGuard()
             self._guard.__enter__()
+
+        # Provenance/witness block (see tape.py): the matcher/boundary-guard/
+        # nondet-mode context this tape was recorded under, for `ReplayVerifier`'s
+        # opt-in mismatch check. Never fed into `digest()`.
+        self._tape.provenance = {
+            "matcher_name": (effective_matcher or IDENTITY_MATCHER).name,
+            "boundary_guard": str(guard_enabled).lower(),
+            "nondet_mode": "recording",
+        }
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -258,6 +271,13 @@ class AsyncRecorder:
         if guard_enabled:
             self._guard = BoundaryGuard()
             self._guard.__enter__()
+
+        # See the sync Recorder for the provenance/witness block contract.
+        self._tape.provenance = {
+            "matcher_name": (effective_matcher or IDENTITY_MATCHER).name,
+            "boundary_guard": str(guard_enabled).lower(),
+            "nondet_mode": "recording",
+        }
         return self
 
     async def __aexit__(self, *args: object) -> None:

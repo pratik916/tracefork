@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Recording provenance/witness block on `Tape`** (`tape.py`, `recorder.py`,
+  `replay.py`) — `Tape.provenance` (matcher fingerprint, boundary-guard state,
+  nondet mode) is a small `dict[str, str]` `Recorder`/`AsyncRecorder` populate
+  from values already in scope; tape format version bumps to 5 with a
+  `_decode_v5_binary`/`_upcast_v4_to_v5` pair mirroring the existing v3->v4
+  pattern, so a pre-v5 tape upcasts to `provenance={}` with an unchanged
+  digest. `ReplayVerifier.verify()` optionally compares the tape's recorded
+  `matcher_name` against the matcher actually used at replay and raises a
+  distinct `ProvenanceMismatchError` instead of a generic byte-diff
+  divergence — opt-in, firing only when `provenance` is non-empty. `digest()`
+  needs no change: like `boundary`/`agent_name`/`async_batches`, `provenance`
+  is never hashed into it.
+
 - **Persistent causal graph store: `causal_edges` table** (`store.py`,
   `cli.py`) — `TapeStore.save_blame_report()`/`save_shapley_report()` persist
   every `FlipRateResult`/`ShapleyResult` (flip_rate, Wilson CI, BH-FDR

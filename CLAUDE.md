@@ -94,7 +94,11 @@ The product lives in `src/tracefork/`:
   completion order of fully-overlapping fan-out); like `boundary`/`agent_name` it is
   persisted but **never** fed into `digest()` (the completion order is already fingerprinted
   by the `exchanges` list ordering), so every existing and every sequential/sync tape's
-  digest is byte-identical and v1/v2/v3 tapes upcast to an empty batch log. It's a JSON
+  digest is byte-identical and v1/v2/v3 tapes upcast to an empty batch log. **v5** adds `provenance`
+  (matcher_name/boundary_guard/nondet_mode, populated by
+  `Recorder`/`AsyncRecorder`); like `async_batches` it is metadata only,
+  **never** fed into `digest()`, and v1-v4 tapes upcast to `provenance={}`
+  — see `replay.py`'s opt-in `ProvenanceMismatchError` check. It's a JSON
   header + zstd blobs, **not pickle** — no
   arbitrary-code-execution risk. `open_sqlite()` is the one hardened connection factory
   (WAL, `synchronous=NORMAL`, `busy_timeout`, `foreign_keys=ON`); writers take `BEGIN
@@ -188,7 +192,11 @@ The product lives in `src/tracefork/`:
   and a `digest()` match per fixture — `tracefork replay --check <dir>`. `fixtures.py` holds
   the tiny deterministic agents the corpus is built from (kept out of `validate.py` so the
   corpus doesn't couple to fault-testing concerns); `scripts/gen_replay_fixtures.py`
-  (re)generates the corpus offline.
+  (re)generates the corpus offline. `ReplayVerifier.verify()` also runs an opt-in provenance
+  check: if the tape's `provenance` (see `tape.py`) is non-empty and recorded a
+  `matcher_name`, a mismatch against the matcher actually used at replay raises a distinct
+  `ProvenanceMismatchError` instead of a generic byte-diff divergence; empty provenance
+  skips the check entirely.
 - `certificate.py` — `ReplayCertificate`, a frozen dataclass whose `strength`
   (`UNVERIFIED`/`HASH_MATCHED`/`BIT_EXACT_FULL_REPLAY`) is constructor-enforced against its
   own `matched`/`total`/fingerprint fields (`ProofEnvelopeError` on overclaim) — a typed

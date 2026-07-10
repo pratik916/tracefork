@@ -97,6 +97,51 @@ def test_unsupported_future_version_raises():
         Tape.from_bytes(blob)
 
 
+def _encode_as_v4_without_provenance(t: Tape) -> bytes:
+    """Hand-construct a genuine pre-v5 (v4) envelope — no `provenance` key in
+    the header at all — to prove the v4->v5 upcaster defaults a pre-v5 tape's
+    `provenance` to `{}` with an unchanged digest, mirroring how the committed
+    v1 golden fixture proves the v1->v2 upcast below."""
+    import zstandard as zstd
+
+    from tracefork.tape import sha256_hex
+
+    zctx = zstd.ZstdCompressor(level=3)
+    order: list[str] = []
+    seen: dict[str, bytes] = {}
+    for req, resp in (*t.exchanges, *t.tool_exchanges):
+        for blob in (req, resp):
+            h = sha256_hex(blob)
+            if h not in seen:
+                seen[h] = blob
+                order.append(h)
+    header = {
+        "boundary": t.boundary,
+        "agent_name": t.agent_name,
+        "draws": t.draws,
+        "exchanges": [[sha256_hex(r), sha256_hex(s)] for r, s in t.exchanges],
+        "tool_exchanges": [[sha256_hex(r), sha256_hex(s)] for r, s in t.tool_exchanges],
+        "async_batches": t.async_batches,
+        "blob_hashes": order,
+        "content_redacted": t.content_redacted,
+    }
+    header_json = json.dumps(header).encode()
+    parts = [TAPE_MAGIC, struct.pack(">H", 4), struct.pack(">I", len(header_json)), header_json]
+    for h in order:
+        comp = zctx.compress(seen[h])
+        parts.append(struct.pack(">I", len(comp)))
+        parts.append(comp)
+    return b"".join(parts)
+
+
+def test_v4_tape_without_provenance_upcasts_to_empty_dict_unchanged_digest():
+    t = _golden_tape()
+    blob = _encode_as_v4_without_provenance(t)
+    restored = Tape.from_bytes(blob)
+    assert restored.provenance == {}
+    assert restored.digest() == t.digest() == GOLDEN_DIGEST
+
+
 # ── backward-compat: the committed golden legacy blob ───────────────────────
 
 
