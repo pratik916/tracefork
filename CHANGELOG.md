@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-10
+
+This release lands the full **P0 + P1 improvement backlog (28 items)**: hardening
+storage/replay durability, formalizing the causal-blame statistics, and extending the
+fork / counterfactual and time-travel-debugger surface — so record → $0 bit-exact
+replay → fork → causal blame is provable, not merely asserted. Every change is
+additive and preserves the load-bearing invariants (`Tape.digest()` byte-stability,
+offline/$0 suite, `NondetSource` as the sole nondeterminism seam, single-file
+`web/report.html`). Highlights: CAS-guarded tape writes, a typed `ReplayCertificate`
+proof envelope, a persistent `causal_edges` graph, crash-safe checkpointed recording,
+lossless portable bundles, confined fork/blame re-execution, a Wilson/BH tournament
+API, a DAG-aware Shapley estimator, a Monte-Carlo CI-calibration harness, fork-tree +
+causal-graph visualization, and Hypothesis property-based fuzz tests. Suite: 890 tests
+(+224), coverage 91.6%, bench discrimination 0.91 (10/11).
+
 ### Added
 
 - **Public plugin/extension API docs + stability policy**
@@ -643,7 +658,8 @@ everything below is additive around it: all engine internals stay byte-stable,
 - `src/tracefork_spike/` — the original Spike 0 that de-risked bit-exact, no-key replay
   within the declared determinism boundary.
 
-[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/pratik916/tracefork/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pratik916/tracefork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pratik916/tracefork/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pratik916/tracefork/releases/tag/v0.1.0
