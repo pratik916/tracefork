@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Monte Carlo coverage-calibration harness for blame's confidence intervals**
+  (`ci_calibration.py`, new) — closes the "no experiment proves a nominal 95%
+  CI actually achieves ~95% coverage" gap using the canonical Brown-Cai-
+  DasGupta (2001) methodology: fix a KNOWN ground-truth flip probability,
+  simulate thousands of Bernoulli replicates via `random.Random(seed)`,
+  compute the candidate interval for each via `blame.py`'s REAL
+  `proportion_ci`/`wilson_ci`/`CIMethod` (never a parallel reimplementation),
+  and measure empirical coverage against a documented tolerance band (4x the
+  Monte Carlo error of the coverage estimate itself, `monte_carlo_error`).
+  `simulate_coverage()` runs one `(method, true_p, n_trials)` cell;
+  `run_calibration()` sweeps the full grid into a `CalibrationReport`
+  mirroring `bench.py`'s dataclass-report shape (`.regressions()`,
+  `.all_within_tolerance()`). Confirms the qualitative ordering the
+  docstrings already claim — Clopper-Pearson is conservative
+  (coverage >= nominal) by construction, Wilson may dip slightly below
+  nominal at small n — and stays sane at the `true_p in {0, 1}` boundary via
+  `wilson_ci`'s documented boundary-snapping. Pure math, deterministic given
+  a seed, offline/$0, no fork/agent/API calls; standalone diagnostic, not
+  wired into any gate yet.
+
 - **Lossless tape+branch bundle export/import** (`bundle.py`, new; `store.py`,
   `cli.py`) — `tracefork bundle-export <run_id> [--output bundle.db]
   [--store store.db]` / `tracefork bundle-import <bundle.db> [--store

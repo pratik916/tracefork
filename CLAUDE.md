@@ -222,6 +222,21 @@ The product lives in `src/tracefork/`:
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and
   `rank()` raises `BudgetExceededError` if the estimate exceeds `budget_usd`.
+- `ci_calibration.py` — standalone Monte Carlo coverage-calibration harness for
+  `blame.py`'s proportion CIs: fix a KNOWN ground-truth flip probability,
+  simulate thousands of Bernoulli(`n_trials`) replicates over
+  `random.Random(seed)`, compute the candidate interval per replicate via
+  `blame.py`'s REAL `proportion_ci`/`wilson_ci`/`CIMethod` (never a parallel
+  reimplementation of the interval math), and measure empirical coverage —
+  the canonical Brown-Cai-DasGupta (2001) calibration methodology.
+  `simulate_coverage()` runs one `(method, true_p, n_trials)` cell;
+  `run_calibration()` sweeps a grid into a `CalibrationReport` mirroring
+  `bench.py`'s dataclass-report shape. `monte_carlo_error()` is the standard
+  error of the coverage estimate itself, which sets both the tolerance band
+  a cell is judged against and the minimum trustworthy replicate count
+  (`DEFAULT_N_REPEATS = 2000`). Pure math, deterministic given a seed,
+  offline/$0 — no fork/agent/API calls. Standalone diagnostic today (not
+  wired into any CLI command or gate).
 - `judge.py` — OPT-IN, additive on top of `blame.py`'s `Oracle` protocol (never imported by the
   default $0 path): `LLMJudgeOracle` is a binary-rubric judge with few-shot examples, a
   configurable ("cross-family") judge model with a self-judge guard, position-swap averaging
