@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CAS-guarded `save_tape`** (`store.py`) — reusing a `run_id` no longer
+  silently clobbers the previously-stored tape. `save_tape` now installs or
+  verifies-same-content (git's object-store model): identical content
+  (compared via `Tape.digest()`, never raw envelope bytes) is an idempotent
+  no-op; genuinely different content raises the new `TapeConflictError`
+  instead of overwriting, unless the new explicit `overwrite=True` is passed.
+  The check-then-write stays inside the existing `BEGIN IMMEDIATE` transaction
+  and write lock, so it's TOCTOU-free with no second lock added.
+
 ## [0.2.1] - 2026-07-03
 
 ### Added

@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from tracefork.constants import TAPE_FORMAT_VERSION, TAPE_MAGIC
-from tracefork.store import StorageBackend, TapeStore
+from tracefork.store import StorageBackend, TapeConflictError, TapeStore
 from tracefork.tape import Tape, open_sqlite
 
 # The exact digest of `_golden_tape()`, frozen at the pre-header format. If a change
@@ -195,6 +195,48 @@ def test_tape_store_satisfies_storage_backend_protocol(tmp_path):
     store = TapeStore(str(tmp_path / "store.db"))
     try:
         assert isinstance(store, StorageBackend)
+    finally:
+        store.close()
+
+
+def test_save_tape_same_run_id_identical_content_is_idempotent(tmp_path):
+    """Reusing a run_id with byte-identical content is a no-op success, not an
+    error — install-or-verify-same-content, the git object-store model."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        tape = _small_tape(b"same")
+        first = store.save_tape(tape, run_id="dup-run")
+        second = store.save_tape(_small_tape(b"same"), run_id="dup-run")
+        assert first == second == "dup-run"
+        assert store.load_tape("dup-run").exchanges == tape.exchanges
+    finally:
+        store.close()
+
+
+def test_save_tape_same_run_id_different_content_raises_conflict(tmp_path):
+    """Reusing a run_id with DIFFERENT content must raise, not silently clobber
+    the previously-stored tape."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        first_tape = _small_tape(b"first")
+        store.save_tape(first_tape, run_id="conflict-run")
+        with pytest.raises(TapeConflictError):
+            store.save_tape(_small_tape(b"second"), run_id="conflict-run")
+        # No partial clobber: the FIRST content must still be there.
+        assert store.load_tape("conflict-run").exchanges == first_tape.exchanges
+    finally:
+        store.close()
+
+
+def test_save_tape_overwrite_true_replaces_content(tmp_path):
+    """`overwrite=True` is the explicit escape hatch that actually replaces content."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(_small_tape(b"first"), run_id="overwrite-run")
+        new_tape = _small_tape(b"second")
+        run_id = store.save_tape(new_tape, run_id="overwrite-run", overwrite=True)
+        assert run_id == "overwrite-run"
+        assert store.load_tape("overwrite-run").exchanges == new_tape.exchanges
     finally:
         store.close()
 

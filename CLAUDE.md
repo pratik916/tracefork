@@ -110,6 +110,14 @@ The product lives in `src/tracefork/`:
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.
   `ForkEngine.fork()` re-runs the **same** agent that produced the tape.
 - `store.py` — `TapeStore`, SQLite persistence for tapes + the branch DAG.
+  `save_tape` is install-or-verify-same-content (git's object-store model):
+  reusing a `run_id` with byte-identical content (compared via `Tape.digest()`,
+  never raw bytes) is an idempotent no-op; genuinely different content raises
+  `TapeConflictError` instead of silently clobbering the prior tape, unless the
+  caller passes `overwrite=True`. The check-then-write stays inside the
+  existing `BEGIN IMMEDIATE`/`_write_lock` transaction — no second lock.
+  `save_branch` needs no equivalent: `branch_id` is always a fresh uuid, so a
+  real collision already raises `sqlite3.IntegrityError` today.
 - `blame.py` — `BlameEngine.rank()` forks each step `k` times, re-runs the agent, grades
   via an `Oracle`, counts flips vs. the parent outcome; `wilson_ci()` for intervals;
   `BudgetGovernor` estimates tail-call cost from `constants.PRICING_TABLE` before spend and

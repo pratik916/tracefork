@@ -15,6 +15,13 @@ from typing import Protocol, runtime_checkable
 from .tape import Tape, open_sqlite
 
 
+class TapeConflictError(RuntimeError):
+    """Raised by ``save_tape`` when a ``run_id`` is reused with content whose
+    ``Tape.digest()`` differs from what's already stored, and ``overwrite`` was
+    not set. Pass ``overwrite=True`` to replace the stored tape explicitly.
+    """
+
+
 @runtime_checkable
 class StorageBackend(Protocol):
     """The persistence interface ``TapeStore`` (SQLite) already satisfies.
@@ -26,7 +33,14 @@ class StorageBackend(Protocol):
     alters its behavior.
     """
 
-    def save_tape(self, tape: Tape, *, run_id: str | None = None, created_at: str = "") -> str: ...
+    def save_tape(
+        self,
+        tape: Tape,
+        *,
+        run_id: str | None = None,
+        created_at: str = "",
+        overwrite: bool = False,
+    ) -> str: ...
 
     def load_tape(self, run_id: str) -> Tape: ...
 
@@ -84,12 +98,41 @@ class TapeStore:
 
     # ── tapes ──────────────────────────────────────────────────────────────
 
-    def save_tape(self, tape: Tape, *, run_id: str | None = None, created_at: str = "") -> str:
+    def save_tape(
+        self,
+        tape: Tape,
+        *,
+        run_id: str | None = None,
+        created_at: str = "",
+        overwrite: bool = False,
+    ) -> str:
+        """Persist ``tape`` under ``run_id`` (a fresh id if omitted).
+
+        Install-or-verify-same-content, the same model git uses for its object
+        store: reusing a ``run_id`` whose stored content hashes identically
+        (via ``Tape.digest()``, never raw bytes — see module docstring on
+        ``TAPE_FORMAT_VERSION``) is an idempotent no-op that returns the same
+        ``run_id``. Reusing a ``run_id`` with genuinely different content raises
+        :class:`TapeConflictError` instead of silently clobbering the prior
+        tape, unless ``overwrite=True`` is passed to replace it explicitly.
+        """
         rid = run_id or uuid.uuid4().hex[:12]
         blob = tape.to_bytes()
         with self._write_lock:
             self._con.execute("BEGIN IMMEDIATE")
             try:
+                row = self._con.execute(
+                    "SELECT tape_bytes FROM tapes WHERE run_id=?", (rid,)
+                ).fetchone()
+                if row is not None and not overwrite:
+                    existing_digest = Tape.from_bytes(bytes(row[0])).digest()
+                    if existing_digest != tape.digest():
+                        raise TapeConflictError(
+                            f"run_id {rid!r} already stored with different content "
+                            "(digest mismatch); pass overwrite=True to replace it"
+                        )
+                    self._con.execute("COMMIT")
+                    return rid
                 self._con.execute(
                     "INSERT OR REPLACE INTO tapes(run_id, agent_name, tape_bytes, created_at) "
                     "VALUES(?,?,?,?)",
