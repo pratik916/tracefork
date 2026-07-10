@@ -36,9 +36,9 @@ uv run tracefork validate --check    # regression-gate vs experiments/validation
 uv run tracefork bench                # long-tape competing-fault discrimination benchmark
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, tournament, validate,
-                                      # bench, proxy, export, ingest, prune, coverage, bundle-export,
-                                      # bundle-import
+uv run tracefork --help              # replay, verify, fork, report, receipt, serve, blame, tournament,
+                                      # validate, bench, proxy, export, ingest, prune, coverage,
+                                      # bundle-export, bundle-import
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 bash scripts/e2e.sh                  # single-receipt gate: sync, lint, type-check, tests+coverage,
                                       # validate --check, replay --check, bench, build+twine, one PASS banner
@@ -432,6 +432,28 @@ The product lives in `src/tracefork/`:
   own field. Additive only: `VerificationResult.certificate` defaults to `None` and
   `ReplayVerifier.verify()` never sets it; `tracefork replay`/`verify` attach one and print
   an extra receipt line, every other caller is unaffected.
+- `receipt.py` — `build_trust_receipt(tape, replay=, validate_report=,
+  bench_report=)` is pure composition, no new engine logic: a JSON-safe,
+  in-toto-Statement-shaped (subject-by-digest + predicate, unsigned today,
+  upgradeable to DSSE later) dict combining `tape.digest()[:16]`/`boundary`/
+  `content_redacted` with already-computed evidence — a fresh ($0)
+  `ReplayVerifier.verify()` result (via `verification_result_to_dict`, the
+  same conversion `cli.py`'s `report` command already applies) plus the
+  parsed `validation_report.json`/`bench_report.json` dicts `validate`/
+  `bench` already write. Any evidence left `None` renders as an explicit
+  `{"available": False}` marker, never an omitted key or a defaulted
+  "verified" claim. `build_shield_json(receipt)` derives a Shields.io
+  endpoint-badge dict: green (`brightgreen`) only when replay is bit-exact
+  AND validate's `overall_top1_precision` clears the same 0.7 bar
+  `cli.py`'s `validate` command already prints against, red on a detected
+  replay divergence, yellow otherwise — a `content_redacted` tape (see
+  `redact.py` / tracefork-bge.20) never badges green regardless of the
+  other evidence. The badge message embeds the receipt's own fingerprint
+  prefix so a stale badge is visible at a glance. `tracefork receipt`
+  (mirrors `report`'s run_id/--tape/--agent loading) is the CLI surface,
+  writing `receipt.json` (+ an optional Shields.io badge JSON via
+  `--shield-output`); offline/$0 — it only re-runs replay and reads
+  already-generated JSON off disk, never triggers a live blame call.
 - `proxy.py` — `RecordProxy`/`ReplayProxy` (wired into FastAPI apps via
   `build_record_app`/`build_replay_app`) are a **localhost base-URL record/replay proxy**
   for clients the in-process httpx seam can't reach (curl, Node, Go, non-wrapped Python):

@@ -150,6 +150,7 @@ uv run tracefork --help
 | `diff    <run_id_a> <run_id_b> --step N [--store]` | Structural diff of two independent tapes at one step index (no parent/child relationship assumed). |
 | `blame   <run_id> --agent pkg.mod:fn [--k 10] [--budget 5.0]` | Rank every step by causal flip-rate with 95% CIs (re-runs the agent; budget-capped). |
 | `report  <run_id> \| --tape <tape> -o out.html` | Render the self-contained three-panel HTML report. |
+| `receipt <run_id> \| --tape <tape> [--agent pkg.mod:fn] -o receipt.json [--shield-output shield.json]` | Build a shareable, JSON-safe trust receipt (replay/validate/bench evidence, explicit when absent) + an optional Shields.io badge JSON. Offline/$0 — see [Trust receipt](#trust-receipt--badge-opt-in). |
 | `serve   [--store store.db] [--port 7777]` | Serve the live web UI (same-origin, 127.0.0.1). |
 | `validate [--k 3] [--n-runs 5] [--check]` | Run the fault-injection suite; `--check` gates against the committed report. |
 | `bench   [--k 3] [--m-samples 2]` | Long-tape competing-fault benchmark: does the coalition/temporal-Shapley engine discriminate *several* simultaneously planted causes, not just detect one? See [Validation scope](#validation-scope). |
@@ -494,6 +495,38 @@ with a small framing heuristic rather than a persisted header — see `proxy.py`
 docstring for the exact rule. Storage/hashing reuse `tape.py` unchanged, and the
 replay-time divergence check reuses `matcher.py`'s existing `RequestMatcher` protocol —
 nothing new was invented for either.
+
+## Trust receipt / badge (opt-in)
+
+`report.py`'s HTML panel and `validate`/`bench`'s JSON files are all *disk-only* —
+nothing about a run's evidence is easy to externalize into a README badge or hand to a
+third party. `tracefork receipt` composes exactly that evidence into one shareable,
+JSON-safe document — no new engine logic, purely already-computed numbers:
+
+```bash
+uv run tracefork receipt --tape run.tape.sqlite --agent pkg.mod:fn \
+  --validation-report validation_report.json --bench-report bench_report.json \
+  -o receipt.json --shield-output shield.json
+```
+
+`receipt.json` mirrors an [in-toto Statement](https://github.com/in-toto/attestation)
+shape (subject-by-digest + predicate) — unsigned today, upgradeable to a DSSE-signed
+envelope later without a rewrite: `tape_fingerprint` (`tape.digest()[:16]`), `boundary`,
+`content_redacted`, and a `replay`/`validate`/`bench` block per piece of evidence. Any
+evidence not supplied renders as an explicit `{"available": false}` marker — **never** an
+omitted key or a defaulted "verified" state; a receipt must never overstate what was
+actually checked. `--agent` re-runs replay fresh ($0, no network); `--validation-report`/
+`--bench-report` just read the JSON `validate`/`bench` already wrote to disk.
+
+`shield.json` (via `--shield-output`) is a [Shields.io endpoint-badge](https://shields.io/badges/endpoint-badge)
+JSON, so the same receipt can drive a live README badge: `brightgreen` only when replay
+was bit-exact **and** `validate`'s precision clears the same 0.7 bar `tracefork validate`
+already prints against; `red` on a detected replay divergence; `yellow` for every other
+case — including a `content_redacted` tape (see Redaction above), which must never badge
+green regardless of the other numbers. The badge message always embeds the receipt's own
+fingerprint prefix, so a stale badge (tape regenerated, badge not refreshed) is visible at
+a glance rather than silently misleading. Offline/$0 the whole way: `receipt` never
+triggers a live `blame` call.
 
 ## Validation scope
 

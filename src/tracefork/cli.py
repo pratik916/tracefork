@@ -2,8 +2,8 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, coalition-fork, diff, report, serve, blame,
-tournament, validate, bench, export, ingest, prune, proxy, coverage,
+Commands: replay, verify, fork, coalition-fork, diff, report, receipt, serve,
+blame, tournament, validate, bench, export, ingest, prune, proxy, coverage,
 bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show).
 """
 
@@ -458,6 +458,104 @@ def report(
     generate_report(tape, output, blame=blame_dict, replay=replay_data, branches=branches)
     typer.echo(f"Report written to {output}")
     _print_trust_lines(tape)
+
+
+@app.command()
+def receipt(
+    run_id: str = typer.Argument(None, help="run_id to build a trust receipt for (from store)"),
+    tape_path: Path = typer.Option(  # noqa: B008
+        None, "--tape", "-t", help="Path to a .tape.sqlite file"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    agent: str = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this tape "
+        "(pkg.mod:fn); re-replayed ($0) to embed replay evidence in the receipt",
+    ),
+    validation_report: Path = typer.Option(  # noqa: B008
+        Path("validation_report.json"),
+        "--validation-report",
+        help="Path to a validation_report.json (from `tracefork validate`); "
+        "embedded if it exists, an explicit absent marker otherwise",
+    ),
+    bench_report_path: Path = typer.Option(  # noqa: B008
+        Path("bench_report.json"),
+        "--bench-report",
+        help="Path to a bench_report.json (from `tracefork bench`); embedded "
+        "if it exists, an explicit absent marker otherwise",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        Path("receipt.json"), "--output", "-o", help="Output receipt JSON file"
+    ),
+    shield_output: Path = typer.Option(  # noqa: B008
+        None,
+        "--shield-output",
+        help="Optional output path for a Shields.io endpoint-badge JSON derived from the receipt",
+    ),
+) -> None:
+    """Build a shareable, JSON-safe trust receipt for a tape (tracefork-bge.26).
+
+    Composes already-computed evidence — a fresh ($0) replay via --agent,
+    plus `validation_report.json`/`bench_report.json` off disk if present —
+    into one attestation-shaped JSON document (see `tracefork.receipt`).
+    Missing evidence is always an explicit `{"available": false}` marker,
+    never silently omitted or defaulted to a verified state. Pass
+    `--shield-output` to also write a Shields.io-style endpoint-badge JSON
+    (green only when replay is bit-exact AND validate clears the precision
+    bar; a content-redacted tape never badges green).
+    """
+    import json as _json
+
+    from tracefork.receipt import build_shield_json, build_trust_receipt
+    from tracefork.tape import Tape
+
+    if tape_path:
+        tape = Tape.load(str(tape_path))
+    elif run_id:
+        from tracefork.store import TapeStore
+
+        db = TapeStore(str(store))
+        tape = db.load_tape(run_id)
+    else:
+        typer.echo("Provide a run_id or --tape path")
+        raise typer.Exit(1)
+
+    replay_result = None
+    if agent:
+        import importlib
+
+        from tracefork.replay import ReplayVerifier
+
+        module_path, fn_name = agent.rsplit(":", 1)
+        agent_fn = getattr(importlib.import_module(module_path), fn_name)
+        replay_result = ReplayVerifier(tape, agent_fn).verify()
+
+    validate_data = None
+    if validation_report.exists():
+        validate_data = _json.loads(validation_report.read_text())
+
+    bench_data = None
+    if bench_report_path.exists():
+        bench_data = _json.loads(bench_report_path.read_text())
+
+    receipt_dict = build_trust_receipt(
+        tape,
+        replay=replay_result,
+        validate_report=validate_data,
+        bench_report=bench_data,
+    )
+    output.write_text(_json.dumps(receipt_dict, indent=2))
+    typer.echo(f"  Receipt written to {output}")
+    typer.echo(f"  tape_fingerprint  {receipt_dict['tape_fingerprint']}")
+
+    if shield_output is not None:
+        shield_dict = build_shield_json(receipt_dict)
+        shield_output.write_text(_json.dumps(shield_dict, indent=2))
+        typer.echo(f"  Shield badge written to {shield_output}")
 
 
 @app.command()

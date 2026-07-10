@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shareable trust receipt + badge per run** (`receipt.py`, new
+  `tracefork receipt` CLI command) — composes a tape's already-computed
+  replay/validate/bench evidence into one JSON-safe, in-toto-Statement-shaped
+  trust receipt (`build_trust_receipt`), plus a Shields.io endpoint-badge JSON
+  (`build_shield_json`) that's green only when replay is bit-exact AND
+  validate clears the 0.7 precision bar `tracefork validate` already prints
+  against — red on a detected divergence, yellow otherwise (a
+  `content_redacted` tape never badges green). Missing evidence is always an
+  explicit `{"available": false}` marker, never an omitted key or a defaulted
+  "verified" claim. Pure composition — no new engine logic, offline/$0 (only
+  re-runs replay; reads `validation_report.json`/`bench_report.json` off disk
+  if present, never triggers a live blame call).
+
 - **Property-based fuzz tests (Hypothesis)** (`tests/test_property_tape.py`,
   `tests/test_property_matcher.py`, `pyproject.toml`'s `dev` extra) — generalize
   three of `tape.py`/`matcher.py`'s fixed-input pins into proven invariants over
