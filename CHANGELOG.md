@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Crash-safe incremental (checkpointed) recording** (`checkpoint.py`, new;
+  `transport.py`, `recorder.py`) — a crash before `tape.save()`/`to_bytes()`
+  previously lost the entire in-memory recording. `CheckpointWriter` durably
+  commits each recorded exchange to a local SQLite file (its own `BEGIN
+  IMMEDIATE`/`COMMIT`, reusing `tape.open_sqlite`'s hardened connection
+  factory) the instant it happens; `recover_checkpoint(path)` returns
+  `(tape, was_finalized)` — an honest linear prefix with `was_finalized=False`
+  if recovered mid-crash, or the complete tape with `was_finalized=True` after
+  a clean `finalize()`. Scoped to exchanges only, not nondeterminism draws — a
+  narrower-than-ideal but honest boundary, documented as such rather than
+  silently under-delivering; a cleanly finalized checkpoint still has the full
+  draw log via `Tape.save`. Wired in via an opt-in, keyword-only `on_exchange`
+  hook on `TraceforkTransport`/`AsyncTraceforkTransport` (fires once,
+  immediately after `tape.append_exchange`, in the record branch only —
+  never replay, never the async ordered-release/chaos machinery) and an
+  opt-in `checkpoint_path=` on `Recorder`/`AsyncRecorder` (constructs the
+  writer, passes its `append_exchange` as the hook, calls `finalize(tape)` on
+  a clean `__exit__`/`__aexit__` only). Both default to `None`/unset — every
+  existing zero-kwarg call site is byte-identical to before.
+
 - **Store-level fsck** (`fsck.py`, new; `store.py`, `cli.py`) — `tracefork
   verify --store <db>` runs a read-only, git-fsck-style structural check over
   a `TapeStore` database, distinct from replay-fidelity verification: every

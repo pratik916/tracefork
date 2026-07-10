@@ -42,6 +42,7 @@ from .adapters import (
     require_openai_agents,
 )
 from .boundary_guard import BoundaryGuard, BoundaryViolationError
+from .checkpoint import CheckpointWriter, recover_checkpoint
 from .config import RedactionPolicy, TraceforkConfig
 from .interop import (
     blame_report_from_json,
@@ -84,6 +85,8 @@ __all__ = [
     "RecordMode",
     "BoundaryGuard",
     "BoundaryViolationError",
+    "CheckpointWriter",
+    "recover_checkpoint",
     "ToolTransport",
     "ToolForkTransport",
     "NativeToolSeam",

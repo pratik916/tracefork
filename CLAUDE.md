@@ -84,6 +84,9 @@ The product lives in `src/tracefork/`:
   sync transport is untouched (stays positional). `chaos_release_order(tape, seed)` derives a
   seeded, physically-possible reordering of a recorded schedule (chaos-mode replay) for
   race/ordering-bug analysis; **do NOT** add awaits/ordering to the sequential or sync path.
+  A keyword-only `on_exchange` hook (opt-in, default `None`) fires once, immediately
+  after `tape.append_exchange`, in the record branch only — the crash-safe-checkpoint
+  seam (see `checkpoint.py`); never fired on replay or the async ordered-release/chaos path.
 - `tape.py` — `Tape` is content-addressed (sha256 blobs) + an ordered event log,
   persistable to SQLite, with a hash-chain `digest()` fingerprint. `to_bytes`/`from_bytes`
   emit a **versioned envelope** (`TAPE_MAGIC` + uint16 version, then a zstd + content-
@@ -109,6 +112,22 @@ The product lives in `src/tracefork/`:
   `datetime.datetime` (immutable C type in 3.12+, and a subclass breaks the SDK's pydantic
   schema builder) — agents needing deterministic clocks/random read `NondetSource` directly.
   Optionally wraps the recording window in a `BoundaryGuard` (see `boundary_guard.py`).
+  An opt-in `checkpoint_path=` wires a `CheckpointWriter` (see `checkpoint.py`) into
+  the transport's `on_exchange` hook so each exchange is durably committed as it
+  happens, and calls `finalize(tape)` on a clean `__exit__`/`__aexit__` only —
+  default `None` is byte-identical to before this flag existed.
+- `checkpoint.py` — `CheckpointWriter`/`recover_checkpoint`: opt-in crash-safe
+  incremental recording. Each recorded exchange is committed to a local SQLite
+  file with its own `BEGIN IMMEDIATE`/`COMMIT` (reusing `tape.open_sqlite`) the
+  instant it happens, so a crash before `tape.save()` loses at most the exchange
+  in flight, never the already-recorded prefix. `recover_checkpoint(path)` returns
+  `(tape, was_finalized)`: a mid-crash recovery is an honest linear prefix with
+  `was_finalized=False`; a clean `finalize(tape)` writes the complete tape (draws
+  included) via `Tape.save` and flips `was_finalized=True`. Scoped to exchanges
+  only, not draws — a narrower-than-ideal but honest, documented boundary. Wired
+  into `transport.py`'s record branch via a keyword-only `on_exchange` hook (never
+  fired on replay or the async ordered-release/chaos path) and into
+  `Recorder`/`AsyncRecorder` via `checkpoint_path=`.
 - `fork.py` — `ForkTransport` runs three phases: prefix-replay ($0, request asserted to
   match the parent), mutation-injection (same request, swapped response), tail-record (the
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.

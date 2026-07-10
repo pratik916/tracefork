@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections import deque
+from collections.abc import Callable
 
 import httpx
 
@@ -59,6 +60,7 @@ class TraceforkTransport(httpx.BaseTransport):
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
+        on_exchange: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -70,6 +72,10 @@ class TraceforkTransport(httpx.BaseTransport):
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         # Default is None: no redaction — the pre-redaction contract (byte-identical).
         self.redactor = redactor
+        # Opt-in checkpoint hook (see checkpoint.py): fired once, immediately
+        # after `tape.append_exchange`, in the record branch only. `None` is
+        # byte-identical to before this hook existed.
+        self.on_exchange = on_exchange
         self._i = 0
         self.matched = 0
 
@@ -78,7 +84,10 @@ class TraceforkTransport(httpx.BaseTransport):
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
-            self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
+            stored_req = self.matcher.stored_request(request)
+            self.tape.append_exchange(stored_req, stored_resp)
+            if self.on_exchange is not None:
+                self.on_exchange(stored_req, stored_resp)
             return httpx.Response(
                 inner_resp.status_code,
                 headers={
@@ -137,6 +146,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         release_order: list[int] | None = None,
+        on_exchange: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -146,6 +156,11 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         self.inner = inner
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self.redactor = redactor
+        # Opt-in checkpoint hook (see checkpoint.py): fired once, immediately
+        # after `tape.append_exchange`, in `_record` only — never `_replay` and
+        # never the ordered-release/chaos machinery. `None` is byte-identical
+        # to before this hook existed.
+        self.on_exchange = on_exchange
         self._release_order_param = release_order
         self._i = 0
         self.matched = 0
@@ -191,7 +206,10 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         resp_body = await inner_resp.aread()
 
         stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
-        self.tape.append_exchange(self.matcher.stored_request(request), stored_resp)
+        stored_req = self.matcher.stored_request(request)
+        self.tape.append_exchange(stored_req, stored_resp)
+        if self.on_exchange is not None:
+            self.on_exchange(stored_req, stored_resp)
         idx = len(self.tape.exchanges) - 1
 
         # Completion bookkeeping — atomic from here to the return (no await).
