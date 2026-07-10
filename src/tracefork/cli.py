@@ -57,7 +57,7 @@ def replay(
 
     result = ReplayVerifier(tape, agent_fn).verify()
     result.certificate = certificate_from_verification(result, tape)
-    _print_receipt(tape_path, result)
+    _print_receipt(tape_path, result, tape)
     raise typer.Exit(0 if result.bit_exact else 1)
 
 
@@ -118,7 +118,7 @@ def verify(
     agent_fn = getattr(mod, fn_name)
     result = ReplayVerifier(tape, agent_fn).verify()
     result.certificate = certificate_from_verification(result, tape)
-    _print_receipt(tape_path, result)
+    _print_receipt(tape_path, result, tape)
     raise typer.Exit(0 if result.bit_exact else 1)
 
 
@@ -235,6 +235,7 @@ def report(
 
     generate_report(tape, output, blame=blame_dict, replay=replay_data)
     typer.echo(f"Report written to {output}")
+    _print_trust_lines(tape)
 
 
 @app.command()
@@ -893,7 +894,7 @@ def coverage(
         typer.echo(f"  Report saved to {output}\n")
 
 
-def _print_receipt(tape_path: Path, result) -> None:
+def _print_receipt(tape_path: Path, result, tape) -> None:
     from tracefork.replay import DriftDoctor
 
     status = "PASS" if result.bit_exact else "FAIL"
@@ -910,4 +911,17 @@ def _print_receipt(tape_path: Path, result) -> None:
         cause = DriftDoctor.classify(result.divergence)
         typer.echo(f"  drift cause     {cause.value}")
         typer.echo(f"  at exchange     #{result.divergence.step_index}")
+    _print_trust_lines(tape)
     typer.echo("")
+
+
+def _print_trust_lines(tape) -> None:
+    """Print the two trust/provenance lines (`Tape.boundary`/`content_redacted`)
+    shared by the replay/verify receipt and the `report` command's terminal
+    echo (tracefork-bge.20) — a forensic-only or content-redacted tape must
+    not look identical to a verified one. Both fields are envelope metadata,
+    never fed into `Tape.digest()` (see `tape.py`); this is a trust warning,
+    not a pass/fail input.
+    """
+    typer.echo(f"  boundary        {tape.boundary}")
+    typer.echo(f"  content_redacted {tape.content_redacted}")

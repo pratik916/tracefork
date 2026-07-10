@@ -94,6 +94,13 @@ def _tape_to_data(tape, blame: dict | None = None, replay: dict | None = None) -
         "replay": replay or {},
         "created_at": "",
         "fingerprint": tape.digest()[:16],
+        # Trust/provenance metadata — never fed into `digest()` (see `tape.py`),
+        # so surfacing it here is purely informational. `boundary` distinguishes
+        # a bit-exact-replayable tape (`constants.BOUNDARY_V1`) from a
+        # forensic-only one (`OTEL_INGESTED_BOUNDARY`/`PROXY_BOUNDARY`); the web
+        # UI renders both as a trust badge (see `web/report.html`'s
+        # `renderProvenanceBadges`).
+        "boundary": tape.boundary,
         "content_redacted": tape.content_redacted,
     }
 

@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Boundary/provenance/redaction trust badge in report + CLI** (`report.py`,
+  `cli.py`, `web/report.html`) — `Tape.boundary` and `Tape.content_redacted`
+  were persisted but never surfaced, so a forensic-only or content-redacted
+  tape looked identical to a verified one. `_tape_to_data()` now embeds
+  `boundary` alongside the existing `content_redacted`; `_print_receipt`
+  (replay/verify) and the `report` command's terminal echo now print both as
+  two trust lines via a shared `_print_trust_lines` helper; `web/report.html`
+  gains a header badge (`renderProvenanceBadges`, SLSA-style leveled trust,
+  not a single verified/unverified boolean): `BOUNDARY_V1` renders green
+  ("verified boundary", reusing `.tag-pass`), `OTEL_INGESTED_BOUNDARY`/
+  `PROXY_BOUNDARY` render a new yellow `.tag-warn` ("forensic-only boundary"),
+  and `content_redacted=true` renders a separate orange `.tag-redacted`
+  warning. Both fields stay forensic-only — neither is fed into
+  `Tape.digest()` — the badge is a trust warning, not a pass/fail input.
+  Additive only: `_print_receipt` still has exactly two call sites (replay,
+  verify), `web/report.html` stays a single dependency-free file.
+
 - **Determinism-coverage report** (`coverage.py`, `cli.py`) — `tracefork
   coverage <tape> [--agent-source FILE]` turns "is this replay actually
   complete?" into a checkable artifact: `tape_draw_coverage` tallies

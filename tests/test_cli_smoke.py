@@ -72,6 +72,20 @@ def test_cli_replay_missing_args_is_the_documented_nonzero_exit():
     assert "Provide a tape path and --agent" in result.output
 
 
+def test_cli_replay_receipt_includes_boundary_and_redaction_lines(tmp_path):
+    """The receipt must surface `Tape.boundary`/`content_redacted` (tracefork-bge.20)
+    — a forensic-only or content-redacted tape must not look identical to a
+    verified one in the terminal output."""
+    tape_path = tmp_path / "run.tape.sqlite"
+    _record_clean_tape().save(str(tape_path))
+    result = runner.invoke(
+        app, ["replay", str(tape_path), "--agent", "tracefork.validate:synthetic_agent"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "boundary" in result.output
+    assert "content_redacted" in result.output
+
+
 # ── verify ───────────────────────────────────────────────────────────────
 
 
@@ -98,6 +112,19 @@ def test_cli_verify_corpus_no_tapes_is_the_documented_nonzero_exit():
     result = runner.invoke(app, ["verify", "--corpus"])
     assert result.exit_code == 1
     assert "No tapes found" in result.output
+
+
+def test_cli_verify_receipt_includes_boundary_and_redaction_lines(tmp_path):
+    """Same receipt lines as `replay` (tracefork-bge.20) — `_print_receipt` has
+    exactly two call sites (replay, verify) and both must carry them."""
+    tape_path = tmp_path / "run.tape.sqlite"
+    _record_clean_tape().save(str(tape_path))
+    result = runner.invoke(
+        app, ["verify", str(tape_path), "--agent", "tracefork.validate:synthetic_agent"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "boundary" in result.output
+    assert "content_redacted" in result.output
 
 
 # ── fork ─────────────────────────────────────────────────────────────────
@@ -172,6 +199,18 @@ def test_cli_report_with_agent_embeds_replay_receipt(tmp_path):
 def test_cli_report_without_run_id_or_tape_is_the_documented_nonzero_exit(tmp_path):
     result = runner.invoke(app, ["report", "--store", str(tmp_path / "store.db")])
     assert result.exit_code == 1
+
+
+def test_cli_report_terminal_echo_includes_boundary_and_redaction_lines(tmp_path):
+    """`report`'s terminal echo must carry the same two trust lines as the
+    replay/verify receipt (tracefork-bge.20), even though it doesn't go
+    through `_print_receipt` (that helper has exactly two call sites)."""
+    db, run_id = _seeded_store(tmp_path)
+    out = tmp_path / "report.html"
+    result = runner.invoke(app, ["report", run_id, "--store", str(db), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "boundary" in result.output
+    assert "content_redacted" in result.output
 
 
 # ── serve ────────────────────────────────────────────────────────────────

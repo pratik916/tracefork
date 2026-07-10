@@ -68,6 +68,12 @@
   .tag-pass { background: #1a3a1a; color: var(--green); cursor: default; }
   .tag-fail { background: #3a1a1a; color: var(--red); cursor: pointer; }
   .tag-fail:hover { text-decoration: underline; }
+
+  /* Boundary/provenance/redaction trust badges (see renderProvenanceBadges) --
+     verified boundary reuses .tag-pass above; forensic-only and redacted-content
+     are distinct warning tags, never a pass/fail input. */
+  .tag-warn { background: #3a3010; color: var(--yellow); cursor: default; }
+  .tag-redacted { background: #3a2a10; color: var(--orange); cursor: default; }
   .nav-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
              font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
   .nav-btn:hover { border-color: var(--blue); }
@@ -93,6 +99,8 @@
   <span class="run-meta" id="run-meta">loading…</span>
   <span class="tag" id="mode-tag"></span>
   <span class="tag" id="replay-tag" onclick="jumpToDivergence()" title="click to rewind to the diverging step"></span>
+  <span class="tag" id="boundary-tag"></span>
+  <span class="tag" id="redacted-tag"></span>
 </header>
 <div class="layout">
   <div class="panel" id="timeline-panel">
@@ -172,6 +180,45 @@ function renderReplayBadge(data) {
     const step = replay.divergence ? replay.divergence.step_index : '?';
     el.textContent = `replay diverged @ step ${step}`;
     el.className = 'tag tag-fail';
+  }
+}
+
+// Boundary string values mirror `constants.py`'s BOUNDARY_V1 /
+// OTEL_INGESTED_BOUNDARY / PROXY_BOUNDARY -- keep in sync if those are ever
+// renamed. SLSA-style leveled trust (not a single verified/unverified
+// boolean): a single-process tape is bit-exact-replay-verified; an
+// OTel-ingested or proxy-recorded tape is forensic-only (documented
+// non-bit-exact, see each module's docstring). `content_redacted` is a
+// SEPARATE, orthogonal warning -- forensic-only, never fed into `digest()`,
+// never a pass/fail input.
+const _VERIFIED_BOUNDARY = 'single-process-asyncio-v1';
+
+function renderProvenanceBadges(data) {
+  const boundaryEl = document.getElementById('boundary-tag');
+  const boundary = data.boundary || '';
+  if (boundary === _VERIFIED_BOUNDARY) {
+    boundaryEl.textContent = 'verified boundary';
+    boundaryEl.className = 'tag tag-pass';
+    boundaryEl.title = 'single-process, bit-exact-replay-verified determinism boundary';
+  } else if (boundary) {
+    boundaryEl.textContent = `forensic-only boundary (${escape(boundary)})`;
+    boundaryEl.className = 'tag tag-warn';
+    boundaryEl.title = 'recorded outside the full determinism boundary — not guaranteed bit-exact replay';
+  } else {
+    boundaryEl.textContent = '';
+    boundaryEl.className = 'tag';
+    boundaryEl.title = '';
+  }
+
+  const redactedEl = document.getElementById('redacted-tag');
+  if (data.content_redacted) {
+    redactedEl.textContent = 'content redacted';
+    redactedEl.className = 'tag tag-redacted';
+    redactedEl.title = 'forensic-only: redacted message content is not guaranteed bit-exact-replayable';
+  } else {
+    redactedEl.textContent = '';
+    redactedEl.className = 'tag';
+    redactedEl.title = '';
   }
 }
 
@@ -298,6 +345,7 @@ function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
     renderTimeline(DATA);
     renderBlame(DATA);
     renderReplayBadge(DATA);
+    renderProvenanceBadges(DATA);
     if (DATA.exchanges.length > 0) selectExchange(0);
   } catch (e) {
     document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;

@@ -8,7 +8,8 @@ import anthropic
 import httpx
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
-from tracefork.report import generate_report
+from tracefork.constants import BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUNDARY
+from tracefork.report import _tape_to_data, generate_report
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -235,3 +236,50 @@ def test_report_escapes_script_breakout_in_divergence_diff():
         data = _extract_data(content)
         live_value = data["replay"]["divergence"]["diag"]["field_diffs"][0]["live"]
         assert live_value == "</script><img src=x onerror=alert(1)>"
+
+
+# ── boundary / provenance / redaction badge (tracefork-bge.20) ─────────────
+
+
+def test_tape_to_data_emits_correct_boundary_for_all_three_boundary_constants():
+    """`_tape_to_data` must surface `tape.boundary` verbatim so the report UI can
+    render a trust badge — a forensic-only tape must not look identical to a
+    verified one (see `constants.py`'s boundary markers)."""
+    for boundary in (BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUNDARY):
+        tape = _make_tape()
+        tape.boundary = boundary
+        data = _tape_to_data(tape)
+        assert data["boundary"] == boundary
+
+
+def test_report_html_content_redacted_true_drives_the_redaction_badge():
+    """A `content_redacted=True` tape must embed that flag in the injected data
+    AND ship the client-side badge wiring (element + renderer) that turns it
+    into a visible warning — content_redacted stays forensic-only (never fed
+    into `digest()`), so the report is the only place a viewer learns about it."""
+    tape = _make_tape()
+    tape.content_redacted = True
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        content = out.read_text()
+        data = _extract_data(content)
+        assert data["content_redacted"] is True
+        # Structural wiring: the badge element and its renderer must exist in
+        # the single-file template so the injected flag actually reaches the UI.
+        assert 'id="redacted-tag"' in content
+        assert 'id="boundary-tag"' in content
+        assert "renderProvenanceBadges" in content
+
+
+def test_report_html_boundary_badge_wiring_present_for_forensic_boundary():
+    """A forensic-only boundary (OTel-ingested / proxy-recorded) must not be
+    silently indistinguishable from a verified `BOUNDARY_V1` tape in the report."""
+    tape = _make_tape()
+    tape.boundary = PROXY_BOUNDARY
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out)
+        data = _extract_data(content := out.read_text())
+        assert data["boundary"] == PROXY_BOUNDARY
+        assert "renderProvenanceBadges" in content
