@@ -36,8 +36,9 @@ uv run tracefork validate --check    # regression-gate vs experiments/validation
 uv run tracefork bench                # long-tape competing-fault discrimination benchmark
 uv run python examples/demo_report.py   # write examples/demo_report.html (the README screenshot)
 uv run python -m tracefork_spike     # the original Spike 0 bit-exact replay receipt
-uv run tracefork --help              # replay, verify, fork, report, serve, blame, validate, bench, proxy,
-                                      # export, ingest, prune, coverage, bundle-export, bundle-import
+uv run tracefork --help              # replay, verify, fork, report, serve, blame, tournament, validate,
+                                      # bench, proxy, export, ingest, prune, coverage, bundle-export,
+                                      # bundle-import
 uv run tracefork replay --check experiments/replay_fixtures   # replay-as-regression gate
 bash scripts/e2e.sh                  # single-receipt gate: sync, lint, type-check, tests+coverage,
                                       # validate --check, replay --check, bench, build+twine, one PASS banner
@@ -265,6 +266,27 @@ The product lives in `src/tracefork/`:
   ~14.2% log-based step-attribution anchor as context only — no external dataset is ever
   downloaded (offline/$0 invariant applies here too). Zero-diff over the engines: both
   modules only call `blame.py`'s existing public API.
+- `tournament.py` — `TournamentEngine.run()` ranks N pre-specified `Variant`
+  candidate continuations at ONE fixed `step_index` (a different axis from
+  `blame.py`'s per-step-across-runs comparison): each variant is forked `k`
+  times via `ForkEngine.fork` (unchanged, zero-diff), graded by an `Oracle`,
+  and scored by its own success rate (no baseline to flip away from) with a
+  Wilson CI (`blame.proportion_ci`, reused). `TournamentEngine.estimate`
+  prices the run via `BudgetGovernor.estimate` (never a parallel cost model,
+  reused verbatim via probe tapes shaped for this engine's "N variants at one
+  step" cost, unlike blame's "every step once") BEFORE any trial runs, and
+  `run()` raises `blame.py`'s own `BudgetExceededError` if that estimate
+  exceeds `budget_usd`. Forking the tape's LAST exchange has an empty tail —
+  `ForkTransport` never calls its inner transport there — so the common
+  "best-of-N final answers" comparison is genuinely $0. A winner is declared
+  only when the top variant is significantly better than EVERY runner-up:
+  each runner-up's trial count is tested one-sided (`blame.binom_sf_ge`,
+  reused) against the top's observed rate as the null, and the p-values are
+  jointly corrected via Benjamini-Hochberg (`blame.benjamini_hochberg`,
+  reused) at `fdr_q` — so two variants with the same underlying success
+  probability don't produce a spurious winner. `tracefork tournament` is the
+  CLI surface (new command only; `report.py`/`server.py` untouched — a
+  tournament result is a new artifact, not yet wired into the report UI).
 - `report.py` / `server.py` / `web/report.html` — the single-file, dependency-free
   three-panel UI; `report.py` injects tape JSON (HTML-escaped against `</script>`
   breakout), `server.py` is FastAPI same-origin (no CORS, binds 127.0.0.1).
@@ -337,7 +359,7 @@ The product lives in `src/tracefork/`:
   violation regardless of guard state). `tracefork coverage <tape>
   [--agent-source FILE]` is the CLI surface. Read-only: never touches
   `Tape.digest()`/`to_bytes()`/`from_bytes()`.
-- `cli.py` — Typer entry point for all fifteen commands.
+- `cli.py` — Typer entry point for all sixteen commands.
 
 `src/tracefork_spike/` holds the original Spike 0 (`fake_llm.py`, `agent.py`, `spike.py`):
 record → save → load → replay → verify + negative control, with its own tests.
@@ -351,7 +373,7 @@ sharing a tape with LLM exchanges, redaction, OTel/OpenInference export→ingest
 plugin-registry resolution, `BoundaryGuard`, `divergence.py` diagnostics, the
 base-URL proxy, `bench`, and the Bedrock/OpenAI/Gemini provider seams with their
 documented scope boundaries called out explicitly, not papered over) — all
-offline/$0. `tests/test_cli_smoke.py` invokes every one of the fifteen CLI
+offline/$0. `tests/test_cli_smoke.py` invokes every one of the sixteen CLI
 subcommands and asserts its real exit code; `serve`/`proxy record`/`proxy replay`
 call `uvicorn.run()` directly, so those are driven by monkeypatching `uvicorn.run`
 to a no-op (proving the CLI's own wiring without binding a socket) plus a

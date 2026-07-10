@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tournament API: rank N candidate continuations at one fixed step**
+  (`tournament.py`, new) — `TournamentEngine.run()` forks each `Variant` `k`
+  times at the same `step_index` (best-of-N argmax, but statistically
+  validated), reusing `ForkEngine.fork` unchanged, `BudgetGovernor.estimate`/
+  `BudgetExceededError` for a pre-spend budget gate, and `blame.py`'s Wilson
+  CI (`proportion_ci`)/`binom_sf_ge`/`benjamini_hochberg` for scoring — never
+  a parallel cost model or CI reimplementation. A winner is declared only
+  when the top variant is significantly better than EVERY runner-up (each
+  tested one-sided against the top's observed rate, jointly BH-corrected at
+  `fdr_q`), so two indistinguishable variants never produce a spurious
+  winner. Forking the tape's LAST exchange has an empty tail — the common
+  "best-of-N final answers" case is genuinely $0. New `tracefork tournament`
+  CLI command prints a ranked table (variant, score, Wilson CI, q-value,
+  winner flag) and writes `tournament_<run_id>.json`.
+
 - **Monte Carlo coverage-calibration harness for blame's confidence intervals**
   (`ci_calibration.py`, new) — closes the "no experiment proves a nominal 95%
   CI actually achieves ~95% coverage" gap using the canonical Brown-Cai-

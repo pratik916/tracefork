@@ -2,8 +2,8 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, report, serve, blame, validate, bench, export,
-ingest, prune, proxy, coverage, bundle-export, bundle-import.
+Commands: replay, verify, fork, report, serve, blame, tournament, validate,
+bench, export, ingest, prune, proxy, coverage, bundle-export, bundle-import.
 """
 
 from __future__ import annotations
@@ -1010,6 +1010,171 @@ def coverage(
             )
         )
         typer.echo(f"  Report saved to {output}\n")
+
+
+@app.command()
+def tournament(
+    run_id: str = typer.Argument(..., help="run_id to analyze"),
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this run; "
+        "it is re-run for each variant trial and must be deterministic up to "
+        "the fixed step",
+    ),
+    candidate: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--candidate",
+        help="A 'name:text' candidate continuation, repeatable (>=1 required) -- "
+        "'text' becomes the forced response at --step",
+    ),
+    step: int = typer.Option(
+        -1,
+        "--step",
+        help="Fixed step index to compare candidates at (default: the tape's "
+        "last exchange -- a $0 comparison, no tail calls)",
+    ),
+    k: int = typer.Option(10, "--k", help="Forks per candidate variant"),
+    budget: float = typer.Option(_DEFAULT_CONFIG.budget_usd, "--budget", help="USD spend cap"),
+    success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
+    failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
+    ci_method: str = typer.Option(
+        "wilson", "--ci-method", help="Proportion CI: wilson|jeffreys|clopper_pearson|agresti_coull"
+    ),
+    confidence: float = typer.Option(0.95, "--confidence", help="CI confidence level (0,1)"),
+    fdr_q: float = typer.Option(
+        0.10, "--fdr-q", help="Benjamini-Hochberg false-discovery-rate for the winner test"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Rank pre-specified candidate continuations at one fixed step.
+
+    Unlike `blame` (which compares a single perturbation against the parent
+    outcome, across every step), a tournament compares N candidate responses
+    against EACH OTHER at one step you choose, ranked by success rate with a
+    Wilson CI and a Benjamini-Hochberg-corrected significance test of the top
+    candidate against every runner-up. When `--step` targets the tape's last
+    exchange (the default), the comparison is $0 -- see `tournament.py`'s
+    module docstring.
+    """
+    if not run_id or not all(c.isalnum() or c in "-_" for c in run_id):
+        raise typer.BadParameter("run_id must be alphanumeric (with '-' or '_')")
+
+    import importlib
+    import json
+    import os
+
+    from tracefork.blame import BudgetExceededError, CIMethod, StringMatchOracle
+    from tracefork.store import TapeStore
+    from tracefork.tournament import TournamentEngine, Variant
+    from tracefork.wire import make_text_response
+
+    try:
+        method = CIMethod(ci_method)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    db = TapeStore(str(store))
+    tape = db.load_tape(run_id)
+
+    step_index = step if step >= 0 else len(tape.exchanges) - 1
+    if step_index < 0 or step_index >= len(tape.exchanges):
+        raise typer.BadParameter(f"--step {step_index} out of range [0, {len(tape.exchanges)})")
+
+    variants = []
+    for spec in candidate:
+        name, sep, text = spec.partition(":")
+        if not sep or not name or not text:
+            raise typer.BadParameter(f"--candidate must be 'name:text', got {spec!r}")
+        variants.append(Variant(name=name, response=make_text_response(text)))
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    agent_fn = getattr(importlib.import_module(module_path), fn_name)
+
+    oracle = StringMatchOracle(success_re=success_re, failure_re=failure_re)
+    est = TournamentEngine.estimate(tape, step_index=step_index, n_variants=len(variants), k=k)
+
+    typer.echo(f"\n  Tournament estimate: {est.n_forks} forks, ~${est.est_usd:.2f}")
+    if est.est_usd > budget:
+        typer.echo(f"  Estimated cost ${est.est_usd:.2f} exceeds budget ${budget:.2f}.")
+        typer.echo("  Use --budget to increase or --k to reduce trials.")
+        raise typer.Exit(1)
+
+    try:
+        report = TournamentEngine.run(
+            tape,
+            step_index=step_index,
+            variants=variants,
+            agent_fn=agent_fn,
+            oracle=oracle,
+            k=k,
+            budget_usd=budget,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            ci_method=method,
+            confidence=confidence,
+            fdr_q=fdr_q,
+        )
+    except BudgetExceededError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+
+    ci_pct = round(confidence * 100)
+    typer.echo(
+        f"\n  run-{run_id} · tournament at step-{step_index} · k={k} · "
+        f"{report.total_forks} forks · {method.value} {ci_pct}% CI\n"
+    )
+    ci_hdr = f"{ci_pct}% CI"
+    typer.echo(f"  {'rank':<5} {'variant':<16} {'score':<10} {ci_hdr:<22} {'q-value':<10} winner")
+    typer.echo(f"  {'─' * 76}")
+    for rank, r in enumerate(report.results, 1):
+        ci_str = f"[{r.ci_lo:.2f}, {r.ci_hi:.2f}]"
+        flag = " *" if r.significant_winner else ""
+        typer.echo(
+            f"  {rank:<5} {r.name:<16} {r.score:<10.2f} {ci_str:<22} {r.q_value:<10.3g}{flag}"
+        )
+
+    winner = report.winner()
+    if winner is not None:
+        typer.echo(f"\n  winner (FDR q≤{fdr_q}): {winner.name}")
+    else:
+        typer.echo(f"\n  winner (FDR q≤{fdr_q}): (no candidate significantly beats every other)")
+    typer.echo("")
+
+    report_path = Path(f"tournament_{run_id}.json")
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "step_index": step_index,
+                "k": k,
+                "ci_method": method.value,
+                "confidence": confidence,
+                "fdr_q": fdr_q,
+                "winner": winner.name if winner is not None else None,
+                "results": [
+                    {
+                        "name": r.name,
+                        "score": r.score,
+                        "ci_lo": r.ci_lo,
+                        "ci_hi": r.ci_hi,
+                        "successes": r.successes,
+                        "trials": r.trials,
+                        "valid_trials": r.valid_trials,
+                        "undefined": r.undefined,
+                        "divergences": r.divergences,
+                        "q_value": r.q_value,
+                        "significant_winner": r.significant_winner,
+                    }
+                    for r in report.results
+                ],
+            },
+            indent=2,
+        )
+    )
+    typer.echo(f"  Report saved to {report_path}")
 
 
 def _print_receipt(tape_path: Path, result, tape) -> None:
