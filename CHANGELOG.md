@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tracefork diff`: generalized point-to-point / fork-branch diff**
+  (`diff.py`, new module; zero changes to `divergence.py`'s public surface) —
+  a real structural diff over a RANGE of steps, built entirely on
+  `divergence.py`'s existing single-step primitive (`diff_json`/
+  `diff_request_bytes`/`MISSING`). `branch_diff(parent_tape, branch,
+  from_step=None)` walks a branch's `delta_tape` against its parent from the
+  divergence step onward and accepts either a live `fork.Branch` (as
+  returned by `ForkEngine.fork()`/`fork_coalition()`) or a store-reloaded
+  plain `Tape` + `divergence_step` — decoupled from `TapeStore` itself, so
+  the same function serves both callers. `tape_diff(tape_a, tape_b, step)`
+  compares two independent tapes at one step index with no parent/child
+  relationship assumed. A step present on only one side (most commonly a
+  `delta_tape` shorter than the parent's tail once a mutation changed the
+  agent's trajectory) reports via the same `MISSING` sentinel rather than
+  raising. New `tracefork diff <parent_run_id> <branch_id> [--store]`
+  command prints a PASS/FAIL-per-step receipt (parent-vs-branch mode) or,
+  with `--step N`, diffs `<run_id_a> <run_id_b>` at that single step
+  (tape-vs-tape mode); exits 0 iff every compared step is identical.
+
 - **`tracefork coalition-fork`: coalition-forking as a public what-if CLI DSL**
   (`cli.py`, new command; zero new engine code) — promotes the already-tested
   `CoalitionSpec`/`ForkEngine.fork_coalition` to a documented CLI surface: a

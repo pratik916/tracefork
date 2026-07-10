@@ -311,3 +311,35 @@ def test_report_with_blame_report_embeds_trust_flags(tmp_path):
     assert step0["divergence_rate"] == 0.4
     assert step0["undefined"] == 4
     assert step0["trustworthy"] is False
+
+
+# ── diff (point-to-point / fork-branch diff) ─────────────────────────────────
+
+
+def test_diff_branch_prints_receipt_and_exits_0_for_identical_delta(tmp_path):
+    """A branch whose delta_tape re-records the SAME exchanges as the parent's
+    tail (a no-op fork) diffs identical — a clean receipt, exit 0."""
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    tape = _record_clean_tape()
+    run_id = store.save_tape(tape, run_id="parentrun")
+    delta_tape = Tape(boundary=tape.boundary, agent_name=tape.agent_name)
+    delta_tape.append_exchange(*tape.exchange(1))
+    branch_id = store.save_branch(parent_run_id=run_id, divergence_step=1, delta_tape=delta_tape)
+    store.close()
+
+    result = runner.invoke(app, ["diff", run_id, branch_id, "--store", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "identical" in result.output.lower() or "0 changed" in result.output.lower()
+
+
+def test_diff_step_mode_compares_two_tapes_at_one_step(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    tape = _record_clean_tape()
+    run_a = store.save_tape(tape, run_id="run_a")
+    run_b = store.save_tape(tape, run_id="run_b")
+    store.close()
+
+    result = runner.invoke(app, ["diff", run_a, run_b, "--step", "0", "--store", str(db)])
+    assert result.exit_code == 0, result.output

@@ -2,7 +2,7 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, coalition-fork, report, serve, blame,
+Commands: replay, verify, fork, coalition-fork, diff, report, serve, blame,
 tournament, validate, bench, export, ingest, prune, proxy, coverage,
 bundle-export, bundle-import.
 """
@@ -312,6 +312,74 @@ def coalition_fork(
     typer.echo(f"  intervened_steps {list(branch.intervened_steps)}")
     typer.echo(f"  delta_exchanges  {len(branch.delta_tape.exchanges)}")
     typer.echo(f"  description      {desc or '(none)'}\n")
+
+
+@app.command()
+def diff(
+    id_a: str = typer.Argument(..., help="parent run_id (default mode), or run_id_a (with --step)"),
+    id_b: str = typer.Argument(..., help="branch_id (default mode), or run_id_b (with --step)"),
+    step: int = typer.Option(
+        None,
+        "--step",
+        help="Compare id_a/id_b as two independent tapes at this single step "
+        "index, instead of the default parent-run-vs-branch mode",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Structural diff: a branch against its parent (default), or two tapes at
+    one step (--step). Reuses `divergence.py`'s structural-diff primitive,
+    walked over a range of steps -- see `diff.py`."""
+    from tracefork.diff import branch_diff, tape_diff
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        if step is not None:
+            tape_a = db.load_tape(id_a)
+            tape_b = db.load_tape(id_b)
+            step_diffs = (tape_diff(tape_a, tape_b, step),)
+            heading = f"tracefork diff {id_a} {id_b} --step {step}"
+        else:
+            parent_tape = db.load_tape(id_a)
+            branch_row = db.load_branch(id_b)
+            range_diff = branch_diff(
+                parent_tape,
+                branch_row["delta_tape"],
+                divergence_step=branch_row["divergence_step"],
+            )
+            step_diffs = range_diff.steps
+            heading = f"tracefork diff {id_a} {id_b}"
+    finally:
+        db.close()
+
+    _print_diff_receipt(heading, step_diffs)
+    n_changed = sum(1 for s in step_diffs if s.changed)
+    raise typer.Exit(0 if n_changed == 0 else 1)
+
+
+def _print_diff_receipt(heading: str, step_diffs) -> None:
+    """Operator-facing receipt for `diff` — one line per step, PASS when
+    unchanged, FAIL (with the field-diff count) otherwise. Mirrors
+    `_run_replay_check`'s PASS/FAIL-per-row style."""
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    for s in step_diffs:
+        if s.changed:
+            n = len(s.request_diffs) + len(s.response_diffs)
+            typer.echo(f"  [FAIL] step {s.step_index:<4} {n} field(s) differ")
+            for d in s.request_diffs:
+                typer.echo(f"           request  {d.path}: {d.recorded!r} -> {d.live!r}")
+            for d in s.response_diffs:
+                typer.echo(f"           response {d.path}: {d.recorded!r} -> {d.live!r}")
+        else:
+            typer.echo(f"  [PASS] step {s.step_index:<4} identical")
+    n_changed = sum(1 for s in step_diffs if s.changed)
+    if n_changed == 0:
+        typer.echo(f"\n  {len(step_diffs)}/{len(step_diffs)} step(s) identical\n")
+    else:
+        typer.echo(f"\n  {n_changed}/{len(step_diffs)} step(s) changed\n")
 
 
 @app.command()

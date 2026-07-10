@@ -134,6 +134,20 @@ The product lives in `src/tracefork/`:
   match the parent), mutation-injection (same request, swapped response), tail-record (the
   counterfactual continuation). `Branch` carries `prefix_replayed`/`tail_recorded` counts.
   `ForkEngine.fork()` re-runs the **same** agent that produced the tape.
+- `diff.py` — generalized point-to-point / fork-branch diff, purely a
+  sequence-of-steps orchestration layer on top of `divergence.py`'s existing
+  single-step structural-diff primitive (`diff_json`/`diff_request_bytes`/
+  `MISSING`); adds no new diff logic of its own. `branch_diff(parent_tape,
+  branch, from_step=None)` walks a branch's `delta_tape` against its parent
+  from the divergence step onward; `branch` is either a live `fork.Branch`
+  (its `.delta_tape`/`.divergence_step` read directly) or a plain `Tape` (a
+  store-reloaded `delta_tape`, with `divergence_step=` passed explicitly) —
+  decoupled from `TapeStore` itself either way. `tape_diff(tape_a, tape_b,
+  step)` compares two independent tapes at one step index, no parent/child
+  relationship assumed. A step present on only one side (a `delta_tape`
+  shorter than the parent's tail) reports via `MISSING`, never a crash. CLI:
+  `tracefork diff <parent_run_id> <branch_id>` (branch mode) or
+  `<run_id_a> <run_id_b> --step N` (tape mode).
 - `store.py` — `TapeStore`, SQLite persistence for tapes + the branch DAG.
   `save_tape` is install-or-verify-same-content (git's object-store model):
   reusing a `run_id` with byte-identical content (compared via `Tape.digest()`,
