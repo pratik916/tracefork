@@ -1,6 +1,6 @@
 [project]
 name = "tracefork"
-version = "0.2.1"
+version = "0.2.2"
 description = "Time-travel debugger for AI agents: bit-exact record/replay, fork any step, causal blame with confidence intervals."
 requires-python = ">=3.12"
 dependencies = [
