@@ -179,6 +179,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Untrustworthy steps excluded from blame's BH correction, and
+  `blame_report_from_json` recomputes rather than trusts q_value/responsible**
+  (`blame.py`, `interop.py`) — `BlameEngine.rank()`'s Benjamini-Hochberg FDR
+  step now runs only over the p-values of steps with `trustworthy=True`; a
+  step with too few valid trials (a spuriously low raw p-value from a
+  handful of all-flip trials, say) never occupies a BH correction slot and
+  always keeps `q_value=1.0`/`responsible=False`, regardless of how
+  significant its raw p-value looks. Excluding it also tightens neighboring
+  trustworthy steps' q-values relative to the old whole-list BH (proving the
+  candidate count `m` actually changed, not a post-hoc overwrite); the
+  common all-trustworthy case is unaffected (byte-identical output).
+  `interop.py`'s `blame_report_from_json` now recomputes
+  `q_value`/`responsible`/`responsible_set` from the decoded `p_value`s via
+  the same `benjamini_hochberg` call, rather than trusting those fields from
+  the JSON payload — closing the one round-trip boundary where they could be
+  forged independently of `p_value`.
+
 - **CAS-guarded `save_tape`** (`store.py`) — reusing a `run_id` no longer
   silently clobbers the previously-stored tape. `save_tape` now installs or
   verifies-same-content (git's object-store model): identical content

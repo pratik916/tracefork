@@ -56,7 +56,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from .blame import BlameReport, CIMethod, FlipRateResult
+from .blame import BlameReport, CIMethod, FlipRateResult, benjamini_hochberg
 from .constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY
 from .providers import get_adapter
 from .providers.base import NormalizedResponse
@@ -152,7 +152,16 @@ def _normalize_exchange(
 def blame_report_from_json(data: Mapping[str, Any]) -> BlameReport:
     """Reconstruct a `BlameReport` from the JSON `tracefork blame` writes
     (`blame_<run_id>.json`), so `tracefork export --otel` can attach
-    flip-rate/CI attributes without re-running blame."""
+    flip-rate/CI attributes without re-running blame.
+
+    `q_value`/`responsible`/`responsible_set` are RECOMPUTED from the decoded
+    `p_value`s via `blame.benjamini_hochberg` (the same trustworthy-only-input
+    rule `BlameEngine.rank()` applies) rather than trusted from the JSON's own
+    fields — a round trip through this function is the one boundary where
+    those fields could otherwise be forged independently of `p_value`, since
+    nothing about the OTel/OpenInference wire shape ties them together.
+    """
+    fdr_q = data.get("fdr_q", 0.10)
     results = [
         FlipRateResult(
             step_index=r["step_index"],
@@ -168,11 +177,22 @@ def blame_report_from_json(data: Mapping[str, Any]) -> BlameReport:
             divergence_rate=r.get("divergence_rate", 0.0),
             trustworthy=r.get("trustworthy", True),
             p_value=r.get("p_value", 1.0),
-            q_value=r.get("q_value", 1.0),
-            responsible=r.get("responsible", False),
+            # q_value/responsible below are placeholders, overwritten by the
+            # recompute pass immediately after this list comprehension.
+            q_value=1.0,
+            responsible=False,
         )
         for r in data.get("results", [])
     ]
+
+    trustworthy_idx = [i for i, r in enumerate(results) if r.trustworthy]
+    pvals = [results[i].p_value for i in trustworthy_idx]
+    selected, qvals = benjamini_hochberg(pvals, fdr_q)
+    for local_i, global_i in enumerate(trustworthy_idx):
+        results[global_i].q_value = qvals[local_i]
+        results[global_i].responsible = local_i in selected
+    responsible_set = sorted(r.step_index for r in results if r.responsible)
+
     return BlameReport(
         results=results,
         k=data.get("k", 0),
@@ -180,8 +200,8 @@ def blame_report_from_json(data: Mapping[str, Any]) -> BlameReport:
         ci_method=CIMethod(data.get("ci_method", "wilson")),
         confidence=data.get("confidence", 0.95),
         null_flip_rate=data.get("null_flip_rate", 0.05),
-        fdr_q=data.get("fdr_q", 0.10),
-        responsible_set=data.get("responsible_set", []),
+        fdr_q=fdr_q,
+        responsible_set=responsible_set,
     )
 
 

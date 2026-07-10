@@ -389,6 +389,105 @@ def test_responsible_set_fingers_causal_step():
     assert report.top().step_index == 1
 
 
+def test_untrustworthy_step_with_spurious_low_pvalue_never_responsible():
+    """A step with too few valid trials (untrustworthy) but a spuriously tiny
+    raw p-value (all-flip among a handful of valid trials) must NEVER enter the
+    responsible set, even though its p-value alone would clear fdr_q — an
+    untrustworthy step is excluded from BH's candidate set entirely, never
+    occupying a correction slot."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    calls = {"n": 0}
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        if step_idx == 0:
+            i = calls["n"]
+            calls["n"] += 1
+            # 2/10 trials flip, 8/10 are ungradeable (UNDEFINED): valid_trials=2,
+            # trustworthy=False (valid/k=0.2 < default min_valid_fraction=0.5),
+            # but p_value=binom_sf_ge(2, 2, 0.05) is spuriously tiny.
+            tail_resp = FAIL_RESP if i < 2 else NEUTRAL_RESP
+            return NEUTRAL_RESP, ScriptedFakeLLM([tail_resp])
+        # step 1 (final): never flips -> p_value == 1.0, genuinely trustworthy.
+        return SUCCESS_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=10, budget_usd=100.0
+    )
+    step0 = next(r for r in report.results if r.step_index == 0)
+    step1 = next(r for r in report.results if r.step_index == 1)
+
+    assert step0.trustworthy is False
+    assert step0.valid_trials == 2
+    assert step0.p_value < 0.01  # spuriously low despite untrustworthy
+    assert step0.responsible is False
+    assert step0.q_value == 1.0
+    assert 0 not in report.responsible_set
+    assert step1.trustworthy is True
+
+
+def test_excluding_untrustworthy_pvalue_tightens_neighbor_q_value():
+    """Excluding an untrustworthy step's p-value from BH's input changes the
+    actual candidate count `m`, not just a post-hoc field overwrite: the
+    neighboring trustworthy step's recomputed q-value is strictly tighter than
+    what naive whole-list BH (the pre-fix behavior) would have produced."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    calls = {"n0": 0, "n1": 0}
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        if step_idx == 0:
+            i = calls["n0"]
+            calls["n0"] += 1
+            # 2/10 valid (NO_FLIP), 8/10 UNDEFINED -> untrustworthy, p_value=1.0.
+            tail_resp = SUCCESS_RESP if i < 2 else NEUTRAL_RESP
+            return NEUTRAL_RESP, ScriptedFakeLLM([tail_resp])
+        # step 1 (final): 2/10 flip -> a genuine, non-trivial p-value < 1.0.
+        j = calls["n1"]
+        calls["n1"] += 1
+        resp = FAIL_RESP if j < 2 else SUCCESS_RESP
+        return resp, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=10, budget_usd=100.0
+    )
+    step0 = next(r for r in report.results if r.step_index == 0)
+    step1 = next(r for r in report.results if r.step_index == 1)
+    assert step0.trustworthy is False
+    assert step1.trustworthy is True
+    assert step0.p_value == 1.0
+    assert 0.0 < step1.p_value < 1.0
+
+    # What naive whole-list BH (pre-fix behavior) would have produced.
+    _, naive_qvals = benjamini_hochberg([step0.p_value, step1.p_value], report.fdr_q)
+    naive_q_for_step1 = naive_qvals[1]
+
+    assert step1.q_value < naive_q_for_step1
+
+
+def test_all_trustworthy_rank_matches_naive_whole_list_bh():
+    """Regression pin: when every step is trustworthy (today's common path),
+    rank()'s BH output is byte-identical to naive whole-list BH — a no-op
+    relative to the pre-fix behavior."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=5, budget_usd=100.0
+    )
+    assert all(r.trustworthy for r in report.results)
+    by_step = sorted(report.results, key=lambda r: r.step_index)
+    naive_selected, naive_qvals = benjamini_hochberg([r.p_value for r in by_step], report.fdr_q)
+    for r in by_step:
+        assert r.q_value == naive_qvals[r.step_index]
+        assert r.responsible == (r.step_index in naive_selected)
+
+
 # ── temporal (order-restricted) Shapley blame ─────────────────────────────────
 
 

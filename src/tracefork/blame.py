@@ -23,7 +23,12 @@ Confidence intervals for the flip-rate proportion are pluggable
 Agresti-Coull, all with correct 0-flip / all-flip boundary handling and a
 configurable confidence level. Instead of a raw argmax over noisy proportions,
 the "responsible set" is chosen by a Benjamini-Hochberg FDR-controlled,
-one-sided binomial test of each step's flip-rate against a chance-flip null.
+one-sided binomial test of each step's flip-rate against a chance-flip null —
+run only over TRUSTWORTHY steps' p-values (BH's FDR guarantee requires a
+fixed candidate set; an untrustworthy step, with too few valid trials to be a
+meaningful estimate, never occupies a correction slot and keeps
+`q_value=1.0`/`responsible=False` unconditionally, however low its raw
+p-value happens to be).
 
 `BudgetGovernor` estimates the fork count and dollar cost before any spend.
 
@@ -663,12 +668,21 @@ class BlameEngine:
                 )
             )
 
-        # Benjamini-Hochberg FDR over the per-step one-sided binomial p-values.
-        pvals = [r.p_value for r in results]
+        # Benjamini-Hochberg FDR over TRUSTWORTHY steps' p-values only. BH's FDR
+        # guarantee requires the candidate set to be fixed before correction
+        # (Benjamini & Hochberg 1995); silently letting an untrustworthy step's
+        # p-value (too few valid trials to be a meaningful estimate — see
+        # `trustworthy` above) occupy a correction slot would shrink every
+        # OTHER step's effective significance budget. An untrustworthy step
+        # therefore never enters `benjamini_hochberg`'s input at all and keeps
+        # its `FlipRateResult` defaults (`q_value=1.0`, `responsible=False`)
+        # unconditionally, regardless of how low its raw `p_value` happens to be.
+        trustworthy_idx = [i for i, r in enumerate(results) if r.trustworthy]
+        pvals = [results[i].p_value for i in trustworthy_idx]
         selected, qvals = benjamini_hochberg(pvals, fdr_q)
-        for i, r in enumerate(results):
-            r.q_value = qvals[i]
-            r.responsible = i in selected
+        for local_i, global_i in enumerate(trustworthy_idx):
+            results[global_i].q_value = qvals[local_i]
+            results[global_i].responsible = local_i in selected
         responsible_set = sorted(r.step_index for r in results if r.responsible)
 
         results.sort(key=lambda r: (-r.flip_rate, r.step_index))
