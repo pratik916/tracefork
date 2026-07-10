@@ -396,6 +396,125 @@ def test_fork_coalition_prefix_divergence_raises():
         assert divergence is not None
 
 
+# ── rebase (fork-tree merge/rebase onto a moved parent) ──────────────────────
+
+
+def test_rebase_replays_unchanged_prefix_from_the_new_parent_at_zero_cost():
+    """The prefix before the fork point is replayed from the NEW parent tape,
+    for $0 -- exactly like a classic fork()'s prefix, but sourced from the
+    moved base instead of the original parent."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+    assert old_branch.prefix_replayed == 1
+
+    new_parent_tape = _build_three_turn_tape()  # a fresh, byte-identical parent
+    fake_post = ScriptedFakeLLM([])  # a fully-reused tail never reaches this
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.prefix_replayed == 1
+    assert rebased.parent_tape is new_parent_tape
+    assert rebased.divergence_step == old_branch.divergence_step
+    assert rebased.intervened_steps == old_branch.intervened_steps
+    assert len(new_parent_tape.exchanges) == 3  # the new parent itself is never mutated
+
+
+def test_rebase_raises_divergence_error_when_new_parents_prefix_itself_moved():
+    """If the new parent's prefix (before the fork point) doesn't match what
+    the agent deterministically rebuilds, rebase raises DivergenceError --
+    same contract as fork()/fork_coalition()'s own prefix assert."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+
+    bad_new_parent = Tape()
+    bad_new_parent.append_exchange(b"not-the-real-turn1-request", RESP_A)
+
+    try:
+        ForkEngine.rebase(
+            old_branch, bad_new_parent, _three_turn_agent, post_fork_transport=ScriptedFakeLLM([])
+        )
+        raise AssertionError("expected DivergenceError")
+    except Exception as exc:
+        divergence = find_divergence(exc)
+        assert divergence is not None
+
+
+def test_rebase_reuses_old_delta_tapes_tail_exchange_when_it_still_matches():
+    """When the new parent's prefix reconstructs the SAME downstream request
+    the old branch already recorded a tail response for, rebase reuses that
+    response by fingerprint match instead of paying for a live re-record."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+    assert old_branch.tail_recorded == 1
+
+    new_parent_tape = _build_three_turn_tape()  # byte-identical prefix + reply text
+    fake_post = ScriptedFakeLLM([])  # must NEVER be reached -- full reuse
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.tail_reused == 1
+    assert rebased.tail_recorded == 0
+    assert len(fake_post.requests_received) == 0
+    assert rebased.delta_tape.exchanges == old_branch.delta_tape.exchanges
+
+
+def test_rebase_falls_through_to_live_re_recording_when_old_tail_no_longer_matches():
+    """When the new parent's prefix reply text differs, the downstream tail
+    request the agent builds during rebase no longer matches the old
+    branch's recorded tail request -- rebase falls through to live
+    re-recording via post_fork_transport instead of reusing a stale response."""
+    parent_tape = _build_three_turn_tape()
+    old_branch = ForkEngine.fork(
+        parent_tape,
+        BranchSpec(divergence_step=1, mutated_response=RESP_D),
+        _three_turn_agent,
+        post_fork_transport=ScriptedFakeLLM([RESP_E]),
+    )
+
+    # A self-consistent new parent whose turn1 reply text differs, so
+    # turn3's downstream request (embedding that reply) no longer matches
+    # the old branch's recorded tail request byte-for-byte.
+    different_first = make_text_response("A different turn1 reply")
+    new_parent_tape = Tape()
+    fake_new_parent = ScriptedFakeLLM([different_first, RESP_C, RESP_E])
+    new_parent_transport = TraceforkTransport("record", new_parent_tape, fake_new_parent)
+    new_parent_client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=new_parent_transport),
+        max_retries=0,
+    )
+    _three_turn_agent(new_parent_client)
+
+    fake_post = ScriptedFakeLLM([RESP_E])  # must be reached exactly once
+
+    rebased = ForkEngine.rebase(
+        old_branch, new_parent_tape, _three_turn_agent, post_fork_transport=fake_post
+    )
+
+    assert rebased.tail_reused == 0
+    assert rebased.tail_recorded == 1
+    assert len(fake_post.requests_received) == 1
+
+
 def test_fork_coalition_out_of_range_step_raises():
     parent_tape = _build_two_turn_tape()
     spec = CoalitionSpec(interventions=(StepIntervention(5, RESP_B),))

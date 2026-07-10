@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`NEW_EPISODES` record mode + fork-tree rebase** (`transport.py`,
+  `record_mode.py`, `store.py`, `fork.py`) — `TraceforkTransport` gains a
+  third, additive mode: `"new_episodes"` replays a tape's recorded prefix
+  under the EXACT same strict-replay assert logic as `"replay"` (a
+  divergence inside the prefix is still a hard `DivergenceError`), then
+  forwards and records any request beyond it exactly like `"record"` mode,
+  tallied via `new_episodes_recorded`; `"record"`/`"replay"` are completely
+  untouched. `record_mode.py`'s `resolve_transport_mode` now maps
+  `RecordMode.NEW_EPISODES` to this literal instead of raising
+  `NotImplementedError`. `store.py`'s `branches` table gains an
+  `intervened_steps_json` column (migrated in the same guarded `ALTER TABLE`
+  pass as the other branch metadata columns); `save_branch` gains a matching
+  optional `intervened_steps` parameter (default `()`, every existing caller
+  unaffected) and `load_branch`/`find_branch_by_digest` decode it back to a
+  `tuple[int, ...]` — the prerequisite for `fork.py`'s new
+  `ForkEngine.rebase(old_branch, new_parent_tape, agent_fn, ...)`, the
+  version-control-rebase analogue of `fork()`/`fork_coalition()`: replays the
+  unchanged prefix from a NEW parent tape ($0, raising `DivergenceError` if
+  that prefix itself moved), re-forces every one of `old_branch`'s
+  intervened steps to its ORIGINAL stored response, and for anything else
+  beyond the fork point first tries reusing the old branch's own tail
+  exchange by fingerprint match (`Branch.tail_reused`, $0) before falling
+  through to live re-recording (`Branch.tail_recorded`) — reuse what's
+  unchanged, keep prior interventions, only pay for genuinely new/changed
+  continuation. `ForkTransport`/`CoalitionForkTransport`/`fork()`/
+  `fork_coalition()` are completely unchanged; `rebase` is a new, parallel
+  static method.
+
 - **Immutable, citable fork-point verification** (`fork.py`, `store.py`,
   `server.py`) — every `Branch` now also carries `parent_tape_digest` (the
   parent tape's own `digest()` at fork time) and `divergence_exchange_digest`

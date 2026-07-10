@@ -83,6 +83,75 @@ def test_sync_record_requires_inner():
         TraceforkTransport("record", Tape(), inner=None)
 
 
+# --- new_episodes transport mode ---
+
+
+def test_new_episodes_replays_recorded_prefix_like_strict_replay():
+    """The recorded prefix is served under the EXACT same assert logic as
+    plain "replay" -- the inner transport is never consulted for it."""
+    tape = Tape()
+    tape.append_exchange(b"req-1", b"resp-1")
+    tape.append_exchange(b"req-2", b"resp-2")
+    inner = _SyncInner([])  # never touched
+    t = TraceforkTransport("new_episodes", tape, inner)
+    assert t.handle_request(_make_request(b"req-1")).read() == b"resp-1"
+    assert t.handle_request(_make_request(b"req-2")).read() == b"resp-2"
+    assert t.matched == 2
+    assert t.new_episodes_recorded == 0
+
+
+def test_new_episodes_prefix_divergence_still_raises():
+    """The recorded-prefix assert is unmodified: a request that diverges
+    from the tape inside the recorded prefix is still a hard error, exactly
+    like plain "replay"."""
+    tape = Tape()
+    tape.append_exchange(b"expected", b"resp")
+    inner = _SyncInner([])
+    t = TraceforkTransport("new_episodes", tape, inner)
+    with pytest.raises(DivergenceError, match="diverged"):
+        t.handle_request(_make_request(b"different"))
+
+
+def test_new_episodes_records_trailing_unrecorded_request_instead_of_erroring():
+    tape = Tape()
+    tape.append_exchange(b"req-1", b"resp-1")
+    inner = _SyncInner([b"resp-2"])
+    t = TraceforkTransport("new_episodes", tape, inner)
+    t.handle_request(_make_request(b"req-1"))  # recorded prefix
+    r2 = t.handle_request(_make_request(b"req-2"))  # beyond the prefix
+    assert r2.read() == b"resp-2"
+    assert tape.exchanges[-1] == (b"req-2", b"resp-2")
+    assert t.new_episodes_recorded == 1
+    assert t.matched == 1  # only the prefix request counts as "matched"
+
+
+def test_new_episodes_requires_inner_transport():
+    with pytest.raises(ValueError, match="new_episodes mode requires an inner transport"):
+        TraceforkTransport("new_episodes", Tape(), inner=None)
+
+
+def test_new_episodes_recorded_exchange_updates_digest_consistently_with_record_mode():
+    """A trailing new_episodes exchange goes through the SAME
+    `tape.append_exchange`/sha256 hash-chain path as plain "record" mode --
+    the final tape's `digest()` is identical regardless of which mode
+    produced it."""
+    tape = Tape()
+    tape.append_exchange(b"req-1", b"resp-1")
+    inner = _SyncInner([b"resp-2"])
+    t = TraceforkTransport("new_episodes", tape, inner)
+    t.handle_request(_make_request(b"req-1"))
+    t.handle_request(_make_request(b"req-2"))
+
+    record_tape = Tape()
+    record_inner = _SyncInner([b"resp-1", b"resp-2"])
+    rt = TraceforkTransport("record", record_tape, record_inner)
+    rt.handle_request(_make_request(b"req-1"))
+    rt.handle_request(_make_request(b"req-2"))
+
+    assert tape.exchanges == record_tape.exchanges
+    assert tape.digest() == record_tape.digest()
+
+
 # --- async transport ---
 
 

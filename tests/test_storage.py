@@ -529,6 +529,125 @@ def test_load_branch_no_drift_succeeds_baseline_regression(tmp_path):
         store.close()
 
 
+# ── intervened_steps (rebase's full-coalition prerequisite) ─────────────────
+
+
+def test_save_branch_persists_intervened_steps_and_load_branch_returns_them(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            intervened_steps=(0, 2, 5),
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["intervened_steps"] == (0, 2, 5)
+    finally:
+        store.close()
+
+
+def test_save_branch_default_intervened_steps_is_empty_tuple(tmp_path):
+    """Existing callers that omit intervened_steps keep working -- default ()."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+        )
+        loaded = store.load_branch(branch_id)
+        assert loaded["intervened_steps"] == ()
+    finally:
+        store.close()
+
+
+def test_find_branch_by_digest_also_returns_intervened_steps(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        run_id = store.save_tape(_small_tape(b"parent"), run_id="parent-run")
+        store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=_small_tape(b"branch"),
+            branch_digest="findme-steps",
+            intervened_steps=(1, 3),
+        )
+        found = store.find_branch_by_digest("findme-steps")
+        assert found is not None
+        assert found["intervened_steps"] == (1, 3)
+    finally:
+        store.close()
+
+
+def test_intervened_steps_migration_adds_column_without_losing_rows(tmp_path):
+    """A store.db built with the OLD schema (no `intervened_steps_json`
+    column) neither crashes nor loses rows -- the column is added via a
+    guarded `ALTER TABLE`, same discipline as `branch_digest`."""
+    db_path = str(tmp_path / "old_store.db")
+
+    old_con = open_sqlite(db_path)
+    old_con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tapes (
+            run_id       TEXT PRIMARY KEY,
+            agent_name   TEXT NOT NULL,
+            tape_bytes   BLOB NOT NULL,
+            created_at   TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS branches (
+            branch_id         TEXT PRIMARY KEY,
+            parent_run_id     TEXT NOT NULL,
+            divergence_step   INTEGER NOT NULL,
+            delta_tape_bytes  BLOB NOT NULL,
+            mutation_desc     TEXT NOT NULL DEFAULT '',
+            created_at        TEXT NOT NULL,
+            branch_digest     TEXT NOT NULL DEFAULT '',
+            parent_tape_digest          TEXT NOT NULL DEFAULT '',
+            divergence_exchange_digest  TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
+        );
+        """
+    )
+    old_tape = _small_tape(b"pre-existing")
+    old_con.execute(
+        "INSERT INTO tapes(run_id, agent_name, tape_bytes, created_at) VALUES(?,?,?,?)",
+        ("old-run", "w", old_tape.to_bytes(), "2020-01-01T00:00:00+00:00"),
+    )
+    old_con.execute(
+        """INSERT INTO branches
+           (branch_id, parent_run_id, divergence_step, delta_tape_bytes, mutation_desc, created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (
+            "old-branch",
+            "old-run",
+            0,
+            _small_tape(b"pre-branch").to_bytes(),
+            "",
+            "2020-01-01T00:00:00+00:00",
+        ),
+    )
+    cols_before = {row[1] for row in old_con.execute("PRAGMA table_info(branches)").fetchall()}
+    assert "intervened_steps_json" not in cols_before
+    old_con.commit()
+    old_con.close()
+
+    store = TapeStore(db_path)
+    try:
+        assert store.load_tape("old-run").exchanges == old_tape.exchanges
+        loaded_branch = store.load_branch("old-branch")
+        assert loaded_branch["intervened_steps"] == ()
+
+        cols_after = {
+            row[1] for row in store._con.execute("PRAGMA table_info(branches)").fetchall()
+        }
+        assert "intervened_steps_json" in cols_after
+    finally:
+        store.close()
+
+
 def test_load_branch_raises_fork_point_drift_error_on_parent_mutation(tmp_path):
     """A raw-SQL mutation of the cited parent tape's content after the fork
     was made must be caught -- re-verified, not trusted -- at the next

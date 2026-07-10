@@ -10,14 +10,14 @@ mode already hard-errors on any request beyond the tape's recorded exchanges
 name. This module gives it one, so callers and ``TraceforkConfig`` can refer
 to the policy by a typed value instead of a stringly-typed literal.
 
-Only ``ONCE``, ``NONE``, and ``ALL`` resolve to today's two literal transport
-modes (``"record"`` / ``"replay"``) via ``resolve_transport_mode`` below.
+``ONCE``, ``NONE``, and ``ALL`` resolve to today's two literal transport modes
+(``"record"`` / ``"replay"``) via ``resolve_transport_mode`` below.
 ``NEW_EPISODES`` (replay recorded exchanges but *record* any new trailing
-ones instead of erroring) is reserved for future work: wiring it in requires
-extending ``TraceforkTransport``'s replay branch with a live fallback
-transport, which is out of scope for this change (``transport.py`` is
-untouched — see ``CLAUDE.md``). Selecting it raises ``NotImplementedError``
-rather than silently behaving like one of the other three.
+ones instead of erroring) resolves to a THIRD literal, ``"new_episodes"`` —
+``TraceforkTransport``'s additive third mode (see ``transport.py``'s module
+docstring): the recorded prefix still replays under the exact strict-replay
+assert logic, and any request beyond it is forwarded to the transport's inner
+transport and recorded, mirroring ``"record"`` mode.
 """
 
 from __future__ import annotations
@@ -41,9 +41,10 @@ class RecordMode(StrEnum):
       existing tape. Equivalent to ``Recorder``/``TraceforkTransport("record",
       ...)`` unconditionally.
     * ``NEW_EPISODES`` — replay recorded exchanges but record any new
-      trailing ones instead of erroring. **Reserved**: not implemented in
-      this release (see module docstring); ``resolve_transport_mode`` raises
-      ``NotImplementedError`` if selected.
+      trailing ones instead of erroring, regardless of ``tape_exists``
+      (there is always a recorded prefix to attempt to replay, even if
+      empty). Resolves to ``TraceforkTransport``'s ``"new_episodes"`` literal
+      (see ``transport.py``).
     """
 
     ONCE = "once"
@@ -56,11 +57,12 @@ def resolve_transport_mode(mode: RecordMode, *, tape_exists: bool) -> str:
     """Map a ``RecordMode`` + tape-existence fact to today's literal transport
     mode string (``"record"`` or ``"replay"``).
 
-    This function *names* what was previously an implicit caller decision; it
-    does not change ``transport.py``, which keeps hard-erroring on any
-    unrecorded request during replay exactly as it did before this module
-    existed. Raises ``NotImplementedError`` for ``RecordMode.NEW_EPISODES``
-    (see module docstring).
+    This function *names* what was previously an implicit caller decision for
+    ``ONCE``/``NONE``/``ALL``; ``transport.py``'s ``"replay"`` literal keeps
+    hard-erroring on any unrecorded request exactly as it did before this
+    module existed. ``RecordMode.NEW_EPISODES`` resolves to the THIRD,
+    additive literal ``"new_episodes"`` (see ``transport.py``'s module
+    docstring) regardless of ``tape_exists``.
     """
     if mode is RecordMode.NONE:
         return "replay"
@@ -68,8 +70,4 @@ def resolve_transport_mode(mode: RecordMode, *, tape_exists: bool) -> str:
         return "record"
     if mode is RecordMode.ONCE:
         return "replay" if tape_exists else "record"
-    raise NotImplementedError(
-        f"{mode!r} is reserved for future work: it requires extending "
-        "TraceforkTransport's replay path with a live fallback transport, which is "
-        "out of scope for this change (transport.py is untouched)."
-    )
+    return "new_episodes"

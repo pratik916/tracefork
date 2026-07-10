@@ -39,7 +39,7 @@ citable fork-point metadata (``Branch.parent_tape_digest`` — the parent
 tape's own ``digest()`` at fork time — and ``Branch.divergence_exchange_digest``
 — sha256 of the exact request+response bytes at the first divergence point),
 migrated onto the ``branches`` table in the SAME guarded ``ALTER TABLE`` pass
-as ``branch_digest`` (see ``_migrate_fork_point_columns``). ``load_branch`` is
+as ``branch_digest`` (see ``_migrate_branch_metadata_columns``). ``load_branch`` is
 the re-verification point: it recomputes the CURRENT digest of the tape
 referenced by ``parent_run_id`` and compares it against the stored
 ``parent_tape_digest`` (skipped when that column is ``''`` — a legacy branch,
@@ -48,6 +48,19 @@ nothing to re-verify against). A mismatch is a hard error
 (:class:`ForkPointDriftError`), never a silently logged-and-continued
 divergence — the retrospective, read-time complement to ``save_tape``'s
 write-time CAS guard.
+
+``intervened_steps_json`` is ``fork.py``'s ``Branch.intervened_steps`` (the
+full set of force-set step indices a coalition/rebase fork touched, not just
+``divergence_step`` — the coalition's first/lowest step) JSON-serialized as a
+list (SQLite has no native tuple/array type); migrated onto ``branches`` in
+the SAME guarded ``ALTER TABLE`` pass as the other branch metadata columns
+(see ``_migrate_branch_metadata_columns``). ``save_branch`` gains a matching
+optional ``intervened_steps`` parameter (default ``()``, every existing
+caller unaffected); ``load_branch``/``find_branch_by_digest`` decode it back
+to a ``tuple[int, ...]`` (``()`` for a legacy/omitted value) — the prerequisite
+``ForkEngine.rebase`` (see ``fork.py``) needs to know a branch's FULL forced
+coalition, not merely its first divergence step, when re-forcing those steps
+against a new parent tape.
 
 ``causal_edges`` persists every blame/Shapley result computed by ``blame.py``
 instead of discarding it once the CLI/caller has printed or JSON-dumped it —
@@ -61,6 +74,7 @@ this module makes no attempt to keep the two in sync).
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -78,6 +92,24 @@ class TapeConflictError(RuntimeError):
     ``Tape.digest()`` differs from what's already stored, and ``overwrite`` was
     not set. Pass ``overwrite=True`` to replace the stored tape explicitly.
     """
+
+
+def _encode_intervened_steps(steps: tuple[int, ...]) -> str:
+    """JSON-serialize a branch's forced step indices for the
+    ``branches.intervened_steps_json`` column (SQLite has no tuple/array
+    type)."""
+    return json.dumps(list(steps))
+
+
+def _decode_intervened_steps(raw: str) -> tuple[int, ...]:
+    """Inverse of :func:`_encode_intervened_steps`. An empty/falsy value —
+    the ``''`` a defensively-blank column would hold, though the guarded
+    migration below always defaults to ``'[]'`` — decodes to ``()``, the same
+    "nothing recorded" meaning ``branch_digest``/``parent_tape_digest``
+    already use for their own ``''`` default."""
+    if not raw:
+        return ()
+    return tuple(json.loads(raw))
 
 
 class ForkPointDriftError(RuntimeError):
@@ -130,6 +162,7 @@ class StorageBackend(Protocol):
         branch_digest: str = "",
         parent_tape_digest: str = "",
         divergence_exchange_digest: str = "",
+        intervened_steps: tuple[int, ...] = (),
     ) -> str: ...
 
     def load_branch(self, branch_id: str) -> dict: ...
@@ -171,6 +204,7 @@ CREATE TABLE IF NOT EXISTS branches (
     branch_digest     TEXT NOT NULL DEFAULT '',
     parent_tape_digest          TEXT NOT NULL DEFAULT '',
     divergence_exchange_digest  TEXT NOT NULL DEFAULT '',
+    intervened_steps_json       TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
 );
 
@@ -279,24 +313,25 @@ class TapeStore:
         self._con = open_sqlite(db_path)
         self._write_lock = threading.Lock()
         self._con.executescript(_DDL)
-        self._migrate_fork_point_columns()
+        self._migrate_branch_metadata_columns()
 
-    def _migrate_fork_point_columns(self) -> None:
+    def _migrate_branch_metadata_columns(self) -> None:
         """Guarded ``ALTER TABLE`` for a ``store.db`` built before
-        ``branch_digest``/``parent_tape_digest``/``divergence_exchange_digest``
-        existed on the ``branches`` table.
+        ``branch_digest``/``parent_tape_digest``/``divergence_exchange_digest``/
+        ``intervened_steps_json`` existed on the ``branches`` table.
 
         ``CREATE TABLE IF NOT EXISTS`` (in ``_DDL``, above) only ever creates
         these columns on a BRAND NEW database — it is a no-op against an
         existing ``branches`` table, so a pre-existing store.db needs
-        explicit ``ADD COLUMN``s here. All three columns share ONE
-        ``PRAGMA table_info`` read (not three separate migration passes) so
+        explicit ``ADD COLUMN``s here. All four columns share ONE
+        ``PRAGMA table_info`` read (not four separate migration passes) so
         an old database is altered once, atomically enough for SQLite's
         autocommit DDL, with each ``ADD COLUMN`` independently guarded —
-        never destructive: no row is touched, only new columns with a ``''``
-        default are appended. The index is created here too (after the
-        columns are guaranteed to exist) rather than inside ``_DDL``, since
-        ``CREATE INDEX`` on a column that doesn't exist yet would raise on a
+        never destructive: no row is touched, only new columns with a
+        default (``''``, or ``'[]'`` for ``intervened_steps_json``) are
+        appended. The index is created here too (after the columns are
+        guaranteed to exist) rather than inside ``_DDL``, since ``CREATE
+        INDEX`` on a column that doesn't exist yet would raise on a
         genuinely old database.
         """
         cols = {row[1] for row in self._con.execute("PRAGMA table_info(branches)").fetchall()}
@@ -312,6 +347,10 @@ class TapeStore:
             self._con.execute(
                 "ALTER TABLE branches ADD COLUMN divergence_exchange_digest "
                 "TEXT NOT NULL DEFAULT ''"
+            )
+        if "intervened_steps_json" not in cols:
+            self._con.execute(
+                "ALTER TABLE branches ADD COLUMN intervened_steps_json TEXT NOT NULL DEFAULT '[]'"
             )
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_branches_branch_digest ON branches(branch_digest)"
@@ -407,6 +446,7 @@ class TapeStore:
         branch_digest: str = "",
         parent_tape_digest: str = "",
         divergence_exchange_digest: str = "",
+        intervened_steps: tuple[int, ...] = (),
     ) -> str:
         """Persist ``delta_tape`` as a new branch of ``parent_run_id`` (a fresh
         ``branch_id`` if omitted).
@@ -435,9 +475,16 @@ class TapeStore:
         existing caller that omits them keeps storing ``''`` exactly as
         before these parameters existed. See :meth:`load_branch`, the
         re-verification point for ``parent_tape_digest``.
+
+        ``intervened_steps`` (optional, default ``()``) is ``fork.py``'s
+        ``Branch.intervened_steps`` — the full set of force-set step indices,
+        not just ``divergence_step`` (the coalition's first/lowest step).
+        Every existing caller that omits it keeps storing ``()`` exactly as
+        before this parameter existed. See :meth:`load_branch`.
         """
         bid = branch_id or uuid.uuid4().hex[:12]
         blob = delta_tape.to_bytes()
+        intervened_steps_json = _encode_intervened_steps(intervened_steps)
         with self._write_lock:
             self._con.execute("BEGIN IMMEDIATE")
             try:
@@ -458,8 +505,8 @@ class TapeStore:
                     """INSERT INTO branches
                        (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
                         mutation_desc, created_at, branch_digest, parent_tape_digest,
-                        divergence_exchange_digest)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                        divergence_exchange_digest, intervened_steps_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (
                         bid,
                         parent_run_id,
@@ -470,6 +517,7 @@ class TapeStore:
                         branch_digest,
                         parent_tape_digest,
                         divergence_exchange_digest,
+                        intervened_steps_json,
                     ),
                 )
                 self._con.execute("COMMIT")
@@ -495,7 +543,7 @@ class TapeStore:
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
                       delta_tape_bytes, mutation_desc, created_at, branch_digest,
-                      parent_tape_digest, divergence_exchange_digest
+                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json
                FROM branches WHERE branch_id=?""",
             (branch_id,),
         ).fetchone()
@@ -522,6 +570,7 @@ class TapeStore:
             "branch_digest": row[6],
             "parent_tape_digest": row[7],
             "divergence_exchange_digest": row[8],
+            "intervened_steps": _decode_intervened_steps(row[9]),
         }
 
     def find_branch_by_digest(self, branch_digest: str) -> dict | None:
@@ -539,7 +588,7 @@ class TapeStore:
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
                       delta_tape_bytes, mutation_desc, created_at, branch_digest,
-                      parent_tape_digest, divergence_exchange_digest
+                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json
                FROM branches WHERE branch_digest=?""",
             (branch_digest,),
         ).fetchone()
@@ -555,6 +604,7 @@ class TapeStore:
             "branch_digest": row[6],
             "parent_tape_digest": row[7],
             "divergence_exchange_digest": row[8],
+            "intervened_steps": _decode_intervened_steps(row[9]),
         }
 
     def branches_forked_from(self, branch_digest: str) -> list[str]:
