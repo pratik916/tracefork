@@ -44,9 +44,9 @@ from dataclasses import dataclass, field
 
 from tracefork.tape import Tape
 
-#: The four draw kinds `nondet.py` actually records (`RecordingNondet.draws`).
+#: The five draw kinds `nondet.py` actually records (`RecordingNondet.draws`).
 #: Kept in sync with `nondet.py` -- do not invent new kinds here.
-DRAW_KINDS: tuple[str, ...] = ("clock", "uuid", "random", "env")
+DRAW_KINDS: tuple[str, ...] = ("clock", "uuid", "random", "env", "read_file")
 
 # Call sites `BoundaryGuard.__enter__` actually patches (boundary_guard.py),
 # keyed by the trailing dotted-path components a matching `ast.Call` resolves
@@ -106,7 +106,7 @@ def tape_draw_coverage(tape: Tape) -> tuple[dict[str, int], bool, bool]:
     -- never touches `digest()`/`to_bytes()`/`from_bytes()`. Returns
     `(draw_counts, concurrency_recorded, boundary_guard_active)`.
     `draw_counts` only contains entries for kinds that actually occurred
-    (no zero-filled kinds), keyed by exactly `nondet.py`'s four kinds.
+    (no zero-filled kinds), keyed by exactly `nondet.py`'s five kinds.
     """
     draw_counts: dict[str, int] = {}
     for kind, _value in tape.draws:

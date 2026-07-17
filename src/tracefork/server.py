@@ -85,6 +85,22 @@ async def get_branch(branch_id: str) -> JSONResponse:
     return JSONResponse(data)
 
 
+@app.get("/api/branch/{run_id}/related")
+async def get_branch_related(run_id: str) -> JSONResponse:
+    """Branch DAG relationship queries for RUN_ID -- descendants, ancestors,
+    siblings. No 404: the store methods themselves return empty lists for an
+    unknown/root/leaf id rather than raising, so this always returns 200."""
+    store = get_store()
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "descendants": store.branch_descendants(run_id),
+            "ancestors": store.branch_ancestors(run_id),
+            "siblings": store.branch_siblings(run_id),
+        }
+    )
+
+
 @app.get("/api/session/{session_id}")
 async def get_session(session_id: str) -> JSONResponse:
     """A session's root run_id/created_at plus every tape reachable via its

@@ -80,8 +80,14 @@ class ProviderAdapter(Protocol):
         replay-time matching (this seam is for the divergence-contract work)."""
         ...
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
-        """Best-effort model id from a recorded request (``None`` if unknown)."""
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        """Best-effort model id from a recorded request (``None`` if unknown).
+
+        ``request_url`` is an optional fallback source (the tape's parallel
+        ``request_urls[i]``, see ``tape.py``) for providers whose wire format
+        puts the model id in the URL path rather than the request body
+        (Gemini/Bedrock); adapters that already read it from the body ignore
+        this parameter."""
         ...
 
     def parse_response(self, response_bytes: bytes) -> NormalizedResponse:

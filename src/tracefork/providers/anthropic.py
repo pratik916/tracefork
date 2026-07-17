@@ -37,7 +37,8 @@ class AnthropicAdapter:
         # contract work; it does not change transport's byte-for-byte matching.
         return sha256_hex(request_bytes)
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        # request_url is unused: the body already carries a real "model" field.
         try:
             return json.loads(request_bytes).get("model")
         except Exception:

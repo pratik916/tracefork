@@ -10,14 +10,17 @@ The only place that knows Gemini's JSON shape:
 
 Gemini puts the model in the request URL path
 (``/v1beta/models/<model>:generateContent``), not the body, so ``detect_model``
-is best-effort from the body's ``model`` field (``None`` when absent — pricing
-then falls back to the snapshot default). As elsewhere, the byte contract is
-untouched and the ``google-genai`` SDK is not a hard dependency.
+reads the body's ``model`` field first and, when that's absent, falls back to
+parsing the model id out of an optional ``request_url`` (the tape's recorded
+``request_urls[i]``, see ``tape.py``); still ``None`` when neither source has
+it — pricing then falls back to the snapshot default. As elsewhere, the byte
+contract is untouched and the ``google-genai`` SDK is not a hard dependency.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..tape import sha256_hex
@@ -31,6 +34,10 @@ from .base import (
 
 DEFAULT_GEMINI_MODEL = "gemini-1.5-pro"
 
+# Matches the model segment of a Gemini request URL path, e.g.
+# ".../v1beta/models/gemini-1.5-pro:generateContent" -> "gemini-1.5-pro".
+_URL_MODEL_RE = re.compile(r"models/([^/:?]+)")
+
 
 class GeminiAdapter:
     """Normalizes/builds Gemini ``generateContent`` wire bytes."""
@@ -42,18 +49,22 @@ class GeminiAdapter:
     def canonicalize_request(self, request_bytes: bytes) -> str:
         return sha256_hex(request_bytes)
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        model: str | None = None
         try:
             body = json.loads(request_bytes)
         except Exception:
-            return None
-        if not isinstance(body, dict):
-            return None
-        model = body.get("model")
-        if not isinstance(model, str):
-            return None
-        # Bodies that carry a model often prefix it ("models/gemini-1.5-pro").
-        return model.split("/", 1)[1] if model.startswith("models/") else model
+            body = None
+        if isinstance(body, dict):
+            candidate = body.get("model")
+            if isinstance(candidate, str):
+                # Bodies that carry a model often prefix it ("models/gemini-1.5-pro").
+                model = candidate.split("/", 1)[1] if candidate.startswith("models/") else candidate
+        if model is None and request_url:
+            match = _URL_MODEL_RE.search(request_url)
+            if match:
+                model = match.group(1)
+        return model
 
     # ── response side (read) ──────────────────────────────────────────────────
 

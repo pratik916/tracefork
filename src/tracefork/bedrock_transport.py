@@ -265,9 +265,10 @@ class BedrockTransport:
         assert self._sender is not None  # enforced in __init__
         response = self._sender(httpx_req)
         body = response.content
-        self.tape.append_exchange(self.matcher.stored_request(httpx_req), body)
+        url = str(httpx_req.url)
+        self.tape.append_exchange(self.matcher.stored_request(httpx_req), body, request_url=url)
         return _make_response(
-            url=str(httpx_req.url),
+            url=url,
             status_code=response.status_code,
             headers=dict(response.headers),
             body=body,

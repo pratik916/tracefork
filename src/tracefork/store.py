@@ -249,6 +249,7 @@ class SessionStore(Protocol):
         spawn_reason: str = "",
         edge_id: str | None = None,
         created_at: str = "",
+        spawn_step_index: int | None = None,
     ) -> str: ...
 
     def session_tapes(self, session_id: str) -> list[str]: ...
@@ -256,6 +257,8 @@ class SessionStore(Protocol):
     def spawn_children(self, run_id: str) -> list[str]: ...
 
     def spawn_parent(self, run_id: str) -> str | None: ...
+
+    def spawn_edges_for_session(self, session_id: str) -> list[dict]: ...
 
 
 _DDL = """
@@ -343,6 +346,7 @@ CREATE TABLE IF NOT EXISTS spawn_edges (
     child_run_id   TEXT NOT NULL,
     spawn_reason   TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL,
+    spawn_step_index INTEGER,
     FOREIGN KEY(session_id) REFERENCES sessions(session_id),
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id),
     FOREIGN KEY(child_run_id) REFERENCES tapes(run_id)
@@ -413,6 +417,7 @@ class TapeStore:
         self._write_lock = threading.Lock()
         self._con.executescript(_DDL)
         self._migrate_branch_metadata_columns()
+        self._migrate_spawn_edge_columns()
 
     def _migrate_branch_metadata_columns(self) -> None:
         """Guarded ``ALTER TABLE`` for a ``store.db`` built before
@@ -459,6 +464,25 @@ class TapeStore:
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_branches_branch_digest ON branches(branch_digest)"
         )
+
+    def _migrate_spawn_edge_columns(self) -> None:
+        """Guarded ``ALTER TABLE`` for a ``store.db`` built before
+        ``spawn_step_index`` existed on the ``spawn_edges`` table.
+
+        Same discipline as :meth:`_migrate_branch_metadata_columns`: ``_DDL``'s
+        ``CREATE TABLE IF NOT EXISTS`` only ever creates this column on a
+        BRAND NEW database, so a pre-existing ``store.db`` needs it appended
+        here. Left nullable with no explicit default (SQLite's implicit
+        ``NULL``) rather than a sentinel like the other migrated columns'
+        ``''`` — ``NULL``/``None`` here means "which step this child was
+        spawned at was never recorded", a real, distinct value
+        :func:`cross_tape_blame.session_topological_order` documents its own
+        fallback behavior for (child's steps placed entirely after the
+        parent's), never silently coerced to step ``0``.
+        """
+        cols = {row[1] for row in self._con.execute("PRAGMA table_info(spawn_edges)").fetchall()}
+        if "spawn_step_index" not in cols:
+            self._con.execute("ALTER TABLE spawn_edges ADD COLUMN spawn_step_index INTEGER")
 
     # ── tapes ──────────────────────────────────────────────────────────────
 
@@ -788,6 +812,91 @@ class TapeStore:
         ``stored_digest``/``prune()``."""
         rows = self._con.execute("SELECT branch_id, parent_run_id FROM branches").fetchall()
         return [(r[0], r[1]) for r in rows]
+
+    def branch_descendants(self, run_id: str) -> list[str]:
+        """BFS the fork graph reachable from ``run_id``: every branch_id
+        whose ``parent_run_id`` chain traces back to ``run_id``, in BFS
+        discovery order.
+
+        Same frontier-walk shape as :meth:`causal_closure` — a branch is
+        only recursed into once its ``delta_tape`` has itself been promoted
+        to a tape via ``save_tape(delta_tape, run_id=branch_id)`` (the same
+        promotion convention that method, and :meth:`branches_forked_from`,
+        already rely on) — minus that method's causal_edges/responsible-edge
+        collection, since this query only cares about branch reachability,
+        not blame. A branch never promoted this way is a dead end: it still
+        appears in the returned list (it IS a direct/indirect descendant),
+        it simply contributes no further descendants of its own. Returns
+        ``[]`` for a leaf/root tape that has never been forked."""
+        visited = {run_id}
+        frontier = [run_id]
+        descendants: list[str] = []
+        while frontier:
+            current = frontier.pop(0)
+            branch_rows = self._con.execute(
+                "SELECT branch_id FROM branches WHERE parent_run_id=? ORDER BY created_at DESC",
+                (current,),
+            ).fetchall()
+            for (branch_id,) in branch_rows:
+                if branch_id in visited:
+                    continue
+                visited.add(branch_id)
+                descendants.append(branch_id)
+                promoted = self._con.execute(
+                    "SELECT 1 FROM tapes WHERE run_id=?", (branch_id,)
+                ).fetchone()
+                if promoted is not None:
+                    frontier.append(branch_id)
+        return descendants
+
+    def branch_ancestors(self, run_id: str) -> list[str]:
+        """Walk upward from ``run_id`` via ``branches.branch_id ->
+        parent_run_id``, nearest-parent-first, to the root tape.
+
+        ``run_id`` is treated as a ``branch_id`` for the first hop; a tape
+        that was never itself created via :meth:`save_branch` (i.e. a root
+        tape, or an unknown id) has no row in ``branches`` and returns
+        ``[]`` — nothing to walk. A defensive ``visited`` guard stops a
+        cycle (which should never occur, since ``branches.parent_run_id``
+        is written before ``branch_id`` can ever cite itself) from looping
+        forever rather than trusting the DAG shape unconditionally."""
+        ancestors: list[str] = []
+        visited = {run_id}
+        current = run_id
+        while True:
+            row = self._con.execute(
+                "SELECT parent_run_id FROM branches WHERE branch_id=?", (current,)
+            ).fetchone()
+            if row is None:
+                break
+            parent_run_id = row[0]
+            if parent_run_id in visited:
+                break
+            ancestors.append(parent_run_id)
+            visited.add(parent_run_id)
+            current = parent_run_id
+        return ancestors
+
+    def branch_siblings(self, run_id: str) -> list[str]:
+        """The other branches that share ``run_id``'s own parent — i.e.
+        ``run_id`` is itself a ``branch_id``, and this returns every OTHER
+        branch forked from the same ``parent_run_id``.
+
+        Resolves ``run_id``'s ``parent_run_id`` with a plain ``branches``
+        lookup, then reuses the existing :meth:`list_branches` (no new SQL)
+        to get that parent's full branch set in its established
+        ``created_at DESC`` order, excluding ``run_id`` itself. Returns
+        ``[]`` for a root tape (never itself a ``branch_id``) or for an
+        only-child branch (no siblings)."""
+        row = self._con.execute(
+            "SELECT parent_run_id FROM branches WHERE branch_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        parent_run_id = row[0]
+        return [
+            b["branch_id"] for b in self.list_branches(parent_run_id) if b["branch_id"] != run_id
+        ]
 
     # ── raw row access (bundle.py's byte-for-byte export/import) ───────────
 
@@ -1147,6 +1256,7 @@ class TapeStore:
         spawn_reason: str = "",
         edge_id: str | None = None,
         created_at: str = "",
+        spawn_step_index: int | None = None,
     ) -> str:
         """Record a ``parent_run_id -> child_run_id`` delegation edge within
         ``session_id`` (a fresh ``edge_id`` if omitted).
@@ -1157,6 +1267,13 @@ class TapeStore:
         reference rather than silently accepting one. Mirrors
         :meth:`save_branch`'s ``BEGIN IMMEDIATE`` + ``self._write_lock``
         write discipline.
+
+        ``spawn_step_index`` (optional, default ``None``) records AT WHICH
+        STEP of ``parent_run_id`` this child was spawned — the piece
+        ``cross_tape_blame.session_topological_order`` needs to interleave a
+        session's tapes at the right point rather than only ever placing a
+        child's steps after its parent's. Every existing caller that omits
+        it keeps storing ``NULL`` exactly as before this parameter existed.
         """
         eid = edge_id or uuid.uuid4().hex[:12]
         with self._write_lock:
@@ -1165,9 +1282,17 @@ class TapeStore:
                 self._con.execute(
                     """INSERT INTO spawn_edges
                        (edge_id, session_id, parent_run_id, child_run_id,
-                        spawn_reason, created_at)
-                       VALUES(?,?,?,?,?,?)""",
-                    (eid, session_id, parent_run_id, child_run_id, spawn_reason, created_at),
+                        spawn_reason, created_at, spawn_step_index)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        eid,
+                        session_id,
+                        parent_run_id,
+                        child_run_id,
+                        spawn_reason,
+                        created_at,
+                        spawn_step_index,
+                    ),
                 )
                 self._con.execute("COMMIT")
             except BaseException:
@@ -1227,6 +1352,52 @@ class TapeStore:
             (run_id,),
         ).fetchone()
         return None if row is None else row[0]
+
+    def session_spawn_children(self, session_id: str, run_id: str) -> list[str]:
+        """Direct spawn children of ``run_id`` WITHIN ``session_id`` only —
+        the same query as :meth:`spawn_children` plus a ``session_id=?``
+        filter.
+
+        :meth:`spawn_children` is cross-session by design (any session's
+        edges count); that makes it the wrong primitive for
+        ``session_chaos.py``'s sibling-fanout permutation, which must never
+        let two DIFFERENT sessions that happen to record a spawn edge from
+        the same ``parent_run_id`` leak into each other's sibling group.
+        ``[]`` for a parent with no children in this session."""
+        rows = self._con.execute(
+            "SELECT child_run_id FROM spawn_edges WHERE session_id=? AND parent_run_id=? "
+            "ORDER BY created_at, child_run_id",
+            (session_id, run_id),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def spawn_edges_for_session(self, session_id: str) -> list[dict]:
+        """Every ``spawn_edges`` row for ``session_id`` — ``edge_id``,
+        ``parent_run_id``, ``child_run_id``, ``spawn_reason``,
+        ``spawn_step_index``, ``created_at`` — ordered by ``created_at``.
+
+        Mirrors :meth:`causal_edges_for_run`'s dict-list shape. Powers
+        ``cross_tape_blame.session_topological_order``'s interleaving of a
+        session's tapes; unlike :meth:`spawn_children`/:meth:`spawn_parent`
+        (direct-neighbor queries), this returns the FULL edge set for a
+        session in one call, including each edge's ``spawn_step_index``."""
+        rows = self._con.execute(
+            """SELECT edge_id, parent_run_id, child_run_id, spawn_reason,
+                      spawn_step_index, created_at
+               FROM spawn_edges WHERE session_id=? ORDER BY created_at""",
+            (session_id,),
+        ).fetchall()
+        return [
+            {
+                "edge_id": r[0],
+                "parent_run_id": r[1],
+                "child_run_id": r[2],
+                "spawn_reason": r[3],
+                "spawn_step_index": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
 
     def close(self) -> None:
         self._con.close()

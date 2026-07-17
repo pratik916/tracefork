@@ -781,6 +781,61 @@ def test_cli_bundle_import_conflicting_content_is_documented_nonzero_exit(tmp_pa
     assert import_result.exit_code == 1
 
 
+# ── settlement-diff ──────────────────────────────────────────────────────
+
+
+def test_cli_settlement_diff_writes_json_and_exits_zero(tmp_path):
+    from tracefork.tools import make_result_frame, make_tool_call_frame
+
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    try:
+        parent_tape = store.load_tape(run_id)
+        delta_tape = Tape(boundary=parent_tape.boundary, agent_name=parent_tape.agent_name)
+        delta_tape.append_tool_exchange(
+            make_tool_call_frame(1, "read_file", {"path": "/etc/hosts"}),
+            make_result_frame(1, {"content": "127.0.0.1 localhost"}),
+        )
+        branch_id = store.save_branch(
+            parent_run_id=run_id,
+            divergence_step=0,
+            delta_tape=delta_tape,
+            branch_digest="branchdigest123",
+        )
+    finally:
+        store.close()
+
+    out = tmp_path / "settlement.json"
+    result = runner.invoke(
+        app,
+        ["settlement-diff", run_id, branch_id, "--store", str(db), "-o", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+
+    data = json.loads(out.read_text())
+    assert data["kind"] == "tracefork.settlement_diff/v1"
+    assert "subject" in data
+    assert "predicate" in data
+    assert data["predicate"]["ops"][0]["tool_name"] == "read_file"
+
+
+def test_cli_settlement_diff_prints_to_stdout_when_no_output_path(tmp_path):
+    db, run_id = _seeded_store(tmp_path)
+    store = TapeStore(str(db))
+    try:
+        parent_tape = store.load_tape(run_id)
+        delta_tape = Tape(boundary=parent_tape.boundary, agent_name=parent_tape.agent_name)
+        branch_id = store.save_branch(
+            parent_run_id=run_id, divergence_step=0, delta_tape=delta_tape
+        )
+    finally:
+        store.close()
+
+    result = runner.invoke(app, ["settlement-diff", run_id, branch_id, "--store", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "tracefork.settlement_diff/v1" in result.output
+
+
 # ── prune ────────────────────────────────────────────────────────────────
 
 

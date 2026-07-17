@@ -63,6 +63,7 @@ from .observability import (
 from .record_mode import RecordMode
 from .recorder import AsyncRecorder, Recorder
 from .redact import Redactor, safe_defaults, with_content_redaction
+from .session_chaos import session_chaos_release_orders, session_sibling_chaos_order
 from .tape import Tape
 from .tools import (
     NativeToolSeam,
@@ -93,6 +94,8 @@ __all__ = [
     "make_tool_call_frame",
     "make_result_frame",
     "chaos_release_order",
+    "session_chaos_release_orders",
+    "session_sibling_chaos_order",
     "RecordingMCPSession",
     "mcp_available",
     "require_mcp",

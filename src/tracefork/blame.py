@@ -58,7 +58,7 @@ from .fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from .nondet import find_divergence
 from .observability import instrument
 from .plugins import ORACLE_GROUP, Registry
-from .providers import get_adapter
+from .providers import default_adapter, get_adapter, registered_providers
 from .tape import Tape
 
 # ── Statistical primitives (pure-python, no scipy) ──────────────────────────
@@ -475,12 +475,35 @@ class BudgetExceededError(RuntimeError):
 
 
 def _detect_model(tape: Tape) -> str:
-    """Best-effort model id from the first recorded request (defaults to Sonnet)."""
-    adapter = get_adapter()
-    for req, _ in tape.exchanges:
-        m = adapter.detect_model(req)
+    """Best-effort model id from the recorded requests (defaults to Sonnet).
+
+    Tries the default (Anthropic) adapter first, across every exchange
+    (paired with that exchange's recorded `request_urls[i]`, though Anthropic
+    ignores it) — the EXACT pre-existing order/result, so every Anthropic-tape
+    caller is unaffected. Only when the default adapter finds nothing on any
+    exchange does this fall through to every OTHER registered adapter (each
+    tried with the same paired URL), so a Bedrock/Gemini tape — whose model id
+    lives in the URL, not the body — can auto-resolve its real model instead
+    of silently defaulting to Sonnet pricing."""
+
+    def _url_for(i: int) -> str | None:
+        return tape.request_urls[i] if i < len(tape.request_urls) else None
+
+    default = default_adapter()
+    for i, (req, _resp) in enumerate(tape.exchanges):
+        m = default.detect_model(req, request_url=_url_for(i))
         if m:
             return m
+
+    for name in registered_providers():
+        if name == default.name:
+            continue
+        adapter = get_adapter(name)
+        for i, (req, _resp) in enumerate(tape.exchanges):
+            m = adapter.detect_model(req, request_url=_url_for(i))
+            if m:
+                return m
+
     return SONNET
 
 

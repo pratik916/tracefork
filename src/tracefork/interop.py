@@ -138,10 +138,13 @@ def _blame_attributes(result: FlipRateResult, report: BlameReport) -> dict[str, 
 
 
 def _normalize_exchange(
-    provider: str, request_bytes: bytes, response_bytes: bytes
+    provider: str,
+    request_bytes: bytes,
+    response_bytes: bytes,
+    request_url: str | None = None,
 ) -> tuple[str | None, NormalizedResponse]:
     adapter = get_adapter(provider)
-    request_model = adapter.detect_model(request_bytes)
+    request_model = adapter.detect_model(request_bytes, request_url=request_url)
     try:
         normalized = adapter.parse_response(response_bytes)
     except Exception:
@@ -298,7 +301,8 @@ def build_otel_trace(
     ]
 
     for i, (req, resp) in enumerate(tape.exchanges):
-        request_model, normalized = _normalize_exchange(adapter_name, req, resp)
+        request_url = tape.request_urls[i] if i < len(tape.request_urls) else None
+        request_model, normalized = _normalize_exchange(adapter_name, req, resp, request_url)
         attrs = normalized_to_genai_attributes(
             normalized, provider=provider, request_model=request_model
         )
@@ -360,7 +364,8 @@ def build_openinference_dataset(
     examples: list[dict[str, Any]] = []
 
     for i, (req, resp) in enumerate(tape.exchanges):
-        request_model, normalized = _normalize_exchange(provider, req, resp)
+        request_url = tape.request_urls[i] if i < len(tape.request_urls) else None
+        request_model, normalized = _normalize_exchange(provider, req, resp, request_url)
         model = normalized.model or request_model
         metadata: dict[str, Any] = {OI_SPAN_KIND: "LLM", OI_PROVIDER: provider}
         if model:

@@ -20,8 +20,14 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # nondet_mode recorded by `Recorder`/`AsyncRecorder`). Like `async_batches`,
 # it is envelope/metadata only — NOT fed into `digest()` — so every existing
 # tape's content digest is unchanged, and v1-v4 tapes upcast to `provenance={}`.
+# v6 adds `request_urls`: the request URL captured at each exchange's real
+# capture seam (`transport.py`/`bedrock_transport.py`), parallel-indexed to
+# `exchanges` — used only to recover a provider's model id when it lives in
+# the URL path rather than the body (Gemini/Bedrock). Like `provenance`, it is
+# envelope/metadata only — NOT fed into `digest()` — so every existing tape's
+# content digest is unchanged, and v1-v5 tapes upcast to `[""] * len(exchanges)`.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 5
+TAPE_FORMAT_VERSION = 6
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"

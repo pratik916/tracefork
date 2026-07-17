@@ -3,10 +3,11 @@
     tracefork <command> [args]
 
 Commands: replay, verify, fork, coalition-fork, diff, converge, conflicts,
-report, receipt, release-receipt, serve, blame, tournament, validate, bench,
-export, ingest, prune, proxy, coverage, corpus-blame, locate, query,
-bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show/
-cost/divergence/record/replay/fork/blame/serve).
+settlement-diff, report, receipt, release-receipt, serve, blame, tournament,
+validate, bench, export, ingest, prune, proxy, coverage, corpus-blame, locate,
+query, bundle-export, bundle-import, plus the `branch` sub-app
+(descendants/ancestors/siblings) and the `session` sub-app (create/spawn/show/
+cost/divergence/record/replay/fork/blame/cross-blame/chaos/serve).
 """
 
 from __future__ import annotations
@@ -617,6 +618,65 @@ def conflicts(
         typer.echo(f"  Report saved to {output}\n")
 
     raise typer.Exit(1 if report.has_conflict else 0)
+
+
+@app.command(name="settlement-diff")
+def settlement_diff(
+    run_id: str = typer.Argument(..., help="parent run_id"),
+    branch_id: str = typer.Argument(..., help="branch_id to export tool-call settlement ops for"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Optional JSON output path (prints to stdout if omitted)"
+    ),
+) -> None:
+    """Export a winning fork's post-divergence tool-call side effects as a
+    portable, framework-agnostic settlement-diff artifact (tracefork-bge.69).
+
+    Loads the parent tape + branch via `TapeStore.load_tape`/`load_branch`
+    (mirrors `diff`'s and `conflicts`' branch-mode loading), decodes
+    `delta_tape.tool_exchanges` via `settlement.branch_settlement_diff`, and
+    writes/prints `settlement.to_settlement_json`'s in-toto-Statement-shaped
+    output. Read-only export -- TraceFork never applies/settles anything
+    itself; this is for an external apply/settlement layer to consume.
+    Always exits 0 (like `bundle-export`/`receipt`), not a pass/fail gate
+    like `diff`/`conflicts`.
+    """
+    import json as _json
+
+    from tracefork.settlement import branch_settlement_diff, to_settlement_json
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        parent_tape = db.load_tape(run_id)
+        branch_row = db.load_branch(branch_id)
+    finally:
+        db.close()
+
+    diff = branch_settlement_diff(
+        parent_tape,
+        branch_row["delta_tape"],
+        divergence_step=branch_row["divergence_step"],
+        branch_digest=branch_row["branch_digest"],
+    )
+    payload = to_settlement_json(diff)
+    text = _json.dumps(payload, indent=2)
+
+    heading = f"tracefork settlement-diff {run_id} {branch_id}"
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    typer.echo(f"  ops  {len(diff.ops)}")
+
+    if output is not None:
+        output.write_text(text)
+        typer.echo(f"  Settlement diff written to {output}\n")
+    else:
+        typer.echo("")
+        typer.echo(text)
+
+    raise typer.Exit(0)
 
 
 @app.command()
@@ -2039,10 +2099,85 @@ def query(
 
 # ── session (orchestration spawn-lineage) sub-app ───────────────────────────
 
+branch_app = typer.Typer(
+    name="branch",
+    help="Branch DAG relationship queries (descendants/ancestors/siblings).",
+)
+app.add_typer(branch_app, name="branch")
+
+
+@branch_app.command("descendants")
+def branch_descendants_cmd(
+    run_id: str = typer.Argument(..., help="run_id (or branch_id) to walk descendants from"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Every branch reachable from RUN_ID via fork-of-fork chains (BFS over
+    `branches.parent_run_id`, promoted branches only recursed into)."""
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        descendants = db.branch_descendants(run_id)
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Descendants of {run_id} ({len(descendants)}):")
+    for branch_id in descendants:
+        typer.echo(f"    {branch_id}")
+    typer.echo("")
+
+
+@branch_app.command("ancestors")
+def branch_ancestors_cmd(
+    run_id: str = typer.Argument(..., help="branch_id to walk ancestors from"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Walk RUN_ID's parent_run_id chain upward, nearest-parent-first."""
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        ancestors = db.branch_ancestors(run_id)
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Ancestors of {run_id} ({len(ancestors)}):")
+    for parent_id in ancestors:
+        typer.echo(f"    {parent_id}")
+    typer.echo("")
+
+
+@branch_app.command("siblings")
+def branch_siblings_cmd(
+    run_id: str = typer.Argument(..., help="branch_id to find siblings of"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Every other branch forked from RUN_ID's own parent_run_id."""
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        siblings = db.branch_siblings(run_id)
+    finally:
+        db.close()
+
+    typer.echo(f"\n  Siblings of {run_id} ({len(siblings)}):")
+    for sibling_id in siblings:
+        typer.echo(f"    {sibling_id}")
+    typer.echo("")
+
+
 session_app = typer.Typer(
     name="session",
     help="Orchestration session / spawn-lineage commands "
-    "(create/spawn/show/cost/divergence/record/replay/fork/blame/serve).",
+    "(create/spawn/show/cost/divergence/record/replay/fork/blame/"
+    "cross-blame/chaos/serve).",
 )
 app.add_typer(session_app, name="session")
 
@@ -2083,6 +2218,9 @@ def session_spawn(
     parent_run_id: str = typer.Argument(..., help="Delegating run_id"),
     child_run_id: str = typer.Argument(..., help="Spawned/delegated-to run_id"),
     reason: str = typer.Option("", "--reason", help="Human-readable spawn reason"),
+    spawn_step: int = typer.Option(
+        None, "--spawn-step", help="Step index of parent_run_id this child was spawned at"
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
@@ -2104,6 +2242,7 @@ def session_spawn(
             parent_run_id=parent_run_id,
             child_run_id=child_run_id,
             spawn_reason=reason,
+            spawn_step_index=spawn_step,
         )
     except sqlite3.IntegrityError as exc:
         typer.echo(f"  {exc}")
@@ -2523,6 +2662,86 @@ def session_blame(
         fdr_q=fdr_q,
         null_flip_rate=null_flip_rate,
         store=store,
+    )
+
+
+@session_app.command("cross-blame")
+def session_cross_blame(
+    session_id: str = typer.Argument(
+        ..., help="Session id to build the cross-tape causal view for"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit JSON instead of a formatted table"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Session-wide causal view: aggregates every already-persisted
+    causal_edges row across SESSION_ID's tapes
+    (cross_tape_blame.cross_tape_causal_edges), ordered by cross-tape
+    topological position. Read-only, $0 -- never invokes fork/blame itself,
+    only reads already-persisted rows a prior `blame`/`session blame` run
+    wrote."""
+    import json
+
+    from tracefork.cross_tape_blame import cross_tape_causal_edges
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            db.get_session(session_id)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        edges = cross_tape_causal_edges(db, session_id)
+    finally:
+        db.close()
+
+    if json_output:
+        typer.echo(json.dumps(edges, indent=2))
+        return
+
+    typer.echo(f"\n  Cross-tape causal view for session {session_id} ({len(edges)} edges):")
+    for edge in edges:
+        typer.echo(
+            f"    {edge['run_id']}:{edge['step_index']} "
+            f"{edge['method']} responsible={edge['responsible']}"
+        )
+    typer.echo("")
+
+
+@session_app.command("chaos")
+def session_chaos_cmd(
+    session_id: str = typer.Argument(..., help="Session id to derive chaos schedules for"),
+    seed: int = typer.Option(..., "--seed", help="Base seed for the derived schedules"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Derive (never replay-drive) per-tape chaos release orders and
+    cross-sub-agent sibling completion orders for SESSION_ID -- an analysis
+    surface only (see session_chaos.py's module docstring)."""
+    import json
+
+    from tracefork.session_chaos import session_chaos_release_orders, session_sibling_chaos_order
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            db.get_session(session_id)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        per_tape = session_chaos_release_orders(db, session_id, seed)
+        sibling = session_sibling_chaos_order(db, session_id, seed)
+    finally:
+        db.close()
+
+    typer.echo(
+        json.dumps({"per_tape_release_orders": per_tape, "sibling_chaos_order": sibling}, indent=2)
     )
 
 
