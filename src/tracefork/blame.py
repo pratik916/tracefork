@@ -52,6 +52,7 @@ from typing import Protocol, cast
 import httpx
 
 from . import pricing
+from .boundary_guard import ConfinementSpec
 from .constants import SONNET
 from .fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from .nondet import find_divergence
@@ -384,6 +385,7 @@ class BlameReport:
     null_flip_rate: float = 0.05
     fdr_q: float = 0.10
     responsible_set: list[int] = field(default_factory=list)
+    confinement_risk: ConfinementRisk | None = None
 
     def top(self) -> FlipRateResult | None:
         """Highest-flip-rate step (back-compat argmax accessor)."""
@@ -434,6 +436,7 @@ class ShapleyReport:
     parent_outcome: bool | None = None
     est_cost_usd: float = 0.0
     confidence: float = 0.95
+    confinement_risk: ConfinementRisk | None = None
 
     def top(self) -> ShapleyResult | None:
         """Highest-Shapley-value step (argmax accessor, mirrors BlameReport.top())."""
@@ -447,6 +450,21 @@ class BlameEstimate:
     n_candidates: int
     n_forks: int
     est_usd: float
+
+
+@dataclass(frozen=True)
+class ConfinementRisk:
+    """Pure disclosure of a prospective blame run's trial count and whether it
+    will run under a `ConfinementSpec` (see `boundary_guard.py`) — never a gate,
+    unlike `BlameEstimate`'s dollar cost (which `rank()`/`shapley_rank()` DO
+    raise `BudgetExceededError` against). Surfaced by
+    `BudgetGovernor.confinement_risk()` and attached to `BlameReport`/
+    `ShapleyReport` so a caller sees, before or alongside spend, exactly how
+    many re-executed-agent trials ran unconfined."""
+
+    projected_trials: int
+    confined: bool
+    note: str
 
 
 # ── BudgetGovernor ──────────────────────────────────────────────────────────
@@ -539,6 +557,47 @@ class BudgetGovernor:
             avg_in, avg_out = _avg_tokens(tape)
             est_usd = billed_calls * (avg_in * in_rate + avg_out * out_rate)
         return BlameEstimate(n_candidates=n_candidates, n_forks=n_forks, est_usd=est_usd)
+
+    @staticmethod
+    def confinement_risk(
+        tape: Tape,
+        *,
+        k: int,
+        coalition_samples: int = 0,
+        async_batches: list[list[int]] | None = None,
+        confinement: ConfinementSpec | None = None,
+    ) -> ConfinementRisk:
+        """Disclose the projected trial count and confinement status of a
+        prospective blame run — pure disclosure, never a gate: unlike
+        `estimate()`'s `est_usd > budget_usd` -> `BudgetExceededError` cost
+        check, this never raises.
+
+        `projected_trials` reuses `estimate(...).n_forks` — the exact real
+        trial count `rank()` will run (`n_candidates * k`), and a documented
+        loose upper bound for `shapley_rank()` (the temporal-Shapley walk's
+        true per-repeat/per-block trial count varies; see `estimate`'s own
+        `coalition_samples`/`async_batches` multiplier docs). `confined` is
+        simply whether a `ConfinementSpec` was passed; `note` is a short,
+        CLI-echoable phrase spelling out the risk.
+        """
+        projected_trials = BudgetGovernor.estimate(
+            tape, k=k, coalition_samples=coalition_samples, async_batches=async_batches
+        ).n_forks
+        confined = confinement is not None
+        if confined:
+            assert confinement is not None  # narrows for mypy; confined implies not-None
+            note = (
+                f"CONFINED: {projected_trials} projected trial(s) will run under "
+                f"ConfinementSpec(writable_roots={confinement.writable_roots!r}, "
+                f"allowed_hosts={confinement.allowed_hosts!r})."
+            )
+        else:
+            note = (
+                f"UNCONFINED: {projected_trials} projected trial(s) will run with no "
+                "filesystem-write or network-egress restriction — pass confinement= "
+                "to declare a writable-roots/allowed-hosts surface."
+            )
+        return ConfinementRisk(projected_trials=projected_trials, confined=confined, note=note)
 
 
 # ── outcome extraction ────────────────────────────────────────────────────────
@@ -704,6 +763,7 @@ class BlameEngine:
         fdr_q: float = 0.10,
         min_valid_fraction: float = 0.5,
         boundary_guard: bool = False,
+        confinement: ConfinementSpec | None = None,
     ) -> BlameReport:
         """Fork each exchange `k` times with a perturbed response and measure how
         often the graded outcome flips relative to the parent run.
@@ -725,6 +785,15 @@ class BlameEngine:
         surface (see `boundary_guard.py`). A trial that trips the guard raises
         and is counted UNDEFINED by `_run_trial`'s existing exception handling,
         never a silent NO_FLIP.
+
+        `confinement` (default `None`, byte-identical to before when left off)
+        is forwarded to every `ForkEngine.fork()` trial call exactly like
+        `fork()`'s own `confinement=` kwarg — it FORCES the guard active for
+        each re-executed agent trial even when `boundary_guard` is left
+        `False`. The returned report's `confinement_risk` field discloses the
+        projected trial count and whether it ran confined (see
+        `BudgetGovernor.confinement_risk`); this is pure disclosure and never
+        raises on its own.
         """
         est = BudgetGovernor.estimate(tape, k=k)
         if est.est_usd > budget_usd:
@@ -733,6 +802,7 @@ class BlameEngine:
                 f"${budget_usd:.2f} ({est.n_forks} forks at k={k}); raise the budget "
                 f"or lower k"
             )
+        risk = BudgetGovernor.confinement_risk(tape, k=k, confinement=confinement)
 
         parent_outcome: bool | None = None
         if tape.exchanges:
@@ -753,6 +823,7 @@ class BlameEngine:
                     parent_outcome,
                     api_key,
                     boundary_guard,
+                    confinement,
                 )
                 total_forks += 1
                 if outcome is TrialOutcome.FLIP:
@@ -817,6 +888,7 @@ class BlameEngine:
             null_flip_rate=null_flip_rate,
             fdr_q=fdr_q,
             responsible_set=responsible_set,
+            confinement_risk=risk,
         )
 
     @staticmethod
@@ -829,6 +901,7 @@ class BlameEngine:
         parent_outcome: bool | None,
         api_key: str,
         boundary_guard: bool = False,
+        confinement: ConfinementSpec | None = None,
     ) -> tuple[TrialOutcome, bool]:
         """Run one fork trial; return ``(outcome, diverged)``.
 
@@ -836,10 +909,11 @@ class BlameEngine:
         caller counts it. ``diverged`` is True only when the failure is a genuine
         `DivergenceError` (recovered from the SDK's exception wrapping), so the
         per-step divergence rate is surfaced rather than swallowed. A
-        `BoundaryViolationError` (raised only when `boundary_guard=True`) is
-        caught by the same broad ``except Exception`` below and counted
-        UNDEFINED — never a silent NO_FLIP — but is not itself a `DivergenceError`,
-        so ``diverged`` stays False for it.
+        `BoundaryViolationError` (raised only when `boundary_guard=True`, or
+        always when `confinement` is not `None`) is caught by the same broad
+        ``except Exception`` below and counted UNDEFINED — never a silent
+        NO_FLIP — but is not itself a `DivergenceError`, so ``diverged`` stays
+        False for it.
         """
         mutated_resp, tail_transport_obj = perturb_factory(step_idx)
         tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
@@ -852,6 +926,7 @@ class BlameEngine:
                 post_fork_transport=tail_transport,
                 api_key=api_key,
                 boundary_guard=boundary_guard,
+                confinement=confinement,
             )
         except Exception as exc:
             # A diverged (agent not deterministic up to the step) or otherwise
@@ -880,6 +955,7 @@ class BlameEngine:
         api_key: str,
         k: int,
         boundary_guard: bool = False,
+        confinement: ConfinementSpec | None = None,
     ) -> _StepTally:
         """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
         set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
@@ -891,9 +967,10 @@ class BlameEngine:
         they would for an equivalent sequence of single-step trials. The tail
         transport is the one associated with the *highest-indexed* coalition
         member — for a one-element coalition this reduces to exactly
-        ``_run_trial``'s behaviour. ``boundary_guard`` is forwarded to
-        `ForkEngine.fork_coalition()` exactly like ``_run_trial`` forwards it to
-        `ForkEngine.fork()`; a violation is caught below and counted UNDEFINED.
+        ``_run_trial``'s behaviour. ``boundary_guard``/``confinement`` are
+        forwarded to `ForkEngine.fork_coalition()` exactly like ``_run_trial``
+        forwards them to `ForkEngine.fork()`; a violation is caught below and
+        counted UNDEFINED.
         """
         tally = _StepTally()
         ordered = tuple(sorted(steps))
@@ -911,6 +988,7 @@ class BlameEngine:
                     post_fork_transport=tail_transport,
                     api_key=api_key,
                     boundary_guard=boundary_guard,
+                    confinement=confinement,
                 )
             except Exception as exc:
                 tally.undefined += 1
@@ -948,6 +1026,7 @@ class BlameEngine:
         sufficiency_threshold: float = 0.5,
         boundary_guard: bool = False,
         async_batches: list[list[int]] | None = None,
+        confinement: ConfinementSpec | None = None,
     ) -> ShapleyReport:
         """Temporal (order-restricted) Shapley blame — additive to `rank()`.
 
@@ -1024,6 +1103,11 @@ class BlameEngine:
         sufficiency pass (the `rank()` call below) and to every coalition-walk
         trial (`_run_coalition_trials`), so it confines the re-executed agent's
         surface across every fork this method issues, not just some of them.
+        `confinement` (default `None`) is forwarded the same way, to both the
+        sufficiency pass and every coalition-walk trial. The returned report's
+        `confinement_risk` field discloses the projected trial count (a loose
+        upper bound here, see `BudgetGovernor.confinement_risk`) and whether it
+        ran confined; pure disclosure, never a gate on its own.
 
         Reuses `_run_coalition_trials`/`CoalitionSpec` completely unchanged for
         every coalition evaluation, `async_batches` or not — a coalition is
@@ -1044,6 +1128,13 @@ class BlameEngine:
                 f"${budget_usd:.2f} ({est.n_forks} forks at k={k}, m_samples={m_samples}); "
                 f"raise the budget or lower k/m_samples"
             )
+        risk = BudgetGovernor.confinement_risk(
+            tape,
+            k=k,
+            coalition_samples=m_samples,
+            async_batches=async_batches,
+            confinement=confinement,
+        )
 
         # Sufficiency reuses the existing, independently-tested single-step path.
         # budget_usd=inf: the combined cost was already cleared above, so this
@@ -1057,6 +1148,7 @@ class BlameEngine:
             budget_usd=math.inf,
             api_key=f"{api_key}-sufficiency",
             boundary_guard=boundary_guard,
+            confinement=confinement,
         )
         sufficiency_by_step = {r.step_index: r for r in single_step.results}
         parent_outcome = single_step.parent_outcome
@@ -1086,6 +1178,7 @@ class BlameEngine:
                 api_key,
                 k,
                 boundary_guard,
+                confinement,
             )
             coalition_forks += k
             return tally.flips / tally.valid if tally.valid > 0 else math.nan
@@ -1173,4 +1266,5 @@ class BlameEngine:
             parent_outcome=parent_outcome,
             est_cost_usd=est.est_usd,
             confidence=confidence,
+            confinement_risk=risk,
         )

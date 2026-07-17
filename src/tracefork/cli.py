@@ -2,9 +2,11 @@
 
     tracefork <command> [args]
 
-Commands: replay, verify, fork, coalition-fork, diff, report, receipt, serve,
-blame, tournament, validate, bench, export, ingest, prune, proxy, coverage,
-bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show).
+Commands: replay, verify, fork, coalition-fork, diff, converge, conflicts,
+report, receipt, release-receipt, serve, blame, tournament, validate, bench,
+export, ingest, prune, proxy, coverage, corpus-blame, locate, query,
+bundle-export, bundle-import, plus the `session` sub-app (create/spawn/show/
+cost/divergence/record/replay/fork/blame/serve).
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ def replay(
     """Replay a tape and print the verification receipt, or gate a fixture corpus with --check."""
     import importlib
 
+    from tracefork.basis import basis_from_provenance, current_basis, format_basis_drift_warning
     from tracefork.certificate import certificate_from_verification
     from tracefork.replay import ReplayVerifier
     from tracefork.tape import Tape
@@ -51,6 +54,12 @@ def replay(
         raise typer.Exit(1)
 
     tape = Tape.load(str(tape_path))
+
+    recorded_basis = basis_from_provenance(tape.provenance)
+    if recorded_basis is not None:
+        warning = format_basis_drift_warning(recorded_basis, current_basis())
+        if warning is not None:
+            typer.echo(warning)
 
     module_path, fn_name = agent.rsplit(":", 1)
     mod = importlib.import_module(module_path)
@@ -184,15 +193,37 @@ def fork(
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
     desc: str = typer.Option("", "--desc", "-d", help="Human description of mutation"),
+    writable_root: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--writable-root",
+        help="Directory a ConfinementSpec permits writes under (repeatable); combined "
+        "with --allowed-host to force BoundaryGuard confinement for the fork's "
+        "re-executed agent (see boundary_guard.py). Omit both for today's unconfined "
+        "default.",
+    ),
+    allowed_host: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--allowed-host",
+        help="Hostname a ConfinementSpec permits socket.connect to (repeatable)",
+    ),
 ) -> None:
     """Fork a run at a step with a mutated response, record the new branch."""
     import importlib
 
+    from tracefork.basis import basis_from_provenance, current_basis, format_basis_drift_warning
+    from tracefork.boundary_guard import ConfinementSpec, ConfinementViolationError
+    from tracefork.confinement_diagnostics import diagnose_confinement
     from tracefork.fork import BranchSpec, ForkEngine
     from tracefork.store import TapeStore
 
     db = TapeStore(str(store))
     parent_tape = db.load_tape(run_id)
+
+    recorded_basis = basis_from_provenance(parent_tape.provenance)
+    if recorded_basis is not None:
+        warning = format_basis_drift_warning(recorded_basis, current_basis())
+        if warning is not None:
+            typer.echo(warning)
 
     mutated_response = response_file.read_bytes()
 
@@ -206,7 +237,27 @@ def fork(
         mutation_desc=desc,
     )
 
-    branch = ForkEngine.fork(parent_tape, spec, agent_fn)
+    confinement = (
+        ConfinementSpec(writable_roots=tuple(writable_root), allowed_hosts=tuple(allowed_host))
+        if writable_root or allowed_host
+        else None
+    )
+
+    try:
+        branch = ForkEngine.fork(parent_tape, spec, agent_fn, confinement=confinement)
+    except ConfinementViolationError as exc:
+        diag = diagnose_confinement(exc)
+        typer.echo("\n  Confinement violation")
+        typer.echo(f"  {'─' * 40}")
+        typer.echo(f"  kind            {diag.violation_kind}")
+        typer.echo(f"  attempted       {diag.attempted}")
+        if diag.declared_writable_roots is not None:
+            typer.echo(f"  writable_roots  {list(diag.declared_writable_roots)}")
+        if diag.declared_allowed_hosts is not None:
+            typer.echo(f"  allowed_hosts   {list(diag.declared_allowed_hosts)}")
+        typer.echo(f"  message         {diag.message}")
+        typer.echo("")
+        raise typer.Exit(1) from exc
 
     branch_id = db.save_branch(
         parent_run_id=run_id,
@@ -214,6 +265,7 @@ def fork(
         delta_tape=branch.delta_tape,
         mutation_desc=desc,
         branch_digest=branch.branch_digest,
+        confinement_tier=branch.confinement_tier,
     )
 
     typer.echo("\n  Fork created")
@@ -239,6 +291,19 @@ def coalition_fork(
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
     desc: str = typer.Option("", "--desc", "-d", help="Human description of the coalition"),
+    writable_root: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--writable-root",
+        help="Directory a ConfinementSpec permits writes under (repeatable); combined "
+        "with --allowed-host to force BoundaryGuard confinement for the fork's "
+        "re-executed agent (see boundary_guard.py). Omit both for today's unconfined "
+        "default.",
+    ),
+    allowed_host: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--allowed-host",
+        help="Hostname a ConfinementSpec permits socket.connect to (repeatable)",
+    ),
 ) -> None:
     """Fork a run at a SET of steps forced jointly, record the new branch.
 
@@ -257,6 +322,9 @@ def coalition_fork(
     import importlib
     import json
 
+    from tracefork.basis import basis_from_provenance, current_basis, format_basis_drift_warning
+    from tracefork.boundary_guard import ConfinementSpec, ConfinementViolationError
+    from tracefork.confinement_diagnostics import diagnose_confinement
     from tracefork.fork import CoalitionSpec, ForkEngine, StepIntervention
     from tracefork.store import TapeStore
 
@@ -286,14 +354,39 @@ def coalition_fork(
     db = TapeStore(str(store))
     parent_tape = db.load_tape(run_id)
 
+    recorded_basis = basis_from_provenance(parent_tape.provenance)
+    if recorded_basis is not None:
+        warning = format_basis_drift_warning(recorded_basis, current_basis())
+        if warning is not None:
+            typer.echo(warning)
+
     module_path, fn_name = agent.rsplit(":", 1)
     mod = importlib.import_module(module_path)
     agent_fn = getattr(mod, fn_name)
 
+    confinement = (
+        ConfinementSpec(writable_roots=tuple(writable_root), allowed_hosts=tuple(allowed_host))
+        if writable_root or allowed_host
+        else None
+    )
+
     try:
-        branch = ForkEngine.fork_coalition(parent_tape, spec_obj, agent_fn)
+        branch = ForkEngine.fork_coalition(parent_tape, spec_obj, agent_fn, confinement=confinement)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+    except ConfinementViolationError as exc:
+        diag = diagnose_confinement(exc)
+        typer.echo("\n  Confinement violation")
+        typer.echo(f"  {'─' * 40}")
+        typer.echo(f"  kind            {diag.violation_kind}")
+        typer.echo(f"  attempted       {diag.attempted}")
+        if diag.declared_writable_roots is not None:
+            typer.echo(f"  writable_roots  {list(diag.declared_writable_roots)}")
+        if diag.declared_allowed_hosts is not None:
+            typer.echo(f"  allowed_hosts   {list(diag.declared_allowed_hosts)}")
+        typer.echo(f"  message         {diag.message}")
+        typer.echo("")
+        raise typer.Exit(1) from exc
 
     # Coalition step list + description round-trip through the existing
     # free-text `mutation_desc` column (no store.py schema change) -- see
@@ -308,6 +401,7 @@ def coalition_fork(
         delta_tape=branch.delta_tape,
         mutation_desc=mutation_desc_json,
         branch_digest=branch.branch_digest,
+        confinement_tier=branch.confinement_tier,
     )
 
     typer.echo("\n  Coalition fork created")
@@ -384,6 +478,145 @@ def _print_diff_receipt(heading: str, step_diffs) -> None:
         typer.echo(f"\n  {len(step_diffs)}/{len(step_diffs)} step(s) identical\n")
     else:
         typer.echo(f"\n  {n_changed}/{len(step_diffs)} step(s) changed\n")
+
+
+@app.command()
+def converge(
+    branch_id_a: str = typer.Argument(
+        ..., help="First branch_id (must share divergence_step with branch_id_b)"
+    ),
+    branch_id_b: str = typer.Argument(..., help="Second branch_id"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Reconvergence check: did two same-divergence-step sibling branches
+    (e.g. two of `blame`'s k trials, or two `tournament` variants) end up
+    producing byte-identical continuations again? Reuses `fork.py`'s
+    per-exchange fingerprint -- see `convergence.py`."""
+    from tracefork.convergence import find_reconvergence
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        branch_a = db.load_branch(branch_id_a)
+        branch_b = db.load_branch(branch_id_b)
+        result = find_reconvergence(
+            branch_a["delta_tape"],
+            branch_a["divergence_step"],
+            branch_b["delta_tape"],
+            branch_b["divergence_step"],
+        )
+        heading = f"tracefork converge {branch_id_a} {branch_id_b}"
+    finally:
+        db.close()
+
+    _print_convergence_receipt(heading, result)
+    raise typer.Exit(0 if result.stable else 1)
+
+
+def _print_convergence_receipt(heading: str, result) -> None:
+    """Operator-facing receipt for `converge` -- one line per step, MATCH
+    when both sides fingerprint identically, DIVERGED otherwise. Mirrors
+    `_print_diff_receipt`'s PASS/FAIL-per-row style."""
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    for s in result.steps:
+        if s.matched:
+            typer.echo(f"  [MATCH]    step {s.step_index:<4} {s.fingerprint_a[:16]}")
+        else:
+            typer.echo(
+                f"  [DIVERGED] step {s.step_index:<4} "
+                f"{s.fingerprint_a[:16]} != {s.fingerprint_b[:16]}"
+            )
+    if result.stable:
+        typer.echo(f"\n  stable reconvergence from step {result.first_convergent_step} onward\n")
+    elif result.reconverged:
+        typer.echo(f"\n  coincidental match at step(s) {result.matched_steps} -- not stable\n")
+    else:
+        typer.echo("\n  never reconverged\n")
+
+
+@app.command()
+def conflicts(
+    parent_run_id: str = typer.Argument(..., help="parent run_id both branches forked from"),
+    branch_id_a: str = typer.Argument(..., help="first branch_id"),
+    branch_id_b: str = typer.Argument(..., help="second branch_id"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Optional JSON output path"
+    ),
+) -> None:
+    """Reviewer-sanity check: do two branches' post-divergence tool calls touch
+    the same (tool_name, resource)? Loads both branches' `delta_tape`s via
+    `TapeStore.load_branch` (mirrors `diff`'s branch-mode loading) and reports
+    every overlap found by `effects.diff_effects` -- read-only, no merge/apply
+    logic. Exits 1 iff a conflict is found, else 0.
+    """
+    from tracefork.effects import diff_effects
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        branch_a = db.load_branch(branch_id_a)
+        branch_b = db.load_branch(branch_id_b)
+    finally:
+        db.close()
+
+    report = diff_effects(branch_a["delta_tape"], branch_b["delta_tape"])
+
+    heading = f"tracefork conflicts {parent_run_id} {branch_id_a} {branch_id_b}"
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    typer.echo(f"  branch {branch_id_a}: {len(report.effects_a)} tool effect(s)")
+    typer.echo(f"  branch {branch_id_b}: {len(report.effects_b)} tool effect(s)")
+    if report.overlaps:
+        typer.echo(f"\n  [FAIL] {len(report.overlaps)} overlapping tool effect(s):")
+        for o in report.overlaps:
+            typer.echo(f"    {o.tool_name}({o.resource!r})")
+    else:
+        typer.echo("\n  [PASS] no overlapping tool effects")
+    typer.echo("")
+
+    if output is not None:
+        import json as _json
+
+        def _effect_dict(e):
+            return {
+                "source": e.source,
+                "index": e.index,
+                "tool_name": e.tool_name,
+                "resource": e.resource,
+                "resource_is_fallback": e.resource_is_fallback,
+            }
+
+        output.write_text(
+            _json.dumps(
+                {
+                    "parent_run_id": parent_run_id,
+                    "branch_id_a": branch_id_a,
+                    "branch_id_b": branch_id_b,
+                    "effects_a": [_effect_dict(e) for e in report.effects_a],
+                    "effects_b": [_effect_dict(e) for e in report.effects_b],
+                    "overlaps": [
+                        {
+                            "tool_name": o.tool_name,
+                            "resource": o.resource,
+                            "effect_a": _effect_dict(o.effect_a),
+                            "effect_b": _effect_dict(o.effect_b),
+                        }
+                        for o in report.overlaps
+                    ],
+                    "has_conflict": report.has_conflict,
+                },
+                indent=2,
+            )
+        )
+        typer.echo(f"  Report saved to {output}\n")
+
+    raise typer.Exit(1 if report.has_conflict else 0)
 
 
 @app.command()
@@ -558,6 +791,112 @@ def receipt(
         typer.echo(f"  Shield badge written to {shield_output}")
 
 
+@app.command(name="release-receipt")
+def release_receipt(
+    version: str = typer.Argument(..., help="Release version this receipt is for (e.g. v0.3.0)"),
+    junit_xml: Path = typer.Option(  # noqa: B008
+        Path("junit.xml"),
+        "--junit-xml",
+        help="Path to a JUnit XML report (from `pytest --junit-xml`); embedded if it "
+        "exists, an explicit absent marker otherwise",
+    ),
+    coverage_json: Path = typer.Option(  # noqa: B008
+        Path("coverage.json"),
+        "--coverage-json",
+        help="Path to a `coverage json` report; embedded if it exists, an explicit "
+        "absent marker otherwise",
+    ),
+    validation_report: Path = typer.Option(  # noqa: B008
+        Path("validation_report.json"),
+        "--validation-report",
+        help="Path to a validation_report.json (from `tracefork validate`); embedded "
+        "if it exists, an explicit absent marker otherwise",
+    ),
+    bench_report_path: Path = typer.Option(  # noqa: B008
+        Path("bench_report.json"),
+        "--bench-report",
+        help="Path to a bench_report.json (from `tracefork bench`); embedded if it "
+        "exists, an explicit absent marker otherwise",
+    ),
+    replay_fixtures_dir: Path = typer.Option(  # noqa: B008
+        Path("experiments/replay_fixtures"),
+        "--replay-fixtures",
+        help="Committed tape-fixture corpus directory to freshly replay-check ($0, deterministic)",
+    ),
+    output_dir: Path = typer.Option(  # noqa: B008
+        Path("docs/release_receipts"),
+        "--output-dir",
+        help="Directory the signed receipt JSON is written to, as <version>.json",
+    ),
+) -> None:
+    """Compose+sign a per-release trust receipt (tracefork-bge.50).
+
+    Reads junit.xml/coverage.json/validation_report.json/bench_report.json off
+    disk if present (an explicit absent marker otherwise), runs a fresh ($0,
+    deterministic) replay-fixture-corpus check and CI-calibration sweep, and
+    composes+signs everything into one content-addressed release receipt
+    written to <output-dir>/<version>.json (committed, unlike the other
+    gitignored runtime JSONs). Signs with HMAC-SHA256 when
+    `TRACEFORK_RELEASE_SIGNING_KEY` is set in the environment (an honest
+    symmetric attestation, not a DSSE/asymmetric signature); unsigned
+    otherwise. Exits 1 if the replay corpus didn't fully pass or calibration
+    has coverage regressions, 0 otherwise.
+    """
+    import json as _json
+    import os
+
+    from tracefork.ci_calibration import run_calibration
+    from tracefork.release_receipt import (
+        build_release_receipt,
+        parse_coverage_summary,
+        parse_junit_test_summary,
+        sign_release_receipt,
+    )
+    from tracefork.replay import run_fixture_corpus_check
+
+    test_summary = parse_junit_test_summary(junit_xml) if junit_xml.exists() else None
+    coverage_summary = parse_coverage_summary(coverage_json) if coverage_json.exists() else None
+
+    validate_data = None
+    if validation_report.exists():
+        validate_data = _json.loads(validation_report.read_text())
+
+    bench_data = None
+    if bench_report_path.exists():
+        bench_data = _json.loads(bench_report_path.read_text())
+
+    replay_corpus_result = run_fixture_corpus_check(replay_fixtures_dir)
+    calibration_report = run_calibration()
+
+    receipt = build_release_receipt(
+        version=version,
+        test_summary=test_summary,
+        coverage_summary=coverage_summary,
+        validate_report=validate_data,
+        bench_report=bench_data,
+        replay_corpus=replay_corpus_result,
+        calibration=calibration_report,
+    )
+
+    signing_key_str = os.environ.get("TRACEFORK_RELEASE_SIGNING_KEY")
+    signing_key = signing_key_str.encode("utf-8") if signing_key_str else None
+    receipt = sign_release_receipt(receipt, signing_key=signing_key)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{version}.json"
+    output_path.write_text(_json.dumps(receipt, indent=2))
+    typer.echo(f"  Release receipt written to {output_path}")
+    typer.echo(f"  receipt_digest  {receipt['receipt_digest']}")
+
+    if not replay_corpus_result.all_passed:
+        typer.echo("  replay corpus check FAILED")
+    if not calibration_report.all_within_tolerance():
+        typer.echo("  calibration has coverage regressions")
+
+    ok = replay_corpus_result.all_passed and calibration_report.all_within_tolerance()
+    raise typer.Exit(0 if ok else 1)
+
+
 @app.command()
 def serve(
     store: Path = typer.Option(  # noqa: B008
@@ -595,6 +934,13 @@ def blame(
     ),
     success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
     failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
+    field: str = typer.Option(
+        None,
+        "--field",
+        help="JSON field path ($.a.b[0].c) to grade instead of the whole output "
+        "text (scopes success/failure regex matching to one field's value; "
+        "see tracefork.field_oracle.FieldDiffOracle)",
+    ),
     ci_method: str = typer.Option(
         "wilson", "--ci-method", help="Proportion CI: wilson|jeffreys|clopper_pearson|agresti_coull"
     ),
@@ -623,7 +969,8 @@ def blame(
     import json
     import os
 
-    from tracefork.blame import BlameEngine, BudgetGovernor, CIMethod, StringMatchOracle
+    from tracefork import narrative
+    from tracefork.blame import BlameEngine, BudgetGovernor, CIMethod, Oracle, StringMatchOracle
     from tracefork.store import TapeStore
     from tracefork.wire import make_text_response
 
@@ -638,7 +985,14 @@ def blame(
     module_path, fn_name = agent.rsplit(":", 1)
     agent_fn = getattr(importlib.import_module(module_path), fn_name)
 
-    oracle = StringMatchOracle(success_re=success_re, failure_re=failure_re)
+    if field:
+        from tracefork.field_oracle import FieldDiffOracle
+
+        oracle: Oracle = FieldDiffOracle(
+            field_path=field, success_re=success_re, failure_re=failure_re
+        )
+    else:
+        oracle = StringMatchOracle(success_re=success_re, failure_re=failure_re)
     est = BudgetGovernor.estimate(tape, k=k)
 
     typer.echo(f"\n  Blame estimate: {est.n_forks} forks, ~${est.est_usd:.2f}")
@@ -646,6 +1000,9 @@ def blame(
         typer.echo(f"  Estimated cost ${est.est_usd:.2f} exceeds budget ${budget:.2f}.")
         typer.echo("  Use --budget to increase or --k to reduce trials.")
         raise typer.Exit(1)
+
+    risk = BudgetGovernor.confinement_risk(tape, k=k)
+    typer.echo(f"  {risk.note}")
 
     mutated = make_text_response(perturbation)
 
@@ -704,6 +1061,15 @@ def blame(
                 "null_flip_rate": null_flip_rate,
                 "fdr_q": fdr_q,
                 "responsible_set": report.responsible_set,
+                "confinement_risk": (
+                    {
+                        "projected_trials": report.confinement_risk.projected_trials,
+                        "confined": report.confinement_risk.confined,
+                        "note": report.confinement_risk.note,
+                    }
+                    if report.confinement_risk is not None
+                    else None
+                ),
                 "results": [
                     {
                         "step_index": r.step_index,
@@ -727,6 +1093,10 @@ def blame(
         )
     )
     typer.echo(f"  Report saved to {report_path}")
+
+    narrative_path = Path(f"blame_{run_id}.md")
+    narrative_path.write_text(narrative.explain_blame_report(report))
+    typer.echo(f"  Narrative saved to {narrative_path}")
 
     edge_ids = db.save_blame_report(run_id, report)
     typer.echo(f"  Causal edges persisted   {len(edge_ids)}")
@@ -1286,6 +1656,94 @@ def coverage(
 
 
 @app.command()
+def corpus_blame(
+    top_n: int = typer.Option(20, "--top-n", help="Cap on the top_responsible list"),
+    method: str = typer.Option(
+        "blame", "--method", help="Method to run regression detection over (blame|shapley)"
+    ),
+    z_threshold: float = typer.Option(
+        2.0, "--z-threshold", help="Regression flag threshold (|z-score| >= this)"
+    ),
+    min_history: int = typer.Option(
+        3, "--min-history", help="Minimum prior history points required before flagging a step"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Optional JSON output path"
+    ),
+) -> None:
+    """Print a corpus-wide blame/Shapley index plus a z-score regression flag list.
+
+    Aggregates every run's persisted `causal_edges` rows
+    (`store.py`'s `save_blame_report`/`save_shapley_report`) into a
+    corpus-wide top-responsible index, and flags any `(agent_name,
+    step_index)` whose latest run's flip_rate/shapley_value is a
+    statistical outlier against that step's own prior history (see
+    `corpus.py`'s module docstring). A diagnostic report, not a gate --
+    always exits 0.
+    """
+    import json as _json
+    from dataclasses import asdict
+
+    from tracefork.corpus import build_corpus_blame_index, detect_regressions
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        index = build_corpus_blame_index(db, top_n=top_n)
+        flags = detect_regressions(
+            db, method=method, z_threshold=z_threshold, min_history=min_history
+        )
+    finally:
+        db.close()
+
+    typer.echo("\n  tracefork corpus-blame")
+    typer.echo(f"  {'─' * 50}")
+    typer.echo(f"  runs     {index.run_count}")
+    typer.echo(f"  edges    {index.edge_count}")
+    for m, count in sorted(index.by_method.items()):
+        typer.echo(f"    {m:<10} {count}")
+
+    typer.echo("\n  top responsible:")
+    if index.top_responsible:
+        for s in index.top_responsible:
+            typer.echo(
+                f"    {s.agent_name:<16} run={s.run_id:<12} step={s.step_index:<4} "
+                f"{s.method:<8} score={s.score:.3f}"
+            )
+    else:
+        typer.echo("    (no causal_edges recorded)")
+
+    typer.echo(f"\n  regressions (method={method}, |z|>={z_threshold}):")
+    if flags:
+        for f in flags:
+            typer.echo(
+                f"    {f.agent_name:<16} step={f.step_index:<4} run={f.run_id:<12} "
+                f"value={f.value:.3f} mean={f.history_mean:.3f} z={f.z_score:+.2f}"
+            )
+    else:
+        typer.echo("    (none)")
+    typer.echo("")
+
+    if output is not None:
+        output.write_text(
+            _json.dumps(
+                {
+                    "run_count": index.run_count,
+                    "edge_count": index.edge_count,
+                    "by_method": index.by_method,
+                    "top_responsible": [asdict(s) for s in index.top_responsible],
+                    "regressions": [asdict(f) for f in flags],
+                },
+                indent=2,
+            )
+        )
+        typer.echo(f"  Report saved to {output}\n")
+
+
+@app.command()
 def tournament(
     run_id: str = typer.Argument(..., help="run_id to analyze"),
     agent: str = typer.Option(
@@ -1450,10 +1908,141 @@ def tournament(
     typer.echo(f"  Report saved to {report_path}")
 
 
+@app.command()
+def locate(
+    value: str = typer.Argument(None, help="Substring to locate in the tape (or its fork lineage)"),
+    run_id: str = typer.Argument(
+        None, help="run_id to search (from store); omit when using --tape"
+    ),
+    tape_path: Path = typer.Option(  # noqa: B008
+        None,
+        "--tape",
+        "-t",
+        help="Path to a .tape.sqlite file (single-tape mode, no store/lineage)",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    no_lineage: bool = typer.Option(
+        False,
+        "--no-lineage",
+        help="Restrict the search to the root tape only, skip the fork-lineage BFS",
+    ),
+) -> None:
+    """Locate a substring inside a tape (or its fork lineage) and print an
+    offline-checkable receipt (tracefork-bge.62): which exchange kind/index/
+    side it was found in, plus blob_sha256/tape_digest -- hashes
+    `Tape.digest()` itself already folds in, so any reader can re-hash the
+    raw exchange bytes themselves and compare, no need to trust this command.
+
+    `--tape` searches a single tape file, no store/lineage involved. Without
+    `--tape`, `run_id` is looked up in `--store` and the search also
+    BFS-walks its fork lineage (direct branches, fork-of-forks, ...) unless
+    `--no-lineage` is passed. Exit 0 if found, 1 otherwise.
+    """
+    from tracefork.locate import locate_in_lineage, locate_value
+    from tracefork.tape import Tape
+
+    if not tape_path and not run_id:
+        typer.echo("Provide a run_id or --tape path")
+        raise typer.Exit(1)
+    if not value:
+        typer.echo("Provide a value to search for")
+        raise typer.Exit(1)
+
+    if tape_path:
+        heading = f"tracefork locate {value!r} --tape {tape_path}"
+        tape = Tape.load(str(tape_path))
+        hit = locate_value(tape, value)
+        _print_locate_receipt(heading, hit, branch_id=None, depth=None)
+        raise typer.Exit(0 if hit is not None else 1)
+
+    from tracefork.store import TapeStore
+
+    heading = f"tracefork locate {value!r} {run_id}"
+    db = TapeStore(str(store))
+    try:
+        hits = locate_in_lineage(db, run_id, value, follow_lineage=not no_lineage)
+    except KeyError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    found = hits[0] if hits else None
+    _print_locate_receipt(
+        heading,
+        found.hit if found else None,
+        branch_id=found.branch_id if found else None,
+        depth=found.depth if found else None,
+    )
+    raise typer.Exit(0 if found is not None else 1)
+
+
+def _print_locate_receipt(heading: str, hit, *, branch_id: str | None, depth: int | None) -> None:
+    """Operator-facing receipt for `locate` -- PASS with the found location
+    plus blob_sha256/tape_digest lines, or FAIL 'not found'. Mirrors
+    `_print_diff_receipt`'s PASS/FAIL style."""
+    typer.echo(f"\n  {heading}")
+    typer.echo(f"  {'─' * 60}")
+    if hit is None:
+        typer.echo("  [FAIL] not found\n")
+        return
+    where = "root tape" if branch_id is None else f"branch {branch_id} (depth {depth})"
+    typer.echo(f"  [PASS] found in {where}")
+    typer.echo(f"  kind          {hit.kind}")
+    typer.echo(f"  index         {hit.index}")
+    typer.echo(f"  side          {hit.side}")
+    typer.echo(f"  blob_sha256   {hit.blob_sha256}")
+    typer.echo(f"  tape_digest   {hit.tape_digest}\n")
+
+
+@app.command()
+def query(
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    cmd: str = typer.Option(
+        None,
+        "--cmd",
+        "-c",
+        help="Run one query line and exit (scriptable); omit to open the interactive REPL",
+    ),
+) -> None:
+    """Query a store's tapes/branches/causal graph: state/diff/causes/tree.
+
+    With --cmd, runs ONE query line and exits (exit 1 on a bad query --
+    scriptable, and the only way to CI-test this command without blocking
+    on stdin, same rationale as `serve`/`proxy`'s monkeypatch-uvicorn
+    tests). Without --cmd, opens an interactive `repl.QueryShell` over
+    --store. Grammar: `state <run_id> <step>` / `diff <a> <b> [--step N]` /
+    `causes <run_id> <step|--closure>` / `tree <run_id>` -- see
+    `tracefork.query`'s module docstring.
+    """
+    from tracefork.query import QueryError, dispatch
+    from tracefork.repl import run_repl
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        if cmd is not None:
+            try:
+                typer.echo(dispatch(db, cmd))
+            except QueryError as exc:
+                typer.echo(f"error: {exc}")
+                raise typer.Exit(1) from exc
+        else:
+            run_repl(db)
+    finally:
+        db.close()
+
+
 # ── session (orchestration spawn-lineage) sub-app ───────────────────────────
 
 session_app = typer.Typer(
-    name="session", help="Orchestration session / spawn-lineage commands (create/spawn/show)."
+    name="session",
+    help="Orchestration session / spawn-lineage commands "
+    "(create/spawn/show/cost/divergence/record/replay/fork/blame/serve).",
 )
 app.add_typer(session_app, name="session")
 
@@ -1559,6 +2148,416 @@ def session_show(
     for rid in tapes:
         typer.echo(f"    {rid}")
     typer.echo("")
+
+
+@session_app.command("cost")
+def session_cost(
+    session_id: str = typer.Argument(..., help="Session id to plan a fork within"),
+    target_run_id: str = typer.Argument(
+        ..., help="run_id to fork; prices its transitive spawn subtree"
+    ),
+    k: int = typer.Option(1, "--k", help="Forks per step (mirrors BudgetGovernor.estimate's k)"),
+    model: str = typer.Option(
+        None, "--model", help="Model id for pricing (default: auto-detect from the tape)"
+    ),
+    cost_per_fork_usd: float = typer.Option(
+        None,
+        "--cost-per-fork-usd",
+        help="Flat per-fork USD cost override instead of token-based pricing",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Plan a minimal-recompute fork of TARGET_RUN_ID within SESSION_ID.
+
+    Walks the spawn-edge DAG (`store.py`'s `session_tapes`/`spawn_children`) to
+    partition the session's tapes into a recompute set (TARGET_RUN_ID plus its
+    transitive spawn descendants) and a skip set (everything else, genuinely
+    independent upstream), prices both sets via `blame.py`'s existing
+    `BudgetGovernor.estimate`, and prints the resulting plan as JSON.
+    """
+    import json
+
+    from tracefork.session_cost import plan_session_fork
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            plan = plan_session_fork(
+                db,
+                session_id,
+                target_run_id,
+                k=k,
+                model=model,
+                cost_per_fork_usd=cost_per_fork_usd,
+            )
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        except ValueError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(
+        json.dumps(
+            {
+                "session_id": plan.session_id,
+                "target_run_id": plan.target_run_id,
+                "recompute_run_ids": plan.recompute_run_ids,
+                "skip_run_ids": plan.skip_run_ids,
+                "est_usd": plan.est_usd,
+                "est_usd_naive": plan.est_usd_naive,
+                "savings_usd": plan.savings_usd,
+                "savings_pct": plan.savings_pct,
+            },
+            indent=2,
+        )
+    )
+
+
+@session_app.command("divergence")
+def session_divergence(
+    session_id: str = typer.Argument(..., help="Session id to check for divergence"),
+    agents_manifest: Path = typer.Option(  # noqa: B008
+        ...,
+        "--agents-manifest",
+        help="Path to a JSON {run_id: 'module:fn'} agent manifest",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Replay every SESSION_ID spawn-linked tape that AGENTS_MANIFEST maps an
+    agent_fn for (see `session_replay.session_divergence_rollup`), in BFS/
+    session order, and report the earliest genuine divergence, if any.
+
+    AGENTS_MANIFEST is a JSON object `{run_id: "module:fn"}`, resolved via
+    the same importlib/rsplit(':', 1) pattern `verify`/`replay --check`
+    already use. A reachable run_id absent from the manifest is skipped, not
+    crashed on.
+
+    Exits 1 iff a real divergence was found before the session was fully
+    consistent; 0 otherwise — including when every reachable tape was
+    skipped for lack of a manifest entry (an honest no-op, not a false
+    pass/fail).
+    """
+    import json
+
+    from tracefork import session_replay
+    from tracefork.replay import DriftDoctor
+    from tracefork.store import TapeStore
+
+    manifest = json.loads(agents_manifest.read_text())
+    agent_fns = session_replay.resolve_agent_manifest(manifest)
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            result = session_replay.session_divergence_rollup(db, session_id, agent_fns)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  tracefork session divergence")
+    typer.echo(f"  {'─' * 60}")
+    typer.echo(f"  session_id   {session_id}")
+    typer.echo(f"  checked      {', '.join(result.checked_run_ids) or '(none)'}")
+    typer.echo(f"  skipped      {', '.join(result.skipped_run_ids) or '(none)'}")
+    if result.diverged_run_id is None:
+        typer.echo("  result       no divergence\n")
+        raise typer.Exit(0)
+
+    cause = DriftDoctor.classify(result.divergence) if result.divergence else None
+    typer.echo(f"  result       DIVERGED at run_id={result.diverged_run_id}")
+    if result.divergence is not None:
+        typer.echo(f"  step_index   {result.divergence.step_index}")
+    if cause is not None:
+        typer.echo(f"  drift cause  {cause.value}")
+    typer.echo("")
+    raise typer.Exit(1)
+
+
+@session_app.command("record")
+def session_record(
+    root_run_id: str = typer.Argument(..., help="run_id of the session's root tape"),
+    spawn: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--spawn",
+        help="A 'PARENT:CHILD[:REASON]' spawn edge, repeatable -- batch-creates "
+        "the session and registers every edge in one call (see session_ops.record_session)",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Batch-create a session rooted at ROOT_RUN_ID and register every
+    `--spawn` edge in one call.
+
+    Equivalent to N+1 separate `session create`/`session spawn` calls; each
+    edge is still individually FK-validated by `TapeStore.add_spawn_edge`
+    (a dangling parent/child run_id raises `sqlite3.IntegrityError`,
+    propagated unchanged).
+    """
+    import sqlite3
+
+    from tracefork.session_ops import record_session
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            session_id, edges = record_session(db, root_run_id, spawn)
+        except sqlite3.IntegrityError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    finally:
+        db.close()
+
+    typer.echo("\n  Session created")
+    typer.echo(f"  session_id   {session_id}")
+    typer.echo(f"  root_run_id  {root_run_id}")
+    typer.echo(f"  spawn_edges  {len(edges)}")
+    for edge in edges:
+        typer.echo(
+            f"    {edge.parent_run_id} -> {edge.child_run_id} ({edge.spawn_reason or '(none)'})"
+        )
+    typer.echo("")
+
+
+@session_app.command("replay")
+def session_replay_cmd(
+    session_id: str = typer.Argument(..., help="Session id to check for bit-exact replay"),
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        "-a",
+        help="Import path of the SAME agent fn for every tape in the session",
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Replay every tape reachable within SESSION_ID with the SAME --agent
+    and report the earliest genuine divergence, if any (see
+    `session_ops.build_uniform_agent_manifest` +
+    `session_replay.session_divergence_rollup`).
+
+    Exits 1 on a genuine divergence or an unknown session_id, 0 if every
+    reachable tape replayed bit-exact.
+    """
+    import importlib
+
+    from tracefork import session_replay
+    from tracefork.replay import DriftDoctor
+    from tracefork.session_ops import build_uniform_agent_manifest
+    from tracefork.store import TapeStore
+
+    module_path, fn_name = agent.rsplit(":", 1)
+    agent_fn = getattr(importlib.import_module(module_path), fn_name)
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            run_ids = db.session_tapes(session_id)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+        manifest = build_uniform_agent_manifest(run_ids, agent_fn)
+        result = session_replay.session_divergence_rollup(db, session_id, manifest)
+    finally:
+        db.close()
+
+    typer.echo("\n  tracefork session replay")
+    typer.echo(f"  {'─' * 60}")
+    typer.echo(f"  session_id   {session_id}")
+    typer.echo(f"  checked      {', '.join(result.checked_run_ids) or '(none)'}")
+    typer.echo(f"  skipped      {', '.join(result.skipped_run_ids) or '(none)'}")
+    if result.diverged_run_id is None:
+        typer.echo("  result       every tape replayed bit-exact\n")
+        raise typer.Exit(0)
+
+    cause = DriftDoctor.classify(result.divergence) if result.divergence else None
+    typer.echo(f"  result       DIVERGED at run_id={result.diverged_run_id}")
+    if result.divergence is not None:
+        typer.echo(f"  step_index   {result.divergence.step_index}")
+    if cause is not None:
+        typer.echo(f"  drift cause  {cause.value}")
+    typer.echo("")
+    raise typer.Exit(1)
+
+
+@session_app.command("fork")
+def session_fork(
+    session_id: str = typer.Argument(..., help="Session id RUN_ID must belong to"),
+    run_id: str = typer.Argument(..., help="Parent run_id (member of session_id) to fork from"),
+    step: int = typer.Option(..., "--step", "-s", help="Exchange index to diverge at"),
+    response_file: Path = typer.Option(  # noqa: B008
+        ..., "--response", "-r", help="Path to .bytes file containing mutated response"
+    ),
+    agent: str = typer.Option(..., "--agent", "-a", help="Import path of post-fork agent fn"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    desc: str = typer.Option("", "--desc", "-d", help="Human description of mutation"),
+    writable_root: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--writable-root",
+        help="Directory a ConfinementSpec permits writes under (repeatable); see "
+        "`tracefork fork --writable-root`",
+    ),
+    allowed_host: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--allowed-host",
+        help="Hostname a ConfinementSpec permits socket.connect to (repeatable)",
+    ),
+) -> None:
+    """Fork RUN_ID within SESSION_ID, guarding session membership first.
+
+    Delegates to the top-level `fork` command after confirming RUN_ID is
+    reachable within SESSION_ID (`session_ops.ensure_run_in_session`) --
+    same fork engine, no second implementation.
+    """
+    from tracefork.session_ops import ensure_run_in_session
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            ensure_run_in_session(db, session_id, run_id)
+        except (KeyError, ValueError) as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    fork(
+        run_id=run_id,
+        step=step,
+        response_file=response_file,
+        agent=agent,
+        store=store,
+        desc=desc,
+        writable_root=writable_root,
+        allowed_host=allowed_host,
+    )
+
+
+@session_app.command("blame")
+def session_blame(
+    session_id: str = typer.Argument(..., help="Session id RUN_ID must belong to"),
+    run_id: str = typer.Argument(..., help="run_id (member of session_id) to analyze"),
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        "-a",
+        help="Import path of the agent fn (pkg.mod:fn) that produced this run; "
+        "it is re-run for each fork and must be deterministic up to the fork point",
+    ),
+    k: int = typer.Option(10, "--k", help="Forks per candidate step"),
+    budget: float = typer.Option(_DEFAULT_CONFIG.budget_usd, "--budget", help="USD spend cap"),
+    perturbation: str = typer.Option(
+        "[tracefork] this step did not complete as recorded",
+        "--perturbation",
+        help="Text injected as the counterfactual response",
+    ),
+    success_re: str = typer.Option("SUCCESS", "--success-re", help="Regex for success outcome"),
+    failure_re: str = typer.Option("FAIL", "--failure-re", help="Regex for failure outcome"),
+    field: str = typer.Option(
+        None,
+        "--field",
+        help="JSON field path ($.a.b[0].c) to grade instead of the whole output text",
+    ),
+    ci_method: str = typer.Option(
+        "wilson", "--ci-method", help="Proportion CI: wilson|jeffreys|clopper_pearson|agresti_coull"
+    ),
+    confidence: float = typer.Option(0.95, "--confidence", help="CI confidence level (0,1)"),
+    fdr_q: float = typer.Option(
+        0.10, "--fdr-q", help="Benjamini-Hochberg false-discovery-rate for the responsible set"
+    ),
+    null_flip_rate: float = typer.Option(
+        0.05, "--null-flip-rate", help="Chance-flip null the binomial test scores each step against"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+) -> None:
+    """Run causal blame analysis on RUN_ID within SESSION_ID, guarding session
+    membership first.
+
+    Delegates to the top-level `blame` command after confirming RUN_ID is
+    reachable within SESSION_ID (`session_ops.ensure_run_in_session`) --
+    same blame engine, no second implementation.
+    """
+    from tracefork.session_ops import ensure_run_in_session
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            ensure_run_in_session(db, session_id, run_id)
+        except (KeyError, ValueError) as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    blame(
+        run_id=run_id,
+        agent=agent,
+        k=k,
+        budget=budget,
+        perturbation=perturbation,
+        success_re=success_re,
+        failure_re=failure_re,
+        field=field,
+        ci_method=ci_method,
+        confidence=confidence,
+        fdr_q=fdr_q,
+        null_flip_rate=null_flip_rate,
+        store=store,
+    )
+
+
+@session_app.command("serve")
+def session_serve(
+    session_id: str = typer.Argument(..., help="Session id to open the web UI to"),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    port: int = typer.Option(7777, "--port", "-p", help="Port to listen on"),
+) -> None:
+    """Start the tracefork web UI server and print SESSION_ID's deep link.
+
+    Exits 1 (never starting the server) if SESSION_ID is unknown.
+    """
+    import uvicorn
+
+    from tracefork.server import app as fastapi_app
+    from tracefork.server import init_store
+    from tracefork.session_ops import session_deep_link_path
+    from tracefork.store import TapeStore
+
+    db = TapeStore(str(store))
+    try:
+        db.get_session(session_id)
+    except KeyError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    init_store(str(store))
+    deep_link = session_deep_link_path(session_id)
+    typer.echo(f"\n  tracefork session serve → http://127.0.0.1:{port}{deep_link}")
+    uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
 
 def _print_receipt(tape_path: Path, result, tape) -> None:

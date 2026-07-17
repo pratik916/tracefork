@@ -15,7 +15,13 @@ from typing import Any
 
 from ..constants import SONNET
 from ..tape import sha256_hex
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 
 class AnthropicAdapter:
@@ -208,3 +214,6 @@ class AnthropicAdapter:
 
 
 register_adapter(AnthropicAdapter())
+register_capabilities(
+    ProviderCapabilities(name="anthropic", model_detectable=True, converse_response=False)
+)

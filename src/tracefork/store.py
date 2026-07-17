@@ -62,6 +62,18 @@ to a ``tuple[int, ...]`` (``()`` for a legacy/omitted value) — the prerequisit
 coalition, not merely its first divergence step, when re-forcing those steps
 against a new parent tape.
 
+``confinement_tier`` is ``fork.py``'s ``Branch.confinement_tier``
+(``compute_confinement_tier``) — an axis orthogonal to a tape's own
+``boundary`` tiers (see ``constants.py``): how confined the re-executed
+agent was during a fork's tail-record phase, not how the tape itself was
+recorded. Branch/store-level metadata only, never fed into ``Tape.digest()``;
+migrated onto ``branches`` in the SAME guarded ``ALTER TABLE`` pass as the
+other branch metadata columns (see ``_migrate_branch_metadata_columns``).
+``save_branch`` gains a matching optional ``confinement_tier`` parameter
+(default ``''``, every existing caller unaffected); ``load_branch``/
+``find_branch_by_digest``/``list_branches`` return it verbatim (``''`` for a
+legacy/omitted value).
+
 ``causal_edges`` persists every blame/Shapley result computed by ``blame.py``
 instead of discarding it once the CLI/caller has printed or JSON-dumped it —
 a causal graph strictly stronger than a bare caused_by DAG, since every edge
@@ -187,6 +199,7 @@ class StorageBackend(Protocol):
         parent_tape_digest: str = "",
         divergence_exchange_digest: str = "",
         intervened_steps: tuple[int, ...] = (),
+        confinement_tier: str = "",
     ) -> str: ...
 
     def load_branch(self, branch_id: str) -> dict: ...
@@ -264,6 +277,7 @@ CREATE TABLE IF NOT EXISTS branches (
     parent_tape_digest          TEXT NOT NULL DEFAULT '',
     divergence_exchange_digest  TEXT NOT NULL DEFAULT '',
     intervened_steps_json       TEXT NOT NULL DEFAULT '[]',
+    confinement_tier            TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
 );
 
@@ -403,13 +417,14 @@ class TapeStore:
     def _migrate_branch_metadata_columns(self) -> None:
         """Guarded ``ALTER TABLE`` for a ``store.db`` built before
         ``branch_digest``/``parent_tape_digest``/``divergence_exchange_digest``/
-        ``intervened_steps_json`` existed on the ``branches`` table.
+        ``intervened_steps_json``/``confinement_tier`` existed on the
+        ``branches`` table.
 
         ``CREATE TABLE IF NOT EXISTS`` (in ``_DDL``, above) only ever creates
         these columns on a BRAND NEW database — it is a no-op against an
         existing ``branches`` table, so a pre-existing store.db needs
-        explicit ``ADD COLUMN``s here. All four columns share ONE
-        ``PRAGMA table_info`` read (not four separate migration passes) so
+        explicit ``ADD COLUMN``s here. All five columns share ONE
+        ``PRAGMA table_info`` read (not five separate migration passes) so
         an old database is altered once, atomically enough for SQLite's
         autocommit DDL, with each ``ADD COLUMN`` independently guarded —
         never destructive: no row is touched, only new columns with a
@@ -436,6 +451,10 @@ class TapeStore:
         if "intervened_steps_json" not in cols:
             self._con.execute(
                 "ALTER TABLE branches ADD COLUMN intervened_steps_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "confinement_tier" not in cols:
+            self._con.execute(
+                "ALTER TABLE branches ADD COLUMN confinement_tier TEXT NOT NULL DEFAULT ''"
             )
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_branches_branch_digest ON branches(branch_digest)"
@@ -532,6 +551,7 @@ class TapeStore:
         parent_tape_digest: str = "",
         divergence_exchange_digest: str = "",
         intervened_steps: tuple[int, ...] = (),
+        confinement_tier: str = "",
     ) -> str:
         """Persist ``delta_tape`` as a new branch of ``parent_run_id`` (a fresh
         ``branch_id`` if omitted).
@@ -566,6 +586,13 @@ class TapeStore:
         not just ``divergence_step`` (the coalition's first/lowest step).
         Every existing caller that omits it keeps storing ``()`` exactly as
         before this parameter existed. See :meth:`load_branch`.
+
+        ``confinement_tier`` (optional, default ``''``) is ``fork.py``'s
+        ``Branch.confinement_tier`` — an axis orthogonal to a tape's own
+        ``boundary`` (see ``constants.py``), Branch/store-level metadata
+        only, never fed into ``Tape.digest()``. Every existing caller that
+        omits it keeps storing ``''`` exactly as before this parameter
+        existed.
         """
         bid = branch_id or uuid.uuid4().hex[:12]
         blob = delta_tape.to_bytes()
@@ -590,8 +617,8 @@ class TapeStore:
                     """INSERT INTO branches
                        (branch_id, parent_run_id, divergence_step, delta_tape_bytes,
                         mutation_desc, created_at, branch_digest, parent_tape_digest,
-                        divergence_exchange_digest, intervened_steps_json)
-                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        divergence_exchange_digest, intervened_steps_json, confinement_tier)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         bid,
                         parent_run_id,
@@ -603,6 +630,7 @@ class TapeStore:
                         parent_tape_digest,
                         divergence_exchange_digest,
                         intervened_steps_json,
+                        confinement_tier,
                     ),
                 )
                 self._con.execute("COMMIT")
@@ -628,7 +656,8 @@ class TapeStore:
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
                       delta_tape_bytes, mutation_desc, created_at, branch_digest,
-                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json
+                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json,
+                      confinement_tier
                FROM branches WHERE branch_id=?""",
             (branch_id,),
         ).fetchone()
@@ -656,6 +685,7 @@ class TapeStore:
             "parent_tape_digest": row[7],
             "divergence_exchange_digest": row[8],
             "intervened_steps": _decode_intervened_steps(row[9]),
+            "confinement_tier": row[10],
         }
 
     def find_branch_by_digest(self, branch_digest: str) -> dict | None:
@@ -673,7 +703,8 @@ class TapeStore:
         row = self._con.execute(
             """SELECT branch_id, parent_run_id, divergence_step,
                       delta_tape_bytes, mutation_desc, created_at, branch_digest,
-                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json
+                      parent_tape_digest, divergence_exchange_digest, intervened_steps_json,
+                      confinement_tier
                FROM branches WHERE branch_digest=?""",
             (branch_digest,),
         ).fetchone()
@@ -690,6 +721,7 @@ class TapeStore:
             "parent_tape_digest": row[7],
             "divergence_exchange_digest": row[8],
             "intervened_steps": _decode_intervened_steps(row[9]),
+            "confinement_tier": row[10],
         }
 
     def branches_forked_from(self, branch_digest: str) -> list[str]:
@@ -719,14 +751,16 @@ class TapeStore:
 
     def list_branches(self, parent_run_id: str) -> list[dict]:
         """Summary rows for every branch of ``parent_run_id`` — ``branch_id``,
-        ``divergence_step``, ``mutation_desc``, ``created_at``, and
-        ``branch_digest`` — with no ``delta_tape`` decode, unlike
-        :meth:`load_branch`. This is the shape ``report.py``'s fork-tree panel
-        (tracefork-bge.15) embeds directly: enough to sort/label every branch
-        edge without a per-branch ``load_branch`` round trip.
+        ``divergence_step``, ``mutation_desc``, ``created_at``,
+        ``branch_digest``, and ``confinement_tier`` — with no ``delta_tape``
+        decode, unlike :meth:`load_branch`. This is the shape ``report.py``'s
+        fork-tree panel (tracefork-bge.15) embeds directly: enough to
+        sort/label every branch edge without a per-branch ``load_branch``
+        round trip.
         """
         rows = self._con.execute(
-            """SELECT branch_id, divergence_step, mutation_desc, created_at, branch_digest
+            """SELECT branch_id, divergence_step, mutation_desc, created_at, branch_digest,
+                      confinement_tier
                FROM branches WHERE parent_run_id=? ORDER BY created_at DESC""",
             (parent_run_id,),
         ).fetchall()
@@ -737,6 +771,7 @@ class TapeStore:
                 "mutation_desc": r[2],
                 "created_at": r[3],
                 "branch_digest": r[4],
+                "confinement_tier": r[5],
             }
             for r in rows
         ]

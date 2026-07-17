@@ -76,6 +76,11 @@ import anthropic
 import httpx
 
 from .boundary_guard import BoundaryGuard, ConfinementSpec
+from .constants import (
+    CONFINEMENT_TIER_DECLARED,
+    CONFINEMENT_TIER_GUARDED,
+    CONFINEMENT_TIER_NONE,
+)
 from .nondet import DivergenceError
 from .observability import instrument
 from .tape import Tape, sha256_hex
@@ -115,6 +120,12 @@ class Branch:
     # sha256 of the exact (request, response) bytes pair at the fork's first
     # divergence point. See `compute_divergence_exchange_digest()`.
     divergence_exchange_digest: str = ""
+    # How confined the re-executed agent was during this fork's tail-record
+    # phase (an axis orthogonal to `Tape.boundary`'s tiers — see
+    # `constants.py`). Branch/store-level metadata only, same discipline as
+    # `branch_digest`: never fed into `Tape.digest()`. See
+    # `compute_confinement_tier()`.
+    confinement_tier: str = CONFINEMENT_TIER_NONE
 
 
 def compute_divergence_exchange_digest(request_bytes: bytes, response_bytes: bytes) -> str:
@@ -143,6 +154,26 @@ def compute_branch_digest(
     """
     payload = (parent_tape.digest() + delta_tape.digest() + repr(intervened_steps)).encode()
     return sha256_hex(payload)
+
+
+def compute_confinement_tier(boundary_guard: bool, confinement: ConfinementSpec | None) -> str:
+    """The confinement tier for a fork whose re-executed agent ran under the
+    given `boundary_guard`/`confinement` kwargs (see `fork()`/
+    `fork_coalition()`/`rebase()`).
+
+    `confinement` (a declared writable-roots/allowed-hosts allowlist) is the
+    strongest tier this bead recognizes and wins regardless of
+    `boundary_guard`'s value, since passing it FORCES the guard active
+    (see `fork()`'s docstring); a bare `boundary_guard=True` with no
+    `confinement` is the middle tier; neither is the unconfined default.
+    Purely additive metadata, same discipline as `compute_branch_digest`:
+    never fed into `Tape.digest()`.
+    """
+    if confinement is not None:
+        return CONFINEMENT_TIER_DECLARED
+    if boundary_guard:
+        return CONFINEMENT_TIER_GUARDED
+    return CONFINEMENT_TIER_NONE
 
 
 class ForkTransport(httpx.BaseTransport):
@@ -535,6 +566,7 @@ class ForkEngine:
             divergence_exchange_digest=compute_divergence_exchange_digest(
                 divergence_request, spec.mutated_response
             ),
+            confinement_tier=compute_confinement_tier(boundary_guard, confinement),
         )
 
     @staticmethod
@@ -609,6 +641,7 @@ class ForkEngine:
             divergence_exchange_digest=compute_divergence_exchange_digest(
                 first_request, first_mutated_response
             ),
+            confinement_tier=compute_confinement_tier(boundary_guard, confinement),
         )
 
     @staticmethod
@@ -693,4 +726,5 @@ class ForkEngine:
             divergence_exchange_digest=compute_divergence_exchange_digest(
                 first_request, first_response
             ),
+            confinement_tier=compute_confinement_tier(boundary_guard, None),
         )

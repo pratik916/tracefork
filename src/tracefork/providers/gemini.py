@@ -21,7 +21,13 @@ import json
 from typing import Any
 
 from ..tape import sha256_hex
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 DEFAULT_GEMINI_MODEL = "gemini-1.5-pro"
 
@@ -230,3 +236,8 @@ class GeminiAdapter:
 
 
 register_adapter(GeminiAdapter())
+# Model lives in the request URL path (see module docstring), not the body,
+# so detect_model above is best-effort/usually None.
+register_capabilities(
+    ProviderCapabilities(name="gemini", model_detectable=False, converse_response=False)
+)

@@ -19,7 +19,13 @@ import json
 from typing import Any
 
 from ..tape import sha256_hex
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -264,3 +270,6 @@ def _sse_data_payloads(response_bytes: bytes):
 
 
 register_adapter(OpenAIAdapter())
+register_capabilities(
+    ProviderCapabilities(name="openai", model_detectable=True, converse_response=False)
+)

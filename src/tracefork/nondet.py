@@ -5,14 +5,22 @@ and serving it back identically at replay. `RecordingNondet` draws real values
 and logs them; `ReplayNondet` serves them back in order; `DriftingNondet` is
 the negative control (fresh real values → forced divergence).
 
-Three draw kinds are virtualized: clock (`now_iso`), id (`new_uuid_hex`), and
-random (`random_float`) — each recorded/replayed the same way. Like `now_iso`,
-`random_float` is additive/opt-in: an agent must be handed the active
-`NondetSource` explicitly (see `tracefork_spike.agent` for the pattern) and
-call it instead of `random.random()` directly; nothing in `Recorder` patches
-`random` globally the way it does `uuid.uuid4` (see `recorder.py`).
-`random_float()` logs the exact `float.hex()` representation so replay is
-bit-exact with no float-formatting rounding.
+Four draw kinds are virtualized: clock (`now_iso`), id (`new_uuid_hex`),
+random (`random_float`), and env (`get_env`) — each recorded/replayed the
+same way. Like `now_iso`, `random_float` is additive/opt-in: an agent must be
+handed the active `NondetSource` explicitly (see `tracefork_spike.agent` for
+the pattern) and call it instead of `random.random()` directly; nothing in
+`Recorder` patches `random` globally the way it does `uuid.uuid4` (see
+`recorder.py`). `random_float()` logs the exact `float.hex()` representation
+so replay is bit-exact with no float-formatting rounding. `get_env(name,
+default=None)` logs a NUL-joined `"{flag}\0{name}\0{value}"` string: a 1-byte
+set/unset `flag` ("1"/"0") lets an unset variable (`None`) round-trip
+distinctly from an empty-string value, `name` is carried alongside the value
+so `ReplayNondet.get_env` can assert the replayed call asks for the SAME
+variable the tape recorded (a stronger check than the other three kinds
+need, since only `get_env` takes an argument), and POSIX environment values
+structurally cannot contain a NUL byte, so the encoding is lossless and
+collision-free.
 
 The SDK masks transport exceptions as `APIConnectionError`; `find_divergence`
 unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
@@ -21,6 +29,7 @@ unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
 from __future__ import annotations
 
 import datetime
+import os
 import random
 import uuid
 from typing import Protocol
@@ -49,6 +58,7 @@ class NondetSource(Protocol):
     def now_iso(self) -> str: ...
     def new_uuid_hex(self) -> str: ...
     def random_float(self) -> float: ...
+    def get_env(self, name: str, default: str | None = None) -> str | None: ...
 
 
 class RecordingNondet:
@@ -78,6 +88,17 @@ class RecordingNondet:
         # round-trips via float.fromhex() with no precision loss — unlike
         # str(v)/repr(v), which can lose bits for some values.
         self.draws.append(("random", v.hex()))
+        return v
+
+    def get_env(self, name: str, default: str | None = None) -> str | None:
+        v = os.environ.get(name, default)
+        # NUL-joined "{flag}\0{name}\0{value}": a 1-byte set/unset flag lets
+        # an unset (None) result round-trip distinctly from "", and carrying
+        # `name` alongside lets ReplayNondet assert it's replaying the SAME
+        # variable the tape recorded. POSIX env values can't contain a NUL
+        # byte, so this is lossless and collision-free.
+        flag = "1" if v is not None else "0"
+        self.draws.append(("env", f"{flag}\0{name}\0{v if v is not None else ''}"))
         return v
 
 
@@ -110,6 +131,16 @@ class ReplayNondet:
 
     def random_float(self) -> float:
         return float.fromhex(self._next("random"))
+
+    def get_env(self, name: str, default: str | None = None) -> str | None:
+        packed = self._next("env")
+        flag, rec_name, value = packed.split("\0", 2)
+        if rec_name != name:
+            raise DivergenceError(
+                f"draw #{self._i - 1}: replay asked for env var {name!r}, "
+                f"tape recorded {rec_name!r}"
+            )
+        return value if flag == "1" else None
 
     def fully_consumed(self) -> bool:
         return self._i == len(self._draws)

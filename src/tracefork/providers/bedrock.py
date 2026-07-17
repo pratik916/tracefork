@@ -40,7 +40,13 @@ from typing import Any
 
 from ..tape import sha256_hex
 from .anthropic import AnthropicAdapter
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 #: Bedrock's fixed InvokeModel request-body version tag (not a Claude model id).
 ANTHROPIC_VERSION = "bedrock-2023-05-31"
@@ -214,3 +220,9 @@ def _parse_converse(data: dict[str, Any]) -> NormalizedResponse:
 
 
 register_adapter(BedrockAdapter())
+# detect_model is hard-coded to None (model id is a URL path segment, never
+# body content); parse_response uniquely recognizes a second envelope
+# (Converse) in addition to its native InvokeModel/Anthropic-Messages shape.
+register_capabilities(
+    ProviderCapabilities(name="bedrock", model_detectable=False, converse_response=True)
+)
