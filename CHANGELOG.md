@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-17
+
+This release lands the full **P2 + P3 improvement backlog (44 items)**, completing the
+roadmap whose P0 + P1 tier shipped in 0.2.2. It closes the three structural fronts that
+review identified (a persistent queryable causal/branch graph, confinement of
+re-executing forks, and richer time-travel query primitives) while pushing the
+causal-blame crown jewel further — all as additive
+modules preserving every load-bearing invariant (`Tape.digest()` byte-stability, the
+offline/$0 suite, `NondetSource` as the sole nondeterminism seam, the self-contained
+single-file `web/report.html`). Tape envelope advances to **v6** (an optional per-exchange
+`request_urls`, metadata-only and proven excluded from `digest()`). Suite: **1306 tests
+(+416)**, ruff/mypy clean, wheel + demo report verified end-to-end.
+
+### Added
+
+- **Time-travel query primitives** — `tapequery.py` (`state_at`/`slice` fold-style views),
+  `locate.py` content-addressed value-locate receipts, `query.py`/`repl.py` a minimal query
+  surface + REPL, recursive fork-tree DAG queries (`store` branch descendants/ancestors/
+  siblings + `tracefork branch` sub-app + `GET /api/branch/{id}/related`), `narrative.py`
+  deterministic causal-explanation markdown, and `field_oracle.py` field-level
+  provenance-of-value blame (`blame --field`).
+- **Forking & counterfactuals** — `convergence.py` proves two same-divergence-step branches
+  reconverged by per-exchange fingerprint equality (`tracefork converge`); `basis.py`
+  RecordBasis drift marker (tracefork version / git SHA, non-fatal warning on replay/fork);
+  `settlement.py` settlement-adjacent side-effect diff export (`settlement-diff`);
+  `effects.py` conflict-aware overlap diff for parallel/speculative branches.
+- **Causal attribution & blame** — `archetypes.py` declarative fault-scenario generator,
+  `concurrent_validate.py` concurrent-branch (`asyncio.gather`) ground-truth fixture,
+  `cross_tape_blame.py` coalition blame across sub-agent tapes (`session cross-blame`),
+  `corpus.py` cross-tape corpus blame index (`corpus-blame`), a Clopper-Pearson ⊇
+  Wilson/Jeffreys/Agresti-Coull CI-nesting property test, and Slice selected/anchor/
+  evidence rendering vocabulary.
+- **Providers & frameworks** — URL-path model detection (tape v6 `request_urls`, adapter
+  `detect_model` fallback, blame/interop resolution for Bedrock/Gemini), scoped
+  `ProviderCapabilities` manifest, `adapters/shepherd.py` (OpenAI-path interop), and a
+  cross-framework fork/blame parity test matrix.
+- **Determinism & sandboxing** — `NondetSource` gains `read_file` (size-capped, zero-fs on
+  replay) and `get_env` draw kinds; confinement-risk pre-flight budget disclosure
+  (`BudgetGovernor.confinement_risk`, `blame --writable-root`/`--allowed-host`), confinement
+  tier tagging on Tape/Branch, and `confinement_diagnostics.py` divergence-style diagnostics.
+- **Proof & validation rigor** — multi-process concurrent-write stress test, `selfaudit.py`
+  AST-level architectural self-audit, a scoped `mutmut` mutation-testing gate
+  (`scripts/mutation.sh` + nightly workflow, `[tool.mutmut]`), and `release_receipt.py`
+  aggregated (optionally HMAC-signed) verification receipt.
+- **Multi-agent orchestration** — `session_cost.py` minimal-recompute fork cost model,
+  `session_replay.py` earliest-divergence rollup, `session_chaos.py` orchestration-scale
+  interleaving replay (`session chaos`), the `session` verb family (`session_ops.py`) +
+  cross-tape design spike, and `report_session.py`/`web/session_report.html` a multi-agent
+  fork-board report (`session board`).
+- **Observability & UX** — timeline scrubber (play/step, timestamp-proportional ticks),
+  `cost_profile.py` cost/profile dashboard panel, Shapley necessity/sufficiency quadrant
+  badges (`report --shapley-report`), blame heatmap overlay on the fork tree, OTel exemplar
+  back-link (`GET /otel/{trace}/{span}` → run/step), click-to-fork inline UI
+  (`fork_allowlist.py`-gated `POST /api/run/{id}/fork`, $0-safe), a multi-run run-picker page
+  (`web/runs.html`, `GET /runs`), a live-tail checkpoint SSE endpoint (`live.py`), and the
+  causal fork-tree promoted to a first-class default report artifact.
+
 ## [0.2.2] - 2026-07-10
 
 This release lands the full **P0 + P1 improvement backlog (28 items)**: hardening
@@ -658,7 +715,8 @@ everything below is additive around it: all engine internals stay byte-stable,
 - `src/tracefork_spike/` — the original Spike 0 that de-risked bit-exact, no-key replay
   within the declared determinism boundary.
 
-[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pratik916/tracefork/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pratik916/tracefork/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pratik916/tracefork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pratik916/tracefork/compare/v0.1.0...v0.2.0

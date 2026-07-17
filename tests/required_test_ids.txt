@@ -53,3 +53,18 @@ tests.test_bundle::test_bundle_round_trip_then_replay_verifier_is_bit_exact
 tests.test_property_tape::test_to_bytes_from_bytes_roundtrip_is_lossless_and_digest_stable
 tests.test_property_tape::test_digest_excludes_metadata_fields
 tests.test_property_matcher::test_identity_matcher_fingerprint_roundtrip_over_arbitrary_json_bodies
+
+# Tape v6 request_urls (tracefork-bge.45) — the new optional per-exchange URL is
+# metadata-only and must NEVER perturb the digest; old envelopes must upcast.
+tests.test_url_model_detection::test_digest_identical_regardless_of_request_url
+tests.test_url_model_detection::test_pre_v6_envelope_upcasts_request_urls_to_empty_strings
+
+# Architectural self-audit (tracefork-bge.48) — no unsanctioned direct
+# nondeterminism/subprocess call may creep into tracefork's own source.
+tests.test_selfaudit::test_no_unsanctioned_nondeterminism_calls_in_tracefork_source
+
+# CI-method nesting (tracefork-bge.71) — Clopper-Pearson must contain the
+# narrower Wilson/Jeffreys/Agresti-Coull intervals; a correctness check on the
+# hand-rolled interval math.
+tests.test_property_ci_nesting::test_clopper_pearson_contains_jeffreys_unconditionally
+tests.test_property_ci_nesting::test_clopper_pearson_contains_wilson_and_agresti_coull_in_moderate_regime

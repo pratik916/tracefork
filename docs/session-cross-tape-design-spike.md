@@ -56,8 +56,8 @@ value across a `spawn_edges` boundary into tape B's own replay/re-execution
 own recorded bytes.
 
 This is not a new observation specific to this bead: it is the SAME gap
-already named in `docs/shepherd-gap-analysis.md`'s completeness-critic
-item 5 ("Sequencing gap / hidden prerequisite"), which calls out precisely
+already named in the improvement backlog's completeness-critic item 5
+("Sequencing gap / hidden prerequisite"), which calls out precisely
 this dependency —
 
 > several P1-P2 items (Orchestration session model, Multi-agent session

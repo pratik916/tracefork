@@ -1,8 +1,7 @@
 """Optional Shepherd framework adapter — OpenAI-path only, synthetic-double-validated.
 
-Shepherd (see ``docs/shepherd-gap-analysis.md``) is a privately-analyzed
-~213k LOC agent-framework codebase, not a published PyPI package this repo
-can ``pip install`` or CI against. That is the one real, verified constraint
+Shepherd is an agent-framework codebase that is not a published PyPI package
+this repo can ``pip install`` or CI against. That is the one real, verified constraint
 that makes this adapter different from every other one in ``adapters/``:
 there is no real ``shepherd`` import to guard, so — unlike ``autogen.py`` /
 ``openai_agents.py`` / ``adk.py`` / ``crewai.py`` — this module ships with
@@ -18,7 +17,7 @@ Two seams, reusing tracefork's *existing* byte capture — never a second one:
   client through a ``TraceforkTransport``, the same ``client.copy(http_client=…)``
   move ``recorder.py``/``adapters/openai_agents.py``/``adapters/autogen.py``
   already use. Shepherd's exact attribute name for that client is not
-  available to verify (privately-analyzed codebase, not a published API),
+  available to verify (not a published API),
   so ``bind`` searches the SAME short candidate-attribute list
   ``adapters/openai_agents.py`` already uses (``_client``, ``client``,
   ``openai_client``, ``_openai_client``) rather than hard-coding one.
@@ -209,7 +208,7 @@ class ShepherdAdapter(BaseFrameworkAdapter):
         ``replay`` mode needs no inner transport and no live client; ``record``
         mode reuses the target's current underlying httpx transport as the inner
         so live calls still reach the network (that path needs the real,
-        privately-analyzed Shepherd codebase and is not offline-testable). On
+        unpublished Shepherd codebase and is not offline-testable). On
         replay, a ``ReplayNondet``-backed uuid patch (``patch_uuid=True``) makes
         framework-generated ids match the tape.
         """

@@ -1,5 +1,5 @@
 """Shepherd adapter — offline, synthetic-double-only (see the module docstring
-in ``adapters/shepherd.py`` for why: Shepherd is a privately-analyzed
+in ``adapters/shepherd.py`` for why: Shepherd is an unpublished
 codebase, not a published package, so unlike the other adapters there is no
 real-framework import to guard and no ``pytest.importorskip`` tier here).
 """

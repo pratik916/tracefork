@@ -8,7 +8,7 @@ callbacks/tracing are an observer-only annotation layer feeding ``StepDAG`` (see
 (``"crewai"``), AutoGen (``"autogen"``), Google ADK (``"adk"``), and Shepherd
 (``"shepherd"``) adapters — every framework import they make is guarded, so
 this import never requires any of those packages to be installed. Shepherd is
-the one exception with nothing to guard: it is a privately-analyzed codebase,
+the one exception with nothing to guard: it is an unpublished codebase,
 not a published package (see ``adapters/shepherd.py``'s module docstring).
 """
 
