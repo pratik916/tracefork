@@ -20,8 +20,14 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # nondet_mode recorded by `Recorder`/`AsyncRecorder`). Like `async_batches`,
 # it is envelope/metadata only — NOT fed into `digest()` — so every existing
 # tape's content digest is unchanged, and v1-v4 tapes upcast to `provenance={}`.
+# v6 adds `request_urls`: the request URL captured at each exchange's real
+# capture seam (`transport.py`/`bedrock_transport.py`), parallel-indexed to
+# `exchanges` — used only to recover a provider's model id when it lives in
+# the URL path rather than the body (Gemini/Bedrock). Like `provenance`, it is
+# envelope/metadata only — NOT fed into `digest()` — so every existing tape's
+# content digest is unchanged, and v1-v5 tapes upcast to `[""] * len(exchanges)`.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 5
+TAPE_FORMAT_VERSION = 6
 
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"
@@ -72,3 +78,19 @@ OTEL_INGESTED_BOUNDARY = "otel-ingested-blame-only-v1"
 # see `proxy.py`'s module docstring for the precise scope. Metadata only, like
 # `OTEL_INGESTED_BOUNDARY`; never fed into `digest()`.
 PROXY_BOUNDARY = "proxy-record-replay-v1"
+
+# ── Confinement tier (Branch/store-level metadata) ──────────────────────────
+#
+# An axis ORTHOGONAL to the boundary tiers above (`BOUNDARY_V1`/
+# `OTEL_INGESTED_BOUNDARY`/`PROXY_BOUNDARY`, which describe how a *tape* was
+# recorded): this one describes how CONFINED a *fork's* re-executed agent
+# was during its tail-record phase, per `fork.py`'s `compute_confinement_tier`.
+# Metadata only, same discipline as the boundary tiers — never fed into
+# `Tape.digest()` or any other hashed field. Matching `boundary_guard.py`'s
+# own docstring: a fixed local allowlist (`ConfinementSpec`'s
+# `writable_roots`/`allowed_hosts`), not a full OS sandbox — a future
+# Landlock/Seatbelt-grade backend is an explicit, out-of-scope future tier,
+# not something any of these three values claims.
+CONFINEMENT_TIER_NONE = "unconfined-v1"
+CONFINEMENT_TIER_GUARDED = "boundary-guard-v1"
+CONFINEMENT_TIER_DECLARED = "declared-allowlist-v1"

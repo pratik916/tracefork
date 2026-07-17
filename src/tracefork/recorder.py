@@ -40,6 +40,7 @@ from typing import Any
 import anthropic
 import httpx
 
+from .basis import basis_to_provenance_keys, current_basis
 from .boundary_guard import BoundaryGuard
 from .checkpoint import CheckpointWriter
 from .config import TraceforkConfig
@@ -86,6 +87,15 @@ class Recorder:
     time), and a clean ``__exit__`` finalizes it. Scoped to exchanges only
     (not draws) — see ``checkpoint.py``'s module docstring. Default ``None``
     is byte-identical to before this flag existed.
+
+    ``record_basis`` is an opt-in flag (see ``basis.py``): when ``True``,
+    ``tape.provenance`` additionally records the running ``tracefork``
+    package version and a best-effort git commit sha at record time — a
+    witness ``cli.py``'s ``replay``/``fork``/``coalition_fork`` commands can
+    compare against the replaying build to print a non-fatal drift warning.
+    ``basis_git_sha`` is an optional passthrough that, when given, skips the
+    git subprocess entirely and uses that value verbatim. Default ``False``
+    is byte-identical to before this flag existed (no new provenance keys).
     """
 
     def __init__(
@@ -98,6 +108,8 @@ class Recorder:
         config: TraceforkConfig | None = None,
         boundary_guard: bool | None = None,
         checkpoint_path: str | None = None,
+        record_basis: bool = False,
+        basis_git_sha: str | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
@@ -106,6 +118,8 @@ class Recorder:
         self._config = config
         self._boundary_guard_flag = boundary_guard
         self._checkpoint_path = checkpoint_path
+        self._record_basis = record_basis
+        self._basis_git_sha = basis_git_sha
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.Anthropic | None = None
@@ -200,6 +214,13 @@ class Recorder:
             "boundary_guard": str(guard_enabled).lower(),
             "nondet_mode": "recording",
         }
+        # Opt-in build witness (see basis.py): additive .update() over the
+        # block above, never fed into digest(). Default False leaves
+        # tape.provenance exactly as built above -- no new keys.
+        if self._record_basis:
+            self._tape.provenance.update(
+                basis_to_provenance_keys(current_basis(git_sha=self._basis_git_sha))
+            )
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -222,7 +243,8 @@ class AsyncRecorder:
     """Async context manager that records an AsyncAnthropic client's I/O.
 
     See ``Recorder`` for the ``matcher`` / ``redactor`` / ``config`` /
-    ``boundary_guard`` / ``checkpoint_path`` contract — identical here.
+    ``boundary_guard`` / ``checkpoint_path`` / ``record_basis`` /
+    ``basis_git_sha`` contract — identical here.
     """
 
     def __init__(
@@ -235,6 +257,8 @@ class AsyncRecorder:
         config: TraceforkConfig | None = None,
         boundary_guard: bool | None = None,
         checkpoint_path: str | None = None,
+        record_basis: bool = False,
+        basis_git_sha: str | None = None,
     ) -> None:
         self._orig_client = client
         self._agent_name = agent_name
@@ -243,6 +267,8 @@ class AsyncRecorder:
         self._config = config
         self._boundary_guard_flag = boundary_guard
         self._checkpoint_path = checkpoint_path
+        self._record_basis = record_basis
+        self._basis_git_sha = basis_git_sha
         self._nondet: RecordingNondet | None = None
         self._tape: Tape | None = None
         self._wrapped_client: anthropic.AsyncAnthropic | None = None
@@ -324,6 +350,11 @@ class AsyncRecorder:
             "boundary_guard": str(guard_enabled).lower(),
             "nondet_mode": "recording",
         }
+        # See the sync Recorder for the opt-in build-witness contract.
+        if self._record_basis:
+            self._tape.provenance.update(
+                basis_to_provenance_keys(current_basis(git_sha=self._basis_git_sha))
+            )
         return self
 
     async def __aexit__(self, *args: object) -> None:

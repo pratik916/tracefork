@@ -31,11 +31,31 @@ def _template_path() -> Path:
     raise FileNotFoundError("web/report.html not found (looked in the package and the repo root)")
 
 
+def _runs_template_path() -> Path:
+    """Locate ``web/runs.html`` (the multi-run dashboard page,
+    tracefork-bge.67) — same dual wheel/source-checkout lookup as
+    :func:`_template_path`."""
+    here = Path(__file__).parent
+    for cand in (
+        here / "web" / "runs.html",  # installed wheel (force-included)
+        here.parent.parent / "web" / "runs.html",  # repo root (src/tracefork -> repo)
+    ):
+        if cand.exists():
+            return cand
+    raise FileNotFoundError("web/runs.html not found (looked in the package and the repo root)")
+
+
 def _tape_to_data(
     tape,
     blame: dict | None = None,
     replay: dict | None = None,
     branches: list[dict] | None = None,
+    causal_edges: list[dict] | None = None,
+    branch_details: dict[str, dict] | None = None,
+    shapley: dict | None = None,
+    cost_profile: dict | None = None,
+    causal_closure: list[dict] | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """Convert a Tape to the JSON shape expected by the web UI."""
     adapter = get_adapter("anthropic")
@@ -113,6 +133,38 @@ def _tape_to_data(
         # the tree. `[]` (falsy) when none were passed, the same neutral
         # empty-state pattern `replay={}` already establishes.
         "branches": branches or [],
+        # Persisted causal edges (see `store.causal_edges_for_run`) — blame
+        # and Shapley results already computed and saved by `tracefork blame`,
+        # a free read with no recompute. `[]` (falsy) when none were passed,
+        # same neutral empty-state pattern as `branches`.
+        "causal_edges": causal_edges or [],
+        # branch_id -> full `_tape_to_data(branch['delta_tape'])` dict plus
+        # divergence_step/mutation_desc/branch_digest/parent_run_id — the
+        # exact shape `server.py`'s `/api/branch/{id}` already returns, baked
+        # into the static report so a fork-tree click needs no live server.
+        # `{}` (falsy) when none were passed, same neutral empty-state
+        # pattern as `branches`/`causal_edges`.
+        "branch_details": branch_details or {},
+        # Per-step Shapley necessity/sufficiency quadrant (ShapleyResult/
+        # causal_edges shape, step_index-keyed) — the Timeline panel's
+        # inline quadrant badge (see `web/report.html`'s
+        # `shapleyQuadrantHtml`). `{}` (falsy) when not passed, same neutral
+        # empty-state pattern as `blame`/`branches`.
+        "shapley": shapley or {},
+        # Per-model/per-tool cost dashboard (see `cost_profile.py`) — the
+        # shape `cost_profile.cost_profile_to_dict` returns. `{}` (falsy)
+        # when not passed, same neutral empty-state pattern as `shapley`.
+        "cost_profile": cost_profile or {},
+        # External-anchor vocabulary (tracefork-bge.70): responsible=1 blame
+        # edges reachable via fork-promotion lineage (`store.causal_closure`)
+        # that can belong to OTHER run_ids -- Shepherd's "causal parent
+        # outside the current slice's own content". `[]` (falsy) when not
+        # passed, same neutral empty-state pattern as `branches`.
+        "causal_closure": causal_closure or [],
+        # This run's own id, so the UI can tell an external-anchor entry
+        # (`edge["run_id"] != data["run_id"]`) apart from one that's already
+        # covered by this run's own `blame` rows. `None` when not passed.
+        "run_id": run_id,
     }
 
 
@@ -139,6 +191,12 @@ def generate_report(
     blame: dict | None = None,
     replay: dict | None = None,
     branches: list[dict] | None = None,
+    causal_edges: list[dict] | None = None,
+    branch_details: dict[str, dict] | None = None,
+    shapley: dict | None = None,
+    cost_profile: dict | None = None,
+    causal_closure: list[dict] | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
@@ -150,9 +208,38 @@ def generate_report(
     `tracefork.store.TapeStore.list_branches` returns — rendered as the
     fork-tree panel; `None`/omitted embeds an empty list (see
     `web/report.html`'s `renderForkTree`).
+    `causal_edges` (optional) is the run's persisted blame/Shapley edges —
+    the shape `tracefork.store.TapeStore.causal_edges_for_run` returns —
+    cross-referenced against `branches` to highlight causally-significant
+    fork points. `branch_details` (optional) is branch_id -> full delta-tape
+    report data (the shape `server.py`'s `/api/branch/{id}` returns) so a
+    static report's fork-tree clicks render real data with no live server.
+    `shapley` (optional) is a step_index-keyed dict of Shapley
+    necessity/sufficiency results (the `ShapleyResult`/`causal_edges` shape)
+    rendered as a small inline quadrant badge per Timeline exchange.
+    `cost_profile` (optional) is the JSON-safe dict from
+    `cost_profile.cost_profile_to_dict`, rendered as the report's cost/profile
+    dashboard panel.
+    `causal_closure` (optional) is `tracefork.store.TapeStore.causal_closure`'s
+    result — responsible blame edges reachable via fork-promotion lineage,
+    possibly from other run_ids — rendered as external-anchor entries.
+    `run_id` (optional) is this run's own id, so the UI can distinguish an
+    external-anchor entry from one already covered by this run's own blame
+    rows.
     """
     html = _template_path().read_text()
-    data = _tape_to_data(tape, blame, replay, branches)
+    data = _tape_to_data(
+        tape,
+        blame,
+        replay,
+        branches,
+        causal_edges,
+        branch_details,
+        shapley,
+        cost_profile,
+        causal_closure,
+        run_id,
+    )
     inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)

@@ -31,11 +31,18 @@ Usage::
     writer.finalize(tape)  # on clean completion
 
     tape, was_finalized = recover_checkpoint(path)  # after a crash, or to inspect
+
+``read_new_exchanges``/``checkpoint_status`` are the read-only, incremental
+counterpart to ``recover_checkpoint``'s full-prefix reconstruction: a live-tail
+consumer (see ``checkpoint_stream.py``'s SSE endpoint) polls them directly
+against the same file a ``CheckpointWriter`` is actively appending to, without
+paying to rebuild a ``Tape`` on every poll.
 """
 
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from .constants import BOUNDARY_V1
 from .tape import Tape, open_sqlite
@@ -118,6 +125,52 @@ class CheckpointWriter:
             con.execute("COMMIT")
         finally:
             con.close()
+
+
+def read_new_exchanges(path: str, since_seq: int = 0) -> list[tuple[int, bytes, bytes]]:
+    """Read exchanges committed after ``since_seq``, in commit order.
+
+    The incremental-read counterpart to ``CheckpointWriter.append_exchange``:
+    a live-tail consumer polling this file only wants what's NEW since its
+    last poll, not the whole prefix ``recover_checkpoint`` reconstructs.
+    Read-only — never touches ``checkpoint_meta`` or the writer's tables.
+    Same missing-file guard as ``recover_checkpoint``.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"no checkpoint file at {path!r}")
+    con = open_sqlite(path)
+    try:
+        con.executescript(_CREATE_CHECKPOINT_SCHEMA)
+        rows = con.execute(
+            "SELECT seq, req, resp FROM checkpoint_exchanges WHERE seq > ? ORDER BY seq",
+            (since_seq,),
+        ).fetchall()
+        return [(seq, bytes(req), bytes(resp)) for seq, req, resp in rows]
+    finally:
+        con.close()
+
+
+def checkpoint_status(path: str) -> dict[str, Any]:
+    """``was_finalized``/``agent_name``/``exchange_count`` for the checkpoint
+    at ``path`` — a cheap status probe for a live-tail poller, so it doesn't
+    have to reconstruct (or discard) a full ``Tape`` just to check whether the
+    recording it's following has finished. Same missing-file guard as
+    ``recover_checkpoint``/``read_new_exchanges``.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"no checkpoint file at {path!r}")
+    con = open_sqlite(path)
+    try:
+        con.executescript(_CREATE_CHECKPOINT_SCHEMA)
+        meta = dict(con.execute("SELECT key, value FROM checkpoint_meta").fetchall())
+        (exchange_count,) = con.execute("SELECT COUNT(*) FROM checkpoint_exchanges").fetchone()
+        return {
+            "was_finalized": meta.get("was_finalized") == "1",
+            "agent_name": meta.get("agent_name", ""),
+            "exchange_count": exchange_count,
+        }
+    finally:
+        con.close()
 
 
 def recover_checkpoint(path: str) -> tuple[Tape, bool]:

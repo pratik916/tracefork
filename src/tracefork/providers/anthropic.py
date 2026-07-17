@@ -15,7 +15,13 @@ from typing import Any
 
 from ..constants import SONNET
 from ..tape import sha256_hex
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 
 class AnthropicAdapter:
@@ -31,7 +37,8 @@ class AnthropicAdapter:
         # contract work; it does not change transport's byte-for-byte matching.
         return sha256_hex(request_bytes)
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        # request_url is unused: the body already carries a real "model" field.
         try:
             return json.loads(request_bytes).get("model")
         except Exception:
@@ -208,3 +215,6 @@ class AnthropicAdapter:
 
 
 register_adapter(AnthropicAdapter())
+register_capabilities(
+    ProviderCapabilities(name="anthropic", model_detectable=True, converse_response=False)
+)

@@ -80,8 +80,14 @@ class ProviderAdapter(Protocol):
         replay-time matching (this seam is for the divergence-contract work)."""
         ...
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
-        """Best-effort model id from a recorded request (``None`` if unknown)."""
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        """Best-effort model id from a recorded request (``None`` if unknown).
+
+        ``request_url`` is an optional fallback source (the tape's parallel
+        ``request_urls[i]``, see ``tape.py``) for providers whose wire format
+        puts the model id in the URL path rather than the request body
+        (Gemini/Bedrock); adapters that already read it from the body ignore
+        this parameter."""
         ...
 
     def parse_response(self, response_bytes: bytes) -> NormalizedResponse:
@@ -171,3 +177,56 @@ def load_provider_entry_points(
     security-gating contract — nothing loads unless explicitly allowlisted).
     """
     return _REGISTRY.load_entry_points(allow=allow, allow_all=allow_all)
+
+
+# ── capabilities ────────────────────────────────────────────────────────────
+#
+# Advisory metadata about what an adapter's wire format can express, looked
+# up by adapter name — deliberately NOT part of the `ProviderAdapter` Protocol
+# above (that would make it a method every adapter/test-double must implement,
+# rather than data describing one). Mirrors the `register_adapter`/
+# `get_adapter`/`registered_providers` trio one screen above, backed by a
+# plain dict rather than the entry-point-aware `Registry` (there is nothing
+# here to discover from third-party packages).
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """What one provider's wire format can express, as advisory flags.
+
+    ``model_detectable``: whether ``detect_model`` can read a real model id
+    out of the request *body* (``False`` when the model id lives in the URL
+    path instead, e.g. Gemini/Bedrock). ``converse_response``: whether
+    ``parse_response`` recognizes a second response envelope beyond the
+    adapter's native shape (today, only Bedrock's Converse API read path).
+    """
+
+    name: str
+    model_detectable: bool
+    converse_response: bool = False
+
+
+_CAPABILITIES: dict[str, ProviderCapabilities] = {}
+
+
+def register_capabilities(capabilities: ProviderCapabilities) -> None:
+    """Register ``capabilities`` under its own ``name``."""
+    _CAPABILITIES[capabilities.name] = capabilities
+
+
+def get_capabilities(name: str = DEFAULT_PROVIDER) -> ProviderCapabilities:
+    """Look up registered capabilities by name.
+
+    Never raises for an unregistered name — this is advisory metadata, not a
+    required adapter capability, so an unknown provider gets a conservative
+    default (``model_detectable=False``, ``converse_response=False``) rather
+    than a ``KeyError``.
+    """
+    return _CAPABILITIES.get(
+        name, ProviderCapabilities(name=name, model_detectable=False, converse_response=False)
+    )
+
+
+def registered_capabilities() -> list[str]:
+    """Sorted names of all registered capability entries."""
+    return sorted(_CAPABILITIES)

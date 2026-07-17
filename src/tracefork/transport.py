@@ -99,7 +99,7 @@ class TraceforkTransport(httpx.BaseTransport):
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
             stored_req = self.matcher.stored_request(request)
-            self.tape.append_exchange(stored_req, stored_resp)
+            self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
             if self.on_exchange is not None:
                 self.on_exchange(stored_req, stored_resp)
             return httpx.Response(
@@ -137,7 +137,7 @@ class TraceforkTransport(httpx.BaseTransport):
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
             stored_req = self.matcher.stored_request(request)
-            self.tape.append_exchange(stored_req, stored_resp)
+            self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
             if self.on_exchange is not None:
                 self.on_exchange(stored_req, stored_resp)
             self._i += 1
@@ -261,7 +261,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
 
         stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
         stored_req = self.matcher.stored_request(request)
-        self.tape.append_exchange(stored_req, stored_resp)
+        self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
         if self.on_exchange is not None:
             self.on_exchange(stored_req, stored_resp)
         idx = len(self.tape.exchanges) - 1

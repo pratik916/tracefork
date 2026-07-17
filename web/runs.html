@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tracefork — runs</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #6e7681; --green: #3fb950;
+    --blue: #58a6ff; --red: #f85149;
+  }
+  body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 13px; }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 15px; color: var(--green); }
+  header .sub { color: var(--muted); font-size: 11px; }
+  .container { padding: 20px; max-width: 960px; margin: 0 auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; background: var(--surface); }
+  tr:hover td { background: var(--surface); }
+  td.run-id-cell a { color: var(--blue); text-decoration: none; font-family: ui-monospace, monospace; }
+  td.run-id-cell a:hover { text-decoration: underline; }
+  .runs-empty { padding: 40px; color: var(--muted); text-align: center; }
+  .loading { padding: 40px; color: var(--muted); text-align: center; }
+  .error { padding: 20px; color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>tracefork</h1>
+  <span class="sub">runs</span>
+</header>
+<div class="container">
+  <div id="runs-content"><div class="loading">loading…</div></div>
+</div>
+
+<script>
+// ── data source ──────────────────────────────────────────────────────────
+// This page only ever serves same-origin, live-mode data (see server.py's
+// GET /runs route) -- unlike report.html there is no static-snapshot mode,
+// so it always fetches /api/runs directly.
+async function loadRuns() {
+  const resp = await fetch('/api/runs');
+  if (!resp.ok) throw new Error(`server ${resp.status}: could not list runs`);
+  return resp.json();
+}
+
+function escape(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// ── render ───────────────────────────────────────────────────────────────
+// Columns: run_id/agent_name/created_at only (server-side pre-sorted
+// newest-first by TapeStore.list_runs) -- a richer flip-rate column needs
+// per-run blame aggregation and is a separate, larger follow-up.
+function renderRuns(runs) {
+  const el = document.getElementById('runs-content');
+  if (!runs || runs.length === 0) {
+    el.innerHTML = '<div class="runs-empty">no runs yet</div>';
+    return;
+  }
+  const rowsHtml = runs.map(r => `<tr>
+      <td class="run-id-cell"><a href="/?run_id=${encodeURIComponent(r.run_id)}">${escape(r.run_id)}</a></td>
+      <td>${escape(r.agent_name || '(unknown agent)')}</td>
+      <td>${escape(r.created_at || '')}</td>
+    </tr>`).join('');
+  el.innerHTML = `<table>
+      <thead><tr><th>run_id</th><th>agent</th><th>created_at</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    const runs = await loadRuns();
+    renderRuns(runs);
+  } catch (e) {
+    document.getElementById('runs-content').innerHTML = `<div class="error">${escape(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

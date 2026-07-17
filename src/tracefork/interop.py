@@ -60,6 +60,7 @@ from .blame import BlameReport, CIMethod, FlipRateResult, benjamini_hochberg
 from .constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY
 from .providers import get_adapter
 from .providers.base import NormalizedResponse
+from .store import TapeStore
 from .tape import Tape, sha256_hex
 
 # ── gen_ai.* attribute names (OTel GenAI semantic conventions) ─────────────
@@ -138,10 +139,13 @@ def _blame_attributes(result: FlipRateResult, report: BlameReport) -> dict[str, 
 
 
 def _normalize_exchange(
-    provider: str, request_bytes: bytes, response_bytes: bytes
+    provider: str,
+    request_bytes: bytes,
+    response_bytes: bytes,
+    request_url: str | None = None,
 ) -> tuple[str | None, NormalizedResponse]:
     adapter = get_adapter(provider)
-    request_model = adapter.detect_model(request_bytes)
+    request_model = adapter.detect_model(request_bytes, request_url=request_url)
     try:
         normalized = adapter.parse_response(response_bytes)
     except Exception:
@@ -298,7 +302,8 @@ def build_otel_trace(
     ]
 
     for i, (req, resp) in enumerate(tape.exchanges):
-        request_model, normalized = _normalize_exchange(adapter_name, req, resp)
+        request_url = tape.request_urls[i] if i < len(tape.request_urls) else None
+        request_model, normalized = _normalize_exchange(adapter_name, req, resp, request_url)
         attrs = normalized_to_genai_attributes(
             normalized, provider=provider, request_model=request_model
         )
@@ -343,6 +348,44 @@ def build_otel_trace(
     }
 
 
+# ── OTel exemplar back-link (tracefork-bge.53) ─────────────────────────────
+#
+# `build_otel_trace`'s `trace_id`/`span_id` are content-derived, not random
+# (see `_hex_id`), so the mapping is reversible offline: recompute the same
+# hash for every stored run/step and find the match. Purely read-only —
+# never touches `Tape.digest()`/`to_bytes()`/`from_bytes()` or any store
+# schema.
+
+
+def locate_trace(store: TapeStore, trace_id: str) -> str | None:
+    """The run_id whose `build_otel_trace(...)`-exported trace_id equals
+    `trace_id`, or `None` if no stored run matches.
+
+    Recomputes each run's trace_id from its tape digest — `store.stored_digest`
+    is an opportunistic fast path (skipped when that column doesn't exist
+    yet, the same "never a hard dependency" pattern `fsck.py` already
+    establishes for it), falling back to a full `load_tape(...).digest()`.
+    """
+    for run in store.list_runs():
+        run_id = run["run_id"]
+        digest = store.stored_digest(run_id)
+        if digest is None:
+            digest = store.load_tape(run_id).digest()
+        if _hex_id(digest or "tracefork-empty-tape", 16) == trace_id:
+            return run_id
+    return None
+
+
+def locate_span_step(tape: Tape, trace_id: str, span_id: str) -> int | None:
+    """The exchange index whose `build_otel_trace(...)`-exported span_id
+    (under `trace_id`) equals `span_id`, or `None` for the trace's own root
+    span (or any span_id with no match)."""
+    for i in range(len(tape.exchanges)):
+        if _hex_id(f"{trace_id}:{i}", 8) == span_id:
+            return i
+    return None
+
+
 # ── export: Tape (+ BlameReport) -> OpenInference-style dataset JSON ───────
 
 
@@ -360,7 +403,8 @@ def build_openinference_dataset(
     examples: list[dict[str, Any]] = []
 
     for i, (req, resp) in enumerate(tape.exchanges):
-        request_model, normalized = _normalize_exchange(provider, req, resp)
+        request_url = tape.request_urls[i] if i < len(tape.request_urls) else None
+        request_model, normalized = _normalize_exchange(provider, req, resp, request_url)
         model = normalized.model or request_model
         metadata: dict[str, Any] = {OI_SPAN_KIND: "LLM", OI_PROVIDER: provider}
         if model:

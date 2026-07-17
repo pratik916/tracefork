@@ -82,7 +82,34 @@ class ConfinementViolationError(BoundaryViolationError):
     host outside `ConfinementSpec.allowed_hosts`, while a `BoundaryGuard`
     with an active `confinement=` spec is entered. Subclasses
     `BoundaryViolationError` so existing `pytest.raises(BoundaryViolationError,
-    ...)` call sites keep matching."""
+    ...)` call sites keep matching.
+
+    Since tracefork-bge.72, both raise sites (`_guarded_open`,
+    `_guarded_socket_connect`, below) additionally set optional structured
+    keyword-only attributes -- `violation_kind` (`"write"`/`"connect"`),
+    `attempted` (the denied path/host), and whichever of
+    `declared_writable_roots`/`declared_allowed_hosts` applies -- so a caller
+    (see `confinement_diagnostics.py`) can build a typed diagnostic from the
+    exception's own attributes instead of parsing `str(error)`. All four
+    default to `None`, so `raise ConfinementViolationError("msg")` (the
+    pre-bge.72 single-message-arg shape) is unaffected and every existing
+    `pytest.raises(ConfinementViolationError, match=...)` call site keeps
+    matching on the unchanged message text."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        violation_kind: str | None = None,
+        attempted: str | None = None,
+        declared_writable_roots: tuple[str, ...] | None = None,
+        declared_allowed_hosts: tuple[str, ...] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.violation_kind = violation_kind
+        self.attempted = attempted
+        self.declared_writable_roots = declared_writable_roots
+        self.declared_allowed_hosts = declared_allowed_hosts
 
 
 @dataclass(frozen=True)
@@ -226,7 +253,10 @@ class BoundaryGuard:
                             f"open({file!r}, mode={mode!r}) denied: resolved path is "
                             "outside the declared ConfinementSpec.writable_roots "
                             "while BoundaryGuard confinement is active (see "
-                            "boundary_guard.py)."
+                            "boundary_guard.py).",
+                            violation_kind="write",
+                            attempted=str(target),
+                            declared_writable_roots=confinement.writable_roots,
                         )
                 return self._orig_open(file, mode, *a, **kw)
 
@@ -236,7 +266,10 @@ class BoundaryGuard:
                     raise ConfinementViolationError(
                         f"socket.connect({address!r}) denied: host is outside the "
                         "declared ConfinementSpec.allowed_hosts while BoundaryGuard "
-                        "confinement is active (see boundary_guard.py)."
+                        "confinement is active (see boundary_guard.py).",
+                        violation_kind="connect",
+                        attempted=host,
+                        declared_allowed_hosts=confinement.allowed_hosts,
                     )
                 return self._orig_socket_connect(sock, address, *a, **kw)
 

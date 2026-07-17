@@ -22,10 +22,14 @@ from .base import (
     ContentPart,
     NormalizedResponse,
     ProviderAdapter,
+    ProviderCapabilities,
     default_adapter,
     get_adapter,
+    get_capabilities,
     load_provider_entry_points,
     register_adapter,
+    register_capabilities,
+    registered_capabilities,
     registered_providers,
 )
 
@@ -33,9 +37,13 @@ __all__ = [
     "ContentPart",
     "NormalizedResponse",
     "ProviderAdapter",
+    "ProviderCapabilities",
     "default_adapter",
     "get_adapter",
+    "get_capabilities",
     "load_provider_entry_points",
     "register_adapter",
+    "register_capabilities",
+    "registered_capabilities",
     "registered_providers",
 ]

@@ -96,9 +96,25 @@ class Tape:
     # upcasts to an empty dict. See `replay.ReplayVerifier` for the opt-in
     # `matcher_name` mismatch check this enables.
     provenance: dict[str, str] = field(default_factory=dict)
+    # Request-URL witness log (v6): the URL captured at each exchange's real
+    # capture seam (`transport.py`'s `TraceforkTransport`/`AsyncTraceforkTransport`,
+    # `bedrock_transport.py`'s `BedrockTransport`), parallel-indexed to
+    # `exchanges` — index `i` here is the URL for `exchanges[i]`. Exists so a
+    # provider whose model id lives in the URL path rather than the request
+    # body (Gemini/Bedrock) can still be resolved by `providers/*.detect_model`
+    # and its downstream consumers (`interop.py`, `blame.py`). An exchange
+    # recorded with no known URL stores `""`, never a missing/misaligned
+    # entry. Purely forensic/reporting metadata: like `boundary`/`agent_name`/
+    # `async_batches`/`provenance`, it is NEVER fed into `digest()`, so every
+    # existing tape's content digest is unchanged and a pre-v6 tape upcasts to
+    # `[""] * len(exchanges)`.
+    request_urls: list[str] = field(default_factory=list)
 
-    def append_exchange(self, request_body: bytes, response_body: bytes) -> None:
+    def append_exchange(
+        self, request_body: bytes, response_body: bytes, request_url: str | None = None
+    ) -> None:
         self.exchanges.append((request_body, response_body))
+        self.request_urls.append(request_url or "")
 
     def exchange(self, i: int) -> tuple[bytes, bytes]:
         return self.exchanges[i]
@@ -127,7 +143,7 @@ class Tape:
         a content-addressed, zstd-compressed binary container). Shared blobs are
         stored once by sha256, and there is no base64, so the ~1.33x base64
         blow-up of the legacy format is gone. Read back with `from_bytes`."""
-        return _encode_v5(self)
+        return _encode_v6(self)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Tape:
@@ -147,6 +163,7 @@ class Tape:
         tape.tool_exchanges = f["tool_exchanges"]
         tape.async_batches = [list(b) for b in f.get("async_batches", [])]
         tape.provenance = dict(f.get("provenance", {}))
+        tape.request_urls = list(f.get("request_urls", []))
         return tape
 
     def save(self, path: str) -> None:
@@ -236,16 +253,17 @@ class Tape:
 _Fields = dict[str, Any]
 
 
-def _encode_v5(tape: Tape) -> bytes:
-    """Version-5 body: a JSON header (boundary, agent_name, draws, the LLM
+def _encode_v6(tape: Tape) -> bytes:
+    """Version-6 body: a JSON header (boundary, agent_name, draws, the LLM
     exchange hash pairs, the tool-exchange hash pairs, the concurrency-batch log,
-    the provenance witness block, and the dedup'd blob-hash order) followed by,
-    for each unique blob in order, a uint32 length + its zstd-compressed bytes.
-    Content-addressed (each distinct request/response stored once, LLM and tool
-    blobs sharing one store) and base64-free. LLM blobs are ordered first, so an
-    LLM-only tape's blob layout is identical to the v2 format that preceded the
-    tool log. `provenance` is the only addition over v4: a small string->string
-    dict, empty for a tape whose `Recorder`/`AsyncRecorder` never populated it."""
+    the provenance witness block, the request-URL witness log, and the dedup'd
+    blob-hash order) followed by, for each unique blob in order, a uint32 length
+    + its zstd-compressed bytes. Content-addressed (each distinct request/
+    response stored once, LLM and tool blobs sharing one store) and base64-free.
+    LLM blobs are ordered first, so an LLM-only tape's blob layout is identical
+    to the v2 format that preceded the tool log. `request_urls` is the only
+    addition over v5: a list of strings parallel-indexed to `exchanges`, empty
+    string for any exchange recorded with no known URL."""
     order: list[str] = []
     seen: dict[str, bytes] = {}
     for req, resp in (*tape.exchanges, *tape.tool_exchanges):
@@ -264,6 +282,7 @@ def _encode_v5(tape: Tape) -> bytes:
         ],
         "async_batches": tape.async_batches,
         "provenance": tape.provenance,
+        "request_urls": tape.request_urls,
         "blob_hashes": order,
         "content_redacted": tape.content_redacted,
     }
@@ -356,8 +375,8 @@ def _decode_v4_binary(body: bytes) -> _Fields:
 
 
 def _decode_v5_binary(body: bytes) -> _Fields:
-    """Content-addressed zstd container written by `_encode_v5` (adds the
-    `provenance` witness block over v4)."""
+    """Content-addressed zstd container written by the pre-v6 encoder (adds
+    the `provenance` witness block over v4, but has no `request_urls`)."""
     header, blobs = _read_blob_container(body)
     return {
         "boundary": header["boundary"],
@@ -369,6 +388,25 @@ def _decode_v5_binary(body: bytes) -> _Fields:
         ],
         "async_batches": [list(b) for b in header.get("async_batches", [])],
         "provenance": dict(header.get("provenance", {})),
+        "content_redacted": header.get("content_redacted", False),
+    }
+
+
+def _decode_v6_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container written by `_encode_v6` (adds the
+    `request_urls` witness log over v5)."""
+    header, blobs = _read_blob_container(body)
+    return {
+        "boundary": header["boundary"],
+        "agent_name": header["agent_name"],
+        "draws": [tuple(pair) for pair in header["draws"]],
+        "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "tool_exchanges": [
+            (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
+        ],
+        "async_batches": [list(b) for b in header.get("async_batches", [])],
+        "provenance": dict(header.get("provenance", {})),
+        "request_urls": list(header.get("request_urls", [])),
         "content_redacted": header.get("content_redacted", False),
     }
 
@@ -405,18 +443,29 @@ def _upcast_v4_to_v5(fields: _Fields) -> _Fields:
     return fields
 
 
+def _upcast_v5_to_v6(fields: _Fields) -> _Fields:
+    """v5 -> v6 adds the request-URL witness log; a pre-v6 tape has none, so it
+    defaults to an empty string per already-decoded exchange. `request_urls` is
+    never hashed into `digest()`, so this leaves every existing tape's content
+    digest and replay behavior unchanged."""
+    fields.setdefault("request_urls", [""] * len(fields["exchanges"]))
+    return fields
+
+
 _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     1: _decode_v1_json,
     2: _decode_v2_binary,
     3: _decode_v3_binary,
     4: _decode_v4_binary,
     5: _decode_v5_binary,
+    6: _decode_v6_binary,
 }
 _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     1: _upcast_v1_to_v2,
     2: _upcast_v2_to_v3,
     3: _upcast_v3_to_v4,
     4: _upcast_v4_to_v5,
+    5: _upcast_v5_to_v6,
 }
 
 

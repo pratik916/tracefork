@@ -36,16 +36,29 @@ streaming-through-botocore limitation.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+from urllib.parse import unquote
 
 from ..tape import sha256_hex
 from .anthropic import AnthropicAdapter
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 #: Bedrock's fixed InvokeModel request-body version tag (not a Claude model id).
 ANTHROPIC_VERSION = "bedrock-2023-05-31"
 
 _INNER = AnthropicAdapter()
+
+# Matches the model segment of a Bedrock InvokeModel URL path, e.g.
+# ".../model/anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke" -> the
+# (still URL-encoded) "anthropic.claude-haiku-4-5-20251001-v1%3A0".
+_URL_MODEL_RE = re.compile(r"/model/([^/]+)/")
 
 
 class BedrockAdapter:
@@ -64,15 +77,20 @@ class BedrockAdapter:
         # body-only hash.
         return sha256_hex(request_bytes)
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
-        """Always ``None``: Bedrock's InvokeModel body has no ``model`` field
-        at all — the model id is a URL path segment
-        (``/model/{modelId}/invoke``), never body content. Mirrors
-        ``GeminiAdapter.detect_model``'s URL-based limitation. Callers that
-        have the request URL (e.g. ``bedrock_transport.py``) can read the
-        model id from the path directly; this protocol method only ever sees
-        ``request_bytes``."""
-        return None
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        """Bedrock's InvokeModel body has no ``model`` field at all — the
+        model id is a URL path segment (``/model/{modelId}/invoke``), never
+        body content — so this parses it out of ``request_url`` (the tape's
+        recorded ``request_urls[i]``, see ``tape.py``) when given, and
+        ``urllib.parse.unquote``s the captured segment (Bedrock model ids like
+        ``anthropic.claude-haiku-4-5-20251001-v1:0`` are URL-encoded as
+        ``...v1%3A0``). Mirrors ``GeminiAdapter.detect_model``'s URL-based
+        limitation. ``None`` when ``request_url`` is absent or doesn't match —
+        the pre-existing, still-supported no-URL contract."""
+        if not request_url:
+            return None
+        match = _URL_MODEL_RE.search(request_url)
+        return unquote(match.group(1)) if match else None
 
     # ── response side (read) ──────────────────────────────────────────────────
 
@@ -214,3 +232,11 @@ def _parse_converse(data: dict[str, Any]) -> NormalizedResponse:
 
 
 register_adapter(BedrockAdapter())
+# model_detectable=False: the body never carries a model field (it's a URL
+# path segment); detect_model resolves it from an optional request_url
+# instead of the body `_CAPABILITIES` describes. parse_response uniquely
+# recognizes a second envelope (Converse) in addition to its native
+# InvokeModel/Anthropic-Messages shape.
+register_capabilities(
+    ProviderCapabilities(name="bedrock", model_detectable=False, converse_response=True)
+)

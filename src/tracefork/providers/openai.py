@@ -19,7 +19,13 @@ import json
 from typing import Any
 
 from ..tape import sha256_hex
-from .base import ContentPart, NormalizedResponse, register_adapter
+from .base import (
+    ContentPart,
+    NormalizedResponse,
+    ProviderCapabilities,
+    register_adapter,
+    register_capabilities,
+)
 
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -36,7 +42,8 @@ class OpenAIAdapter:
         # transport.py asserts on; this seam only exposes a hashable handle.
         return sha256_hex(request_bytes)
 
-    def detect_model(self, request_bytes: bytes) -> str | None:
+    def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
+        # request_url is unused: the body already carries a real "model" field.
         try:
             model = json.loads(request_bytes).get("model")
         except Exception:
@@ -264,3 +271,6 @@ def _sse_data_payloads(response_bytes: bytes):
 
 
 register_adapter(OpenAIAdapter())
+register_capabilities(
+    ProviderCapabilities(name="openai", model_detectable=True, converse_response=False)
+)
