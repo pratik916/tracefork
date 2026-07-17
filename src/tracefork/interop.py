@@ -60,6 +60,7 @@ from .blame import BlameReport, CIMethod, FlipRateResult, benjamini_hochberg
 from .constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY
 from .providers import get_adapter
 from .providers.base import NormalizedResponse
+from .store import TapeStore
 from .tape import Tape, sha256_hex
 
 # ── gen_ai.* attribute names (OTel GenAI semantic conventions) ─────────────
@@ -345,6 +346,44 @@ def build_otel_trace(
             }
         ]
     }
+
+
+# ── OTel exemplar back-link (tracefork-bge.53) ─────────────────────────────
+#
+# `build_otel_trace`'s `trace_id`/`span_id` are content-derived, not random
+# (see `_hex_id`), so the mapping is reversible offline: recompute the same
+# hash for every stored run/step and find the match. Purely read-only —
+# never touches `Tape.digest()`/`to_bytes()`/`from_bytes()` or any store
+# schema.
+
+
+def locate_trace(store: TapeStore, trace_id: str) -> str | None:
+    """The run_id whose `build_otel_trace(...)`-exported trace_id equals
+    `trace_id`, or `None` if no stored run matches.
+
+    Recomputes each run's trace_id from its tape digest — `store.stored_digest`
+    is an opportunistic fast path (skipped when that column doesn't exist
+    yet, the same "never a hard dependency" pattern `fsck.py` already
+    establishes for it), falling back to a full `load_tape(...).digest()`.
+    """
+    for run in store.list_runs():
+        run_id = run["run_id"]
+        digest = store.stored_digest(run_id)
+        if digest is None:
+            digest = store.load_tape(run_id).digest()
+        if _hex_id(digest or "tracefork-empty-tape", 16) == trace_id:
+            return run_id
+    return None
+
+
+def locate_span_step(tape: Tape, trace_id: str, span_id: str) -> int | None:
+    """The exchange index whose `build_otel_trace(...)`-exported span_id
+    (under `trace_id`) equals `span_id`, or `None` for the trace's own root
+    span (or any span_id with no match)."""
+    for i in range(len(tape.exchanges)):
+        if _hex_id(f"{trace_id}:{i}", 8) == span_id:
+            return i
+    return None
 
 
 # ── export: Tape (+ BlameReport) -> OpenInference-style dataset JSON ───────

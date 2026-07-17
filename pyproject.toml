@@ -138,6 +138,14 @@ observability = [
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",
 ]
+# Optional: mutmut, only needed for the offline, informational mutation-testing
+# pass (scripts/mutation.sh / scripts/mutation_summary.py) over transport.py/
+# tape.py/matcher.py/blame.py — kept separate from `dev` so the default
+# `uv sync --extra dev` contributor path and CI stay unaffected; only the
+# nightly-only mutation.yml workflow (never push/pull_request) installs it.
+mutation = [
+    "mutmut>=2.4",
+]
 # Curated convenience extra: the stable-wire / self-instrumentation family in one
 # shot. DELIBERATELY excludes the fast-moving framework stacks (frameworks,
 # openai-agents, crewai, autogen, adk) and dev — unioning five independently-capped
@@ -165,6 +173,8 @@ packages = ["src/tracefork_spike", "src/tracefork"]
 # an installed wheel, not only from an editable/source checkout.
 [tool.hatch.build.targets.wheel.force-include]
 "web/report.html" = "tracefork/web/report.html"
+"web/runs.html" = "tracefork/web/runs.html"
+"web/session_report.html" = "tracefork/web/session_report.html"
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
@@ -200,3 +210,13 @@ show_missing = true
 # headroom left deliberately unclaimed rather than pinning a floor we're not sure
 # to keep clearing as the codebase grows.
 fail_under = 80
+
+[tool.mutmut]
+paths_to_mutate = [
+    "src/tracefork/transport.py",
+    "src/tracefork/tape.py",
+    "src/tracefork/matcher.py",
+    "src/tracefork/blame.py",
+]
+tests_dir = "tests/"
+runner = "python -m pytest -x -q"

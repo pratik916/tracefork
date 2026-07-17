@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tracefork — session fork board</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #6e7681; --green: #3fb950;
+    --blue: #58a6ff; --orange: #f0883e; --purple: #d2a8ff;
+    --red: #f85149; --yellow: #e3b341;
+  }
+  body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 13px; }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 15px; color: var(--green); }
+  header .session-meta { color: var(--muted); font-size: 11px; }
+
+  .scrubber-bar { padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .scrubber-play-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
+             font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
+  .scrubber-play-btn:hover { border-color: var(--blue); }
+  .scrubber-slider { flex: 1; }
+  .scrubber-index { color: var(--muted); font-size: 11px; min-width: 90px; text-align: right; }
+
+  .lanes { padding: 12px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .lane { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .lane-header { background: var(--surface); padding: 8px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .lane-run-id { color: var(--blue); font-weight: bold; }
+  .lane-lineage { color: var(--muted); font-size: 11px; }
+  .lane-strip { display: flex; overflow-x: auto; }
+  .lane-cell { flex: 0 0 auto; min-width: 60px; padding: 8px 10px; border-right: 1px solid var(--border);
+               cursor: pointer; font-size: 11px; color: var(--muted); }
+  .lane-cell:hover { background: var(--surface); }
+  .lane-cell.current { background: #1a2a3a; color: var(--text); border-bottom: 2px solid var(--blue); }
+  .lane-cell.missing { color: var(--border); font-style: italic; }
+  .lane-cell .cell-role { text-transform: uppercase; font-size: 9px; }
+  .lane-cell .cell-preview { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+  .lane-detail { padding: 10px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+  .tag-pass { background: #1a3a1a; color: var(--green); }
+  .tag-fail { background: #3a1a1a; color: var(--red); }
+  .tag-neutral { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+  .empty { padding: 40px; color: var(--muted); text-align: center; }
+  .error { padding: 20px; color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>tracefork</h1>
+  <span class="session-meta" id="session-meta">loading…</span>
+</header>
+<div class="scrubber-bar" id="board-scrubber"></div>
+<div class="lanes" id="lanes-content"><div class="empty">loading…</div></div>
+
+<script>
+// ── data source ──────────────────────────────────────────────────────────
+// Static-only today (tracefork-bge.33's scope note): a live GET /session/{id}
+// HTML route is deferred, so this page only ever reads the injected
+// window.__TRACEFORK_SESSION_DATA__ blob -- no fetch fallback.
+let DATA = null;
+let _index = 0;
+let _scrubberTimer = null;
+
+function escape(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function replayBadgeHtml(replay) {
+  if (!replay || Object.keys(replay).length === 0) {
+    return '<span class="tag tag-neutral">no replay receipt</span>';
+  }
+  if (replay.bit_exact) {
+    return `<span class="tag tag-pass">replay ${replay.matched}/${replay.total} bit-exact</span>`;
+  }
+  const step = replay.divergence ? replay.divergence.step_index : '?';
+  return `<span class="tag tag-fail">replay diverged @ step ${escape(String(step))}</span>`;
+}
+
+function lineageHtml(lane) {
+  const parts = [];
+  if (lane.spawn_parent) parts.push(`spawned by ${escape(lane.spawn_parent)}`);
+  if (lane.spawn_children && lane.spawn_children.length) {
+    parts.push(`spawned ${lane.spawn_children.map(escape).join(', ')}`);
+  }
+  return parts.length ? parts.join(' · ') : '(root of session)';
+}
+
+// ── render ───────────────────────────────────────────────────────────────
+function maxExchangeCount(lanes) {
+  return lanes.reduce((m, lane) => Math.max(m, lane.exchanges.length), 0);
+}
+
+function renderScrubber(lanes) {
+  const el = document.getElementById('board-scrubber');
+  const n = maxExchangeCount(lanes);
+  if (n === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  const max = Math.max(0, n - 1);
+  el.innerHTML = `
+    <button class="scrubber-play-btn" id="board-play-btn" onclick="playPause()">▶ play</button>
+    <input type="range" id="board-slider" class="scrubber-slider" min="0" max="${max}" value="0" step="1"
+           oninput="setIndex(Number(this.value))" ${n <= 1 ? 'disabled' : ''}>
+    <span class="scrubber-index" id="board-index-label">step 0 / ${max}</span>`;
+}
+
+function renderLanes(data) {
+  const el = document.getElementById('lanes-content');
+  const lanes = data.lanes || [];
+  if (lanes.length === 0) {
+    el.innerHTML = '<div class="empty">no lanes in this session</div>';
+    return;
+  }
+  el.innerHTML = lanes.map(lane => {
+    const cellsHtml = lane.exchanges.map((ex, i) => `<div class="lane-cell" data-run-id="${escape(lane.run_id)}" data-i="${i}" onclick="setIndex(${i})">
+        <div class="cell-role">${escape(ex.role || 'unknown')}</div>
+        <div class="cell-preview">${escape(ex.preview || '')}</div>
+      </div>`).join('');
+    return `<div class="lane" data-run-id="${escape(lane.run_id)}">
+        <div class="lane-header">
+          <span class="lane-run-id">${escape(lane.run_id)}</span>
+          <span class="lane-lineage">${lineageHtml(lane)}</span>
+          ${replayBadgeHtml(lane.replay)}
+        </div>
+        <div class="lane-strip">${cellsHtml}</div>
+        <div class="lane-detail" id="lane-detail-${escape(lane.run_id)}"></div>
+      </div>`;
+  }).join('');
+}
+
+function renderLaneDetail(lane, i) {
+  const el = document.getElementById(`lane-detail-${lane.run_id}`);
+  if (!el) return;
+  if (i >= lane.exchanges.length) {
+    el.innerHTML = '<span class="lane-cell missing">not yet spawned / already finished at this step</span>';
+    return;
+  }
+  const ex = lane.exchanges[i];
+  el.textContent = `exchange ${i}: ${ex.role || 'unknown'} — ${ex.preview || ''}`;
+}
+
+function setIndex(i) {
+  _index = i;
+  const lanes = (DATA && DATA.lanes) || [];
+  lanes.forEach(lane => {
+    document.querySelectorAll(`.lane-cell[data-run-id="${CSS.escape(lane.run_id)}"]`).forEach(cell => {
+      cell.classList.toggle('current', Number(cell.getAttribute('data-i')) === i);
+    });
+    renderLaneDetail(lane, i);
+  });
+  const slider = document.getElementById('board-slider');
+  if (slider) slider.value = String(i);
+  const label = document.getElementById('board-index-label');
+  if (label && slider) label.textContent = `step ${i} / ${slider.max}`;
+}
+
+function stepBoard(delta) {
+  const n = maxExchangeCount((DATA && DATA.lanes) || []);
+  const next = _index + delta;
+  if (next < 0 || next >= n) {
+    playPause(true);
+    return;
+  }
+  setIndex(next);
+}
+
+function playPause(forceStop) {
+  const btn = document.getElementById('board-play-btn');
+  if (_scrubberTimer || forceStop) {
+    clearInterval(_scrubberTimer);
+    _scrubberTimer = null;
+    if (btn) btn.textContent = '▶ play';
+    return;
+  }
+  if (btn) btn.textContent = '⏸ pause';
+  _scrubberTimer = setInterval(() => stepBoard(1), 800);
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────
+(() => {
+  try {
+    if (!window.__TRACEFORK_SESSION_DATA__) throw new Error('No session data source configured');
+    DATA = window.__TRACEFORK_SESSION_DATA__;
+    document.getElementById('session-meta').textContent =
+      `session ${DATA.session_id} · root ${DATA.root_run_id} · ${DATA.lanes.length} lane(s) · ${DATA.created_at || ''}`;
+    renderScrubber(DATA.lanes);
+    renderLanes(DATA);
+    if (DATA.lanes.length > 0) setIndex(0);
+  } catch (e) {
+    document.getElementById('lanes-content').innerHTML = `<div class="error">${escape(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

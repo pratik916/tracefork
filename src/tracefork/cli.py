@@ -7,7 +7,7 @@ settlement-diff, report, receipt, release-receipt, serve, blame, tournament,
 validate, bench, export, ingest, prune, proxy, coverage, corpus-blame, locate,
 query, bundle-export, bundle-import, plus the `branch` sub-app
 (descendants/ancestors/siblings) and the `session` sub-app (create/spawn/show/
-cost/divergence/record/replay/fork/blame/cross-blame/chaos/serve).
+board/cost/divergence/record/replay/fork/blame/cross-blame/chaos/serve).
 """
 
 from __future__ import annotations
@@ -705,29 +705,67 @@ def report(
         help="Optional blame_<run_id>.json (from `tracefork blame`) to embed "
         "per-step trust flags (divergence rate, UNDEFINED trial counts) in the report",
     ),
+    shapley_report: Path = typer.Option(  # noqa: B008
+        None,
+        "--shapley-report",
+        help="Optional shapley_<run_id>.json (step_index-keyed ShapleyResult "
+        "fields: necessity/necessity_score/sufficiency/sufficiency_score/"
+        "shapley_value) to embed a per-step necessity/sufficiency quadrant "
+        "badge in the report's Timeline panel",
+    ),
 ) -> None:
     """Generate a self-contained HTML report from a tape.
 
     When loaded via `run_id` (from `store`), the run's saved branches are
     looked up and embedded as the report's fork-tree panel data
-    (tracefork-bge.15). The `--tape` path has no store to look branches up
-    in — an honest, documented scope limit: those reports render an empty
-    fork tree rather than a silently-populated one.
+    (tracefork-bge.15), together with the run's persisted causal edges
+    (`tracefork blame`'s saved blame/Shapley results, a free read — no
+    recompute) and each branch's full delta-tape detail, so the fork tree's
+    causal highlighting and click-to-inspect work with zero live server
+    (tracefork-bge.37). A branch whose cited fork point has drifted since it
+    was forked is surfaced as an explicit `{"error": "fork_point_drift", ...}`
+    marker rather than aborting the whole report. The `--tape` path has no
+    store to look any of this up in — an honest, documented scope limit:
+    those reports render an empty fork tree rather than a silently-populated
+    one.
     """
     import json as _json
 
-    from tracefork.report import generate_report
+    from tracefork.cost_profile import compute_cost_profile, cost_profile_to_dict
+    from tracefork.report import _tape_to_data, generate_report
     from tracefork.tape import Tape
 
     branches: list[dict] | None = None
+    causal_edges: list[dict] | None = None
+    branch_details: dict[str, dict] | None = None
+    causal_closure: list[dict] | None = None
+    report_run_id: str | None = None
     if tape_path:
         tape = Tape.load(str(tape_path))
     elif run_id:
-        from tracefork.store import TapeStore
+        from tracefork.store import ForkPointDriftError, TapeStore
 
         db = TapeStore(str(store))
         tape = db.load_tape(run_id)
         branches = db.list_branches(run_id)
+        causal_edges = db.causal_edges_for_run(run_id)
+        causal_closure = db.causal_closure(run_id)
+        report_run_id = run_id
+        branch_details = {}
+        for b in branches:
+            bid = b["branch_id"]
+            try:
+                branch = db.load_branch(bid)
+            except ForkPointDriftError as exc:
+                branch_details[bid] = {"error": "fork_point_drift", "detail": str(exc)}
+                continue
+            branch_details[bid] = {
+                **_tape_to_data(branch["delta_tape"]),
+                "divergence_step": branch["divergence_step"],
+                "mutation_desc": branch["mutation_desc"],
+                "branch_digest": branch["branch_digest"],
+                "parent_run_id": branch["parent_run_id"],
+            }
     else:
         typer.echo("Provide a run_id or --tape path")
         raise typer.Exit(1)
@@ -748,7 +786,26 @@ def report(
         blame_data = _json.loads(blame_report.read_text())
         blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
 
-    generate_report(tape, output, blame=blame_dict, replay=replay_data, branches=branches)
+    shapley_dict = None
+    if shapley_report is not None:
+        shapley_data = _json.loads(shapley_report.read_text())
+        shapley_dict = {r["step_index"]: r for r in shapley_data.get("results", [])}
+
+    cost_profile_dict = cost_profile_to_dict(compute_cost_profile(tape))
+
+    generate_report(
+        tape,
+        output,
+        blame=blame_dict,
+        replay=replay_data,
+        branches=branches,
+        causal_edges=causal_edges,
+        branch_details=branch_details,
+        shapley=shapley_dict,
+        cost_profile=cost_profile_dict,
+        causal_closure=causal_closure,
+        run_id=report_run_id,
+    )
     typer.echo(f"Report written to {output}")
     _print_trust_lines(tape)
 
@@ -963,14 +1020,22 @@ def serve(
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
     port: int = typer.Option(7777, "--port", "-p", help="Port to listen on"),
+    allow_fork_agent: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--allow-fork-agent",
+        help="'name=module:fn', repeatable — allowlists an agent for the "
+        "click-to-fork server endpoints (tracefork-bge.36). Omit for today's "
+        "default: no agent allowlisted, every fork endpoint 403s.",
+    ),
 ) -> None:
     """Start the tracefork web UI server on port 7777."""
     import uvicorn
 
     from tracefork.server import app as fastapi_app
-    from tracefork.server import init_store
+    from tracefork.server import init_fork_allowlist, init_store
 
     init_store(str(store))
+    init_fork_allowlist(dict(entry.split("=", 1) for entry in allow_fork_agent if "=" in entry))
     typer.echo(f"  tracefork serve → http://127.0.0.1:{port}")
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
@@ -2176,7 +2241,7 @@ def branch_siblings_cmd(
 session_app = typer.Typer(
     name="session",
     help="Orchestration session / spawn-lineage commands "
-    "(create/spawn/show/cost/divergence/record/replay/fork/blame/"
+    "(create/spawn/show/board/cost/divergence/record/replay/fork/blame/"
     "cross-blame/chaos/serve).",
 )
 app.add_typer(session_app, name="session")
@@ -2287,6 +2352,57 @@ def session_show(
     for rid in tapes:
         typer.echo(f"    {rid}")
     typer.echo("")
+
+
+@session_app.command("board")
+def session_board(
+    session_id: str = typer.Argument(..., help="Session id to build a fork-board report for"),
+    output: Path = typer.Option(  # noqa: B008
+        Path("session_board.html"), "--output", "-o", help="Output HTML file"
+    ),
+    store: Path = typer.Option(  # noqa: B008
+        Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
+    ),
+    agent_map: Path = typer.Option(  # noqa: B008
+        None,
+        "--agent-map",
+        help="Optional JSON {run_id: 'module:fn'} mapping (same shape "
+        "`session divergence`'s --agents-manifest already uses) — a lane "
+        "whose run_id is mapped gets a REAL, freshly-computed replay "
+        "bit-exactness receipt; an unmapped lane renders the neutral "
+        "'no replay receipt' empty state instead of a fabricated one",
+    ),
+) -> None:
+    """Generate a self-contained multi-agent session fork-board report:
+    one parallel lane per SESSION_ID spawn-linked tape (BFS/session order,
+    see `store.session_tapes`), plus a shared index-based scrubber.
+
+    Ships the offline CLI static-generator path only — live-mode serving
+    through `server.py` is a documented, deliberate follow-on (see
+    `report_session.py`'s module docstring).
+    """
+    import json as _json
+
+    from tracefork import session_replay
+    from tracefork.report_session import generate_session_report
+    from tracefork.store import TapeStore
+
+    resolved_agent_map = None
+    if agent_map is not None:
+        manifest = _json.loads(agent_map.read_text())
+        resolved_agent_map = session_replay.resolve_agent_manifest(manifest)
+
+    db = TapeStore(str(store))
+    try:
+        try:
+            generate_session_report(db, session_id, output, agent_map=resolved_agent_map)
+        except KeyError as exc:
+            typer.echo(f"  {exc}")
+            raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    typer.echo(f"Session fork-board written to {output}")
 
 
 @session_app.command("cost")

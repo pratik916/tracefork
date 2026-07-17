@@ -16,13 +16,22 @@
   header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   header h1 { font-size: 15px; color: var(--green); }
   header .run-meta { color: var(--muted); font-size: 11px; }
-  .layout { display: grid; grid-template-columns: 280px 1fr 320px 260px; height: calc(100vh - 45px); }
+  .layout { display: grid; grid-template-columns: 280px 1fr 320px 260px 240px; height: calc(100vh - 45px); }
   .panel { border-right: 1px solid var(--border); overflow-y: auto; }
   .panel:last-child { border-right: none; }
   .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
                   font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 
   /* Panel 1 — Timeline */
+  #timeline-scrubber { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  .scrubber-controls { display: flex; align-items: center; gap: 8px; }
+  .scrubber-play-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
+             font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
+  .scrubber-play-btn:hover { border-color: var(--blue); }
+  .scrubber-slider { flex: 1; }
+  .scrubber-track { position: relative; height: 16px; margin-top: 6px; }
+  .scrubber-tick { position: absolute; top: 0; width: 2px; height: 10px; background: var(--muted); cursor: pointer; }
+  .scrubber-tick.active { background: var(--blue); height: 14px; }
   .exchange-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
   .exchange-item:hover, .exchange-item.active { background: var(--surface); }
   .exchange-item .step { font-size: 10px; color: var(--muted); }
@@ -33,6 +42,15 @@
   .exchange-item .preview { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .blame-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #1a3a1a; color: var(--green); }
   .blame-badge.high { background: #3a1a1a; color: var(--red); }
+
+  /* Shapley necessity/sufficiency quadrant badge (tracefork-bge.54), inline
+     in the Timeline panel's per-exchange row next to the blame flip-rate
+     badge -- no new panel. */
+  .shapley-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 4px; }
+  .shapley-badge.critical { background: #3a1a1a; color: var(--red); }
+  .shapley-badge.necessary { background: #3a3010; color: var(--yellow); }
+  .shapley-badge.sufficient { background: #1a2a3a; color: var(--blue); }
+  .shapley-badge.inert { background: var(--surface); color: var(--muted); }
 
   /* Panel 2 — Detail */
   .detail-empty { padding: 40px; color: var(--muted); text-align: center; }
@@ -57,6 +75,14 @@
   .blame-rate.decisive { color: var(--red); font-weight: bold; }
   .blame-header-row { padding: 6px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
                        display: flex; gap: 8px; font-size: 10px; color: var(--muted); }
+
+  /* Selected / support-evidence / external-anchor vocabulary (tracefork-bge.70) */
+  .evidence-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; margin-left: 6px; }
+  .evidence-badge.selected { background: #3a1a1a; color: var(--red); }
+  .evidence-badge.support { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .anchor-row { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .anchor-row .anchor-run { color: var(--blue); }
+  .anchor-empty { padding: 12px 14px; color: var(--muted); font-size: 11px; }
 
   .loading { padding: 40px; text-align: center; color: var(--muted); }
   .error { padding: 20px; color: var(--red); }
@@ -92,6 +118,11 @@
   .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .trust-warn { color: var(--yellow); }
 
+  /* Click-to-fork inline UI (tracefork-bge.36) */
+  .fork-textarea { width: 100%; font-family: inherit; font-size: 11px; background: var(--surface);
+                    color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
+  .fork-row { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+
   /* Panel 4 — Fork Tree (tracefork-bge.15) */
   .forktree-empty { padding: 40px; color: var(--muted); text-align: center; }
   .forktree-svg { display: block; margin: 12px auto; }
@@ -102,6 +133,25 @@
   .forktree-label { fill: var(--text); font-size: 11px; font-family: ui-monospace, monospace; }
   .forktree-root-label { fill: var(--green); }
   .forktree-desc { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+
+  /* Causal heatmap overlay on fork-tree nodes (tracefork-bge.35/37): a
+     branch's divergence_step cross-referenced against data.causal_edges.
+     `-responsible` (blame's FDR-selected set) wins the fill color;
+     `-necessary`/`-sufficient` (Shapley) are stroke-only encodings so both
+     can be visible on the same node at once. */
+  .forktree-node-responsible { fill: var(--red); }
+  .forktree-node-necessary { stroke: var(--yellow); stroke-width: 3; }
+  .forktree-node-sufficient { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2,2; }
+
+  /* Panel 5 — Cost Profile (tracefork-bge.52) */
+  .cost-empty { padding: 40px; color: var(--muted); text-align: center; }
+  .cost-section h3 { font-size: 11px; color: var(--muted); margin: 12px 14px 4px; text-transform: uppercase; }
+  .cost-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+  .cost-row .cost-name { color: var(--text); }
+  .cost-row .cost-meta { color: var(--muted); font-size: 10px; }
+  .cost-row .cost-usd { color: var(--green); text-align: right; min-width: 60px; }
+  .cost-total { padding: 10px 14px; font-size: 12px; font-weight: bold; border-top: 1px solid var(--border);
+                display: flex; justify-content: space-between; }
 </style>
 </head>
 <body>
@@ -116,6 +166,7 @@
 <div class="layout">
   <div class="panel" id="timeline-panel">
     <div class="panel-header">Timeline</div>
+    <div id="timeline-scrubber"></div>
     <div id="timeline-content"><div class="loading">loading…</div></div>
   </div>
   <div class="panel" id="detail-panel">
@@ -129,6 +180,10 @@
   <div class="panel" id="forktree-panel">
     <div class="panel-header">Fork Tree</div>
     <div id="forktree-content"><div class="loading">loading…</div></div>
+  </div>
+  <div class="panel" id="cost-panel">
+    <div class="panel-header">Cost Profile</div>
+    <div id="cost-content"><div class="loading">loading…</div></div>
   </div>
 </div>
 
@@ -169,15 +224,37 @@ function renderTimeline(data) {
     const divergeHtml = divergence && divergence.step_index === i
       ? `<span class="blame-badge high" title="replay diverged here">⚡ diverged</span>`
       : '';
+    const shapleyHtml = shapleyQuadrantHtml((data.shapley || {})[i]);
     const roleClass = ex.role === 'user' ? 'role-user' : ex.role === 'assistant' ? 'role-assistant' : 'role-tool';
     return `<div class="exchange-item" data-i="${i}" onclick="selectExchange(${i})">
-      ${divergeHtml}${badgeHtml}
+      ${divergeHtml}${badgeHtml}${shapleyHtml}
       <div class="step">exchange ${i}</div>
       <div class="role ${roleClass}">${escape(ex.role || 'unknown')}</div>
       <div class="preview">${escape(ex.preview || '')}</div>
     </div>`;
   }).join('');
   document.getElementById('timeline-content').innerHTML = html;
+}
+
+// Shapley necessity/sufficiency quadrant badge (tracefork-bge.54): reuses
+// blame.py's already-shipped ShapleyResult fields (necessity/sufficiency
+// booleans + their scores), the same shape store.py's causal_edges rows
+// carry. `info` is `undefined` for any exchange with no shapley data (the
+// default, empty `data.shapley` case) -- renders nothing, byte-identical to
+// before this feature existed.
+function shapleyQuadrantHtml(info) {
+  if (!info) return '';
+  const necessity = !!info.necessity;
+  const sufficiency = !!info.sufficiency;
+  let label, cls;
+  if (necessity && sufficiency) { label = 'N+S'; cls = 'critical'; }
+  else if (necessity) { label = 'N'; cls = 'necessary'; }
+  else if (sufficiency) { label = 'S'; cls = 'sufficient'; }
+  else { label = '·'; cls = 'inert'; }
+  const nScore = info.necessity_score != null ? Number(info.necessity_score).toFixed(3) : '?';
+  const sScore = info.sufficiency_score != null ? Number(info.sufficiency_score).toFixed(3) : '?';
+  const title = `necessity=${necessity} (${nScore}) · sufficiency=${sufficiency} (${sScore})`;
+  return `<span class="shapley-badge ${cls}" title="${escapeAttr(title)}">${label}</span>`;
 }
 
 function renderReplayBadge(data) {
@@ -257,10 +334,11 @@ function renderBlame(data) {
     const isDecisive = rate >= 0.7;
     const pct = Math.round(rate * 100);
     const trustHtml = renderTrustFlags(info);
+    const evidenceHtml = evidenceBadgeHtml(info);
     return `<div class="blame-row">
       <span class="blame-rank">${rank+1}</span>
       <div class="blame-info">
-        <div class="blame-step">step-${step}</div>
+        <div class="blame-step">step-${step}${evidenceHtml}</div>
         <div class="blame-ci">95% CI [${info.ci_lo.toFixed(2)}, ${info.ci_hi.toFixed(2)}]</div>
         ${trustHtml}
       </div>
@@ -269,6 +347,44 @@ function renderBlame(data) {
     </div>`;
   }).join('');
   document.getElementById('blame-content').innerHTML = headerHtml + rowsHtml;
+}
+
+// Shepherd-style Slice vocabulary (tracefork-bge.70): 'selected' reuses
+// blame.py's already-shipped FlipRateResult.responsible (the FDR-controlled
+// responsible set); anything else -- including a legacy pre-trust-flags
+// blame dict that lacks `responsible` entirely -- is 'support evidence',
+// never silently unlabeled.
+function evidenceBadgeHtml(info) {
+  const selected = info.responsible === true;
+  const cls = selected ? 'selected' : 'support';
+  const label = selected ? 'selected' : 'support evidence';
+  const title = selected
+    ? "in blame's FDR-controlled responsible set"
+    : "not in blame's FDR-controlled responsible set";
+  return `<span class="evidence-badge ${cls}" title="${escapeAttr(title)}">${label}</span>`;
+}
+
+// 'external-anchor' entries (tracefork-bge.70): responsible=1 causal edges
+// reachable via fork-promotion lineage (`store.causal_closure`) that belong
+// to OTHER run_ids -- Shepherd's "causal parent outside the current slice's
+// own content". Entries matching THIS run are already covered by
+// `renderBlame`'s own rows above (badged selected/support evidence), so
+// they're skipped here to avoid a duplicate/fabricated edge. Empty/absent
+// closure renders nothing, matching `renderForkTree`'s established
+// empty-state style (no container is added at all).
+function renderExternalAnchors(data) {
+  const closure = data.causal_closure || [];
+  const external = closure.filter(e => e.run_id !== data.run_id);
+  if (external.length === 0) return;
+  const headerHtml = `<div class="blame-header-row"><span>external anchors (other runs' causal parents)</span></div>`;
+  const rowsHtml = external.map(e => {
+    const q = e.q_value != null ? ` · q=${Number(e.q_value).toFixed(3)}` : '';
+    return `<div class="anchor-row">
+      <span class="evidence-badge selected">external anchor</span>
+      <span class="anchor-run">${escape(e.run_id)}</span> · step-${escape(String(e.step_index))}${q}
+    </div>`;
+  }).join('');
+  document.getElementById('blame-content').insertAdjacentHTML('beforeend', headerHtml + rowsHtml);
 }
 
 function renderTrustFlags(info) {
@@ -306,7 +422,162 @@ function selectExchange(i) {
     <div class="detail-section">
       <h3>Response</h3>
       <pre>${respJson}</pre>
+      <div id="fork-ui"></div>
     </div>` + renderDivergencePanel(i);
+  updateScrubberPosition(i);
+  renderForkUi(i);
+}
+
+// ── click-to-fork inline UI (tracefork-bge.36) ──────────────────────────────
+// Live-mode-only: a static report file structurally cannot spend money, so
+// it keeps the same honest 'live-mode-only' text affordance renderForkTree's
+// branch clicks already use for the analogous case.
+function renderForkUi(i) {
+  const el = document.getElementById('fork-ui');
+  if (!el) return;
+  if (window.__TRACEFORK_SERVER_URL__ === undefined) {
+    el.innerHTML = '<p class="detail-empty">live-mode-only: open via \'tracefork serve\' to edit &amp; fork this response</p>';
+    return;
+  }
+  el.innerHTML = `<button class="nav-btn" onclick="startForkEdit(${i})">Edit &amp; Fork</button>
+    <div id="fork-edit-${i}"></div>`;
+}
+
+function startForkEdit(i) {
+  const container = document.getElementById(`fork-edit-${i}`);
+  if (!container) return;
+  const ex = DATA.exchanges[i];
+  const responseText = JSON.stringify(ex.response_preview || {}, null, 2);
+  container.innerHTML = `
+    <textarea id="fork-response-textarea" class="fork-textarea" rows="8">${escape(responseText)}</textarea>
+    <div class="fork-row">
+      <input type="text" id="fork-agent-name" class="nav-btn fork-textarea" placeholder="allowlisted agent name (name=module:fn on the server)">
+    </div>
+    <div class="fork-row">
+      <button class="nav-btn" onclick="getForkEstimate(${i})">Get cost estimate</button>
+      <span id="fork-estimate-result"></span>
+    </div>`;
+}
+
+function _forkResponseBytesBase64() {
+  const textarea = document.getElementById('fork-response-textarea');
+  return btoa(unescape(encodeURIComponent(textarea.value)));
+}
+
+async function _postFork(path, i, extra) {
+  const agentName = document.getElementById('fork-agent-name').value;
+  const runId = new URLSearchParams(location.search).get('run_id');
+  const url = window.__TRACEFORK_SERVER_URL__;
+  const body = Object.assign(
+    { agent_name: agentName, step: i, mutated_response_b64: _forkResponseBytesBase64() },
+    extra || {}
+  );
+  const resp = await fetch(`${url}/api/run/${runId}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await resp.json().catch(() => ({ detail: `server ${resp.status}` }));
+  if (!resp.ok) throw new Error(payload.detail || `server ${resp.status}`);
+  return payload;
+}
+
+async function getForkEstimate(i) {
+  const resultEl = document.getElementById('fork-estimate-result');
+  try {
+    const data = await _postFork('/fork/estimate', i);
+    resultEl.innerHTML = `$${Number(data.est_usd).toFixed(4)} — <button class="nav-btn" onclick="confirmFork(${i})">Confirm &amp; Fork</button>`;
+  } catch (e) {
+    resultEl.innerHTML = `<span class="error">${escape(e.message)}</span>`;
+  }
+}
+
+async function confirmFork(i) {
+  const resultEl = document.getElementById('fork-estimate-result');
+  try {
+    const branch = await _postFork('/fork', i, { confirm: true });
+    resultEl.innerHTML = `forked → branch ${escape(branch.branch_id)}`;
+    // Re-fetch the run so the new branch shows up in the fork tree.
+    const runId = new URLSearchParams(location.search).get('run_id');
+    const url = window.__TRACEFORK_SERVER_URL__;
+    const runResp = await fetch(`${url}/api/run/${runId}`);
+    if (runResp.ok) {
+      DATA = await runResp.json();
+      renderForkTree(DATA);
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span class="error">${escape(e.message)}</span>`;
+  }
+}
+
+// ── Timeline scrubber (tracefork-bge.51) ────────────────────────────────────
+// Play/step/slider/click-to-jump UI wired to exchange INDEX -- the only
+// ordering axis the pipeline records today (`Tape.exchanges` is a bare
+// (req_bytes, resp_bytes) tuple list; `report.py`'s `_tape_to_data` never
+// stamps a per-exchange timestamp). `tickPosition` already prefers an
+// optional `ex.timestamp` field the moment a future recorder adds one, with
+// no further UI change needed then.
+let _scrubberTimer = null;
+
+function tickPosition(ex, i, n) {
+  const timestamps = DATA ? DATA.exchanges.map(e => e && e.timestamp) : [];
+  const hasTimestamps = timestamps.length > 0 && timestamps.every(t => typeof t === 'number');
+  if (hasTimestamps) {
+    const lo = Math.min(...timestamps), hi = Math.max(...timestamps);
+    if (hi > lo) return (ex.timestamp - lo) / (hi - lo);
+  }
+  return n <= 1 ? 0 : i / (n - 1);
+}
+
+function renderScrubber(data) {
+  const el = document.getElementById('timeline-scrubber');
+  const n = data.exchanges.length;
+  if (n === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  const max = Math.max(0, n - 1);
+  const ticksHtml = data.exchanges.map((ex, i) => {
+    const pct = (tickPosition(ex, i, n) * 100).toFixed(2);
+    return `<div class="scrubber-tick" data-i="${i}" style="left:${pct}%" onclick="selectExchange(${i})" title="exchange ${i}"></div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="scrubber-controls">
+      <button class="scrubber-play-btn" id="scrubber-play-btn" onclick="playPause()">▶ play</button>
+      <input type="range" id="scrubber-slider" class="scrubber-slider" min="0" max="${max}" value="0" step="1"
+             oninput="selectExchange(Number(this.value))" ${n <= 1 ? 'disabled' : ''}>
+    </div>
+    <div class="scrubber-track" id="scrubber-ticks">${ticksHtml}</div>`;
+}
+
+function updateScrubberPosition(i) {
+  const slider = document.getElementById('scrubber-slider');
+  if (slider) slider.value = String(i);
+  document.querySelectorAll('.scrubber-tick').forEach(t => {
+    t.classList.toggle('active', Number(t.getAttribute('data-i')) === i);
+  });
+}
+
+function stepScrubber(delta) {
+  if (!DATA) return;
+  const next = _selected + delta;
+  if (next < 0 || next >= DATA.exchanges.length) {
+    playPause(true); // reached an end -- stop instead of wrapping
+    return;
+  }
+  selectExchange(next);
+}
+
+function playPause(forceStop) {
+  const btn = document.getElementById('scrubber-play-btn');
+  if (_scrubberTimer || forceStop) {
+    clearInterval(_scrubberTimer);
+    _scrubberTimer = null;
+    if (btn) btn.textContent = '▶ play';
+    return;
+  }
+  if (btn) btn.textContent = '⏸ pause';
+  _scrubberTimer = setInterval(() => stepScrubber(1), 800);
 }
 
 function renderDivergencePanel(i) {
@@ -372,6 +643,20 @@ function renderForkTree(data) {
     el.innerHTML = '<div class="forktree-empty">no forked branches</div>';
     return;
   }
+  // Causal heatmap lookups (tracefork-bge.35): data.causal_edges is the flat
+  // `store.causal_edges_for_run` shape (blame + shapley rows, see
+  // `_edge_row_to_dict`) -- split by method and indexed by step_index so a
+  // branch's divergence_step can be cross-referenced with no second query.
+  // Empty/absent causal_edges (the default) means every lookup below misses,
+  // so a report with no persisted blame/shapley data renders byte-identical
+  // to before this feature existed.
+  const causalEdges = data.causal_edges || [];
+  const blameByStep = {};
+  const shapleyByStep = {};
+  causalEdges.forEach(e => {
+    if (e.method === 'blame') blameByStep[e.step_index] = e;
+    else if (e.method === 'shapley') shapleyByStep[e.step_index] = e;
+  });
   const sorted = [...branches].sort((a, b) => (a.divergence_step ?? 0) - (b.divergence_step ?? 0));
   const rowH = 48;
   const width = 240;
@@ -384,8 +669,25 @@ function renderForkTree(data) {
     const y = rootY + rowH * (i + 1);
     const digestShort = (b.branch_digest || '').slice(0, 8);
     const step = b.divergence_step !== undefined && b.divergence_step !== null ? b.divergence_step : '?';
+    const blameEdge = blameByStep[b.divergence_step];
+    const shapleyEdge = shapleyByStep[b.divergence_step];
+    let nodeClass = 'forktree-node';
+    const tooltipParts = [];
+    if (blameEdge && blameEdge.responsible) {
+      nodeClass += ' forktree-node-responsible';
+      tooltipParts.push(`q=${blameEdge.q_value != null ? Number(blameEdge.q_value).toFixed(3) : '?'} responsible`);
+    }
+    if (shapleyEdge && shapleyEdge.necessity) {
+      nodeClass += ' forktree-node-necessary';
+      tooltipParts.push(`necessary (shapley=${shapleyEdge.shapley_value != null ? Number(shapleyEdge.shapley_value).toFixed(3) : '?'})`);
+    }
+    if (shapleyEdge && shapleyEdge.sufficiency) {
+      nodeClass += ' forktree-node-sufficient';
+      tooltipParts.push('sufficient');
+    }
+    const tooltip = tooltipParts.length ? `<title>${escape(tooltipParts.join(' · '))}</title>` : '';
     svg += `<line x1="${rootX}" y1="${rootY}" x2="${rootX}" y2="${y}" class="forktree-edge"></line>`;
-    svg += `<circle cx="${rootX}" cy="${y}" r="5" class="forktree-node" data-branch-id="${escapeAttr(b.branch_id)}"></circle>`;
+    svg += `<circle cx="${rootX}" cy="${y}" r="5" class="${nodeClass}" data-branch-id="${escapeAttr(b.branch_id)}">${tooltip}</circle>`;
     svg += `<text x="${rootX + 14}" y="${y - 6}" class="forktree-label">step ${escape(String(step))}${digestShort ? ' · ' + escape(digestShort) : ''}</text>`;
     svg += `<text x="${rootX + 14}" y="${y + 10}" class="forktree-desc">${escape(b.mutation_desc || '')}</text>`;
   });
@@ -398,9 +700,27 @@ function renderForkTree(data) {
 
 function onForkNodeClick(branchId) {
   const detailEl = document.getElementById('detail-content');
+  // Static reports generated with the run_id/store path (tracefork-bge.37)
+  // bake in every branch's full delta-tape detail -- render it directly, no
+  // fetch, before falling back to a live server or the static placeholder.
+  const embedded = DATA.branch_details && DATA.branch_details[branchId];
+  if (embedded) {
+    if (embedded.error === 'fork_point_drift') {
+      detailEl.innerHTML = `<div class="error">branch ${escape(branchId)}: fork point drift — ${escape(embedded.detail || '')}</div>`;
+      return;
+    }
+    detailEl.innerHTML = `<div class="detail-section">
+      <h3>Branch ${escape(branchId)}</h3>
+      <p>diverged at step ${escape(String(embedded.divergence_step))}</p>
+      <p>${escape(embedded.mutation_desc || '')}</p>
+      <p class="trust-flags">digest ${escape(embedded.branch_digest || '')}</p>
+    </div>`;
+    return;
+  }
   if (window.__TRACEFORK_SERVER_URL__ === undefined) {
-    // Static mode: no server to fetch the branch's delta tape from -- an
-    // honest 'live-mode-only' affordance rather than a silently-empty click.
+    // Static mode with no embedded branch_details (e.g. a --tape-loaded
+    // report with no store): an honest 'live-mode-only' affordance rather
+    // than a silently-empty click.
     detailEl.innerHTML = `<div class="detail-empty">branch ${escape(branchId)} — live-mode-only: open via 'tracefork serve' to inspect its delta tape</div>`;
     return;
   }
@@ -423,6 +743,42 @@ function onForkNodeClick(branchId) {
     });
 }
 
+// ── Panel 5 — Cost Profile (tracefork-bge.52) ───────────────────────────────
+// Per-model/per-tool cost dashboard from `data.cost_profile` (the shape
+// `cost_profile.cost_profile_to_dict` returns). Per-tool cost is an honest
+// over-count for multi-tool exchanges (Anthropic bills per-exchange, not
+// per-tool-call) -- see `cost_profile.py`'s module docstring.
+function renderCostProfile(data) {
+  const el = document.getElementById('cost-content');
+  const profile = data.cost_profile || {};
+  const byModel = profile.by_model || [];
+  const byTool = profile.by_tool || [];
+  if (byModel.length === 0 && byTool.length === 0) {
+    el.innerHTML = '<div class="cost-empty">no cost data</div>';
+    return;
+  }
+  let html = '<div class="cost-section"><h3>By model</h3></div>';
+  html += byModel.map(m => `<div class="cost-row">
+      <div>
+        <div class="cost-name">${escape(m.model)}</div>
+        <div class="cost-meta">${m.n_exchanges} exchange(s) · ${m.input_tokens} in / ${m.output_tokens} out tok</div>
+      </div>
+      <div class="cost-usd">$${Number(m.total_cost_usd).toFixed(4)}</div>
+    </div>`).join('');
+  if (byTool.length > 0) {
+    html += '<div class="cost-section"><h3>By tool</h3></div>';
+    html += byTool.map(t => `<div class="cost-row">
+        <div>
+          <div class="cost-name">${escape(t.tool_name)}</div>
+          <div class="cost-meta">${t.n_calls} call(s)</div>
+        </div>
+        <div class="cost-usd">$${Number(t.total_cost_usd).toFixed(4)}</div>
+      </div>`).join('');
+  }
+  html += `<div class="cost-total"><span>total</span><span>$${Number(profile.total_cost_usd || 0).toFixed(4)}</span></div>`;
+  el.innerHTML = html;
+}
+
 // ── boot ───────────────────────────────────────────────────────────────────
 (async () => {
   try {
@@ -430,11 +786,28 @@ function onForkNodeClick(branchId) {
     document.getElementById('run-meta').textContent =
       `${DATA.agent_name || 'unknown agent'} · ${DATA.exchanges.length} exchanges · ${DATA.created_at || ''}`;
     renderTimeline(DATA);
+    renderScrubber(DATA);
     renderBlame(DATA);
+    renderExternalAnchors(DATA);
     renderReplayBadge(DATA);
     renderProvenanceBadges(DATA);
     renderForkTree(DATA);
-    if (DATA.exchanges.length > 0) selectExchange(0);
+    renderCostProfile(DATA);
+    if (DATA.exchanges.length > 0) {
+      // OTel exemplar back-link (tracefork-bge.53): a redirect from
+      // /otel/{trace_id}/{span_id} lands on /?run_id=X&step=N -- auto-select
+      // exchange N instead of the hardcoded 0. Absent/invalid param is
+      // byte-identical to before (clamped into range, default 0).
+      const stepParam = new URLSearchParams(location.search).get('step');
+      let initialStep = 0;
+      if (stepParam !== null) {
+        const parsed = Number(stepParam);
+        if (Number.isInteger(parsed)) {
+          initialStep = Math.min(Math.max(parsed, 0), DATA.exchanges.length - 1);
+        }
+      }
+      selectExchange(initialStep);
+    }
   } catch (e) {
     document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;
   }
