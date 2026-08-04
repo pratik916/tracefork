@@ -4,29 +4,87 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>tracefork — time-travel debugger</title>
+<!-- TF:tokens -->
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
+    /* color tokens — dark theme (default, GitHub-dark) */
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
     --text: #c9d1d9; --muted: #6e7681; --green: #3fb950;
     --blue: #58a6ff; --orange: #f0883e; --purple: #d2a8ff;
     --red: #f85149; --yellow: #e3b341;
+    /* semantic badge backgrounds (tags, blame/shapley/evidence badges, notes) */
+    --badge-pass-bg: #1a3a1a; --badge-fail-bg: #3a1a1a;
+    --badge-info-bg: #1a2a3a; --badge-warn-bg: #3a3010;
+    --badge-redacted-bg: #3a2a10;
+    /* type tokens — --font-ui for chrome, --font-mono for code/data */
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 15px;
+    /* spacing scale, radius, focus ring */
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+    --radius: 6px;
+    --focus-ring: 2px solid var(--blue);
   }
-  body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 13px; }
+  [data-theme="light"] {
+    /* light theme (GitHub-light-inspired) — stamped on <html> by the theme boot */
+    --bg: #ffffff; --surface: #f6f8fa; --border: #d0d7de;
+    --text: #1f2328; --muted: #59636e; --green: #1a7f37;
+    --blue: #0969da; --orange: #bc4c00; --purple: #8250df;
+    --red: #d1242f; --yellow: #9a6700;
+    --badge-pass-bg: #dafbe1; --badge-fail-bg: #ffebe9;
+    --badge-info-bg: #ddf4ff; --badge-warn-bg: #fff8c5;
+    --badge-redacted-bg: #fff1e5;
+  }
+  :focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: var(--text-md); }
   header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
-  header h1 { font-size: 15px; color: var(--green); }
-  header .run-meta { color: var(--muted); font-size: 11px; }
-  .layout { display: grid; grid-template-columns: 280px 1fr 320px 260px 240px; height: calc(100vh - 45px); }
-  .panel { border-right: 1px solid var(--border); overflow-y: auto; }
-  .panel:last-child { border-right: none; }
-  .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
-                  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  header h1 { font-size: var(--text-lg); color: var(--green); }
+  header .run-meta { color: var(--muted); font-size: var(--text-xs); }
+  .theme-toggle { margin-left: auto; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+                  font-family: inherit; font-size: var(--text-sm); padding: 1px 7px; cursor: pointer;
+                  border-radius: 3px; line-height: 1.3; }
+  .theme-toggle:hover { border-color: var(--blue); }
 
-  /* Panel 1 — Timeline */
+  /* Workbench shell: 3-zone grid — collapsible LEFT RAIL (Timeline), CENTER
+     exchange detail, collapsible RIGHT RAIL (tabbed Blame | Forks | Cost). */
+  .layout { display: grid; grid-template-columns: auto 1fr auto; height: calc(100vh - 45px); }
+  .panel { overflow-y: auto; }
+  .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+                  font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .rail { display: flex; min-height: 0; }
+  .rail-left { width: 280px; border-right: 1px solid var(--border); }
+  .rail-right { width: 320px; border-left: 1px solid var(--border); }
+  .rail.collapsed { width: 36px; }
+  .rail-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .rail.collapsed .rail-body { display: none; }
+  .rail-body > .panel { flex: 1; min-height: 0; }
+  .rail-toggle { margin-left: auto; background: none; border: 1px solid var(--border); color: var(--muted);
+                 font-family: inherit; font-size: var(--text-xs); padding: 0 6px; cursor: pointer;
+                 border-radius: 3px; line-height: 1.4; }
+  .rail-toggle:hover { color: var(--text); border-color: var(--blue); }
+  .rail-expand { display: none; width: 36px; flex-direction: column; align-items: center; gap: var(--sp-2);
+                 padding: var(--sp-3) 0; background: var(--surface); border: none; color: var(--muted);
+                 cursor: pointer; font-family: inherit; }
+  .rail.collapsed .rail-expand { display: flex; }
+  .rail-expand:hover { color: var(--text); }
+  .rail-expand-label { writing-mode: vertical-rl; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .rail-tabs { flex: 0 0 auto; display: flex; align-items: center; background: var(--surface);
+               border-bottom: 1px solid var(--border); }
+  .rail-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+              font-family: inherit; font-size: var(--text-xs); padding: 8px 12px 6px; cursor: pointer;
+              text-transform: uppercase; letter-spacing: 0.05em; }
+  .rail-tab:hover { color: var(--text); }
+  .rail-tab.active { color: var(--text); border-bottom-color: var(--blue); }
+  .rail-tabpanel { flex: 1; min-height: 0; }
+  .rail-tabpanel[hidden] { display: none; }
+  #timeline-panel .panel-header { display: flex; align-items: center; gap: var(--sp-2); }
+
+  /* Left rail — Timeline */
   #timeline-scrubber { padding: 8px 14px; border-bottom: 1px solid var(--border); }
   .scrubber-controls { display: flex; align-items: center; gap: 8px; }
   .scrubber-play-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
-             font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
+             font-family: inherit; font-size: var(--text-xs); padding: 3px 8px; cursor: pointer; border-radius: 3px; }
   .scrubber-play-btn:hover { border-color: var(--blue); }
   .scrubber-slider { flex: 1; }
   .scrubber-track { position: relative; height: 16px; margin-top: 6px; }
@@ -35,104 +93,104 @@
   .exchange-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
   .exchange-item:hover, .exchange-item.active { background: var(--surface); }
   .exchange-item .step { font-size: 10px; color: var(--muted); }
-  .exchange-item .role { font-size: 12px; margin: 3px 0; }
+  .exchange-item .role { font-size: var(--text-sm); margin: 3px 0; }
   .role-user { color: var(--blue); }
   .role-assistant { color: var(--purple); }
   .role-tool { color: var(--orange); }
-  .exchange-item .preview { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .blame-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #1a3a1a; color: var(--green); }
-  .blame-badge.high { background: #3a1a1a; color: var(--red); }
+  .exchange-item .preview { font-size: var(--text-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .blame-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--badge-pass-bg); color: var(--green); }
+  .blame-badge.high { background: var(--badge-fail-bg); color: var(--red); }
 
   /* Shapley necessity/sufficiency quadrant badge (tracefork-bge.54), inline
      in the Timeline panel's per-exchange row next to the blame flip-rate
      badge -- no new panel. */
   .shapley-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 4px; }
-  .shapley-badge.critical { background: #3a1a1a; color: var(--red); }
-  .shapley-badge.necessary { background: #3a3010; color: var(--yellow); }
-  .shapley-badge.sufficient { background: #1a2a3a; color: var(--blue); }
+  .shapley-badge.critical { background: var(--badge-fail-bg); color: var(--red); }
+  .shapley-badge.necessary { background: var(--badge-warn-bg); color: var(--yellow); }
+  .shapley-badge.sufficient { background: var(--badge-info-bg); color: var(--blue); }
   .shapley-badge.inert { background: var(--surface); color: var(--muted); }
 
-  /* Panel 2 — Detail */
+  /* Center — Exchange Detail */
   .detail-empty { padding: 40px; color: var(--muted); text-align: center; }
   .detail-section { padding: 14px; border-bottom: 1px solid var(--border); }
-  .detail-section h3 { font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
-  pre { background: var(--surface); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; line-height: 1.6; }
+  .detail-section h3 { font-size: var(--text-xs); color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+  pre { background: var(--surface); padding: 10px; border-radius: 4px; overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.6; }
   .key { color: var(--blue); }
   .string { color: var(--green); }
   .number { color: var(--yellow); }
 
-  /* Panel 3 — Blame */
+  /* Right rail — Blame tab */
   .blame-empty { padding: 40px; color: var(--muted); text-align: center; }
   .blame-row { padding: 8px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
-  .blame-rank { width: 20px; color: var(--muted); font-size: 11px; }
+  .blame-rank { width: 20px; color: var(--muted); font-size: var(--text-xs); }
   .blame-info { flex: 1; }
-  .blame-step { font-size: 12px; }
+  .blame-step { font-size: var(--text-sm); }
   .blame-ci { font-size: 10px; color: var(--muted); }
   .blame-bar-wrap { width: 80px; }
   .blame-bar { height: 6px; background: var(--green); border-radius: 3px; }
   .blame-bar.decisive { background: var(--red); }
-  .blame-rate { font-size: 11px; text-align: right; min-width: 50px; }
+  .blame-rate { font-size: var(--text-xs); text-align: right; min-width: 50px; }
   .blame-rate.decisive { color: var(--red); font-weight: bold; }
   .blame-header-row { padding: 6px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
                        display: flex; gap: 8px; font-size: 10px; color: var(--muted); }
 
   /* Selected / support-evidence / external-anchor vocabulary (tracefork-bge.70) */
   .evidence-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; margin-left: 6px; }
-  .evidence-badge.selected { background: #3a1a1a; color: var(--red); }
+  .evidence-badge.selected { background: var(--badge-fail-bg); color: var(--red); }
   .evidence-badge.support { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
-  .anchor-row { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .anchor-row { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: var(--text-xs); }
   .anchor-row .anchor-run { color: var(--blue); }
-  .anchor-empty { padding: 12px 14px; color: var(--muted); font-size: 11px; }
+  .anchor-empty { padding: 12px 14px; color: var(--muted); font-size: var(--text-xs); }
 
   .loading { padding: 40px; text-align: center; color: var(--muted); }
   .error { padding: 20px; color: var(--red); }
   .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
-  .tag-live { background: #1a3a1a; color: var(--green); }
-  .tag-static { background: #1a2a3a; color: var(--blue); }
+  .tag-live { background: var(--badge-pass-bg); color: var(--green); }
+  .tag-static { background: var(--badge-info-bg); color: var(--blue); }
 
   /* Replay-report / divergence diagnostics */
-  .tag-pass { background: #1a3a1a; color: var(--green); cursor: default; }
-  .tag-fail { background: #3a1a1a; color: var(--red); cursor: pointer; }
+  .tag-pass { background: var(--badge-pass-bg); color: var(--green); cursor: default; }
+  .tag-fail { background: var(--badge-fail-bg); color: var(--red); cursor: pointer; }
   .tag-fail:hover { text-decoration: underline; }
 
   /* Boundary/provenance/redaction trust badges (see renderProvenanceBadges) --
      verified boundary reuses .tag-pass above; forensic-only and redacted-content
      are distinct warning tags, never a pass/fail input. */
-  .tag-warn { background: #3a3010; color: var(--yellow); cursor: default; }
-  .tag-redacted { background: #3a2a10; color: var(--orange); cursor: default; }
+  .tag-warn { background: var(--badge-warn-bg); color: var(--yellow); cursor: default; }
+  .tag-redacted { background: var(--badge-redacted-bg); color: var(--orange); cursor: default; }
   .nav-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text);
-             font-family: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 3px; }
+             font-family: inherit; font-size: var(--text-xs); padding: 3px 8px; cursor: pointer; border-radius: 3px; }
   .nav-btn:hover { border-color: var(--blue); }
   .nav-btn:disabled { opacity: 0.4; cursor: default; }
   .detail-nav { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px;
                 border-bottom: 1px solid var(--border); background: var(--surface); }
   .diverge-note { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; }
-  .diverge-note.real { background: #3a1a1a; color: var(--red); }
-  .diverge-note.tolerated { background: #3a3010; color: var(--yellow); }
-  .diff-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+  .diverge-note.real { background: var(--badge-fail-bg); color: var(--red); }
+  .diverge-note.tolerated { background: var(--badge-warn-bg); color: var(--yellow); }
+  .diff-table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); margin-top: 8px; }
   .diff-table th, .diff-table td { border: 1px solid var(--border); padding: 4px 6px; text-align: left; vertical-align: top; word-break: break-all; }
   .diff-table th { background: var(--surface); color: var(--muted); font-weight: normal; }
-  .diff-path { color: var(--blue); font-family: ui-monospace, monospace; }
+  .diff-path { color: var(--blue); font-family: var(--font-mono); }
   .diff-recorded { color: var(--red); }
   .diff-live { color: var(--green); }
   .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .trust-warn { color: var(--yellow); }
 
   /* Click-to-fork inline UI (tracefork-bge.36) */
-  .fork-textarea { width: 100%; font-family: inherit; font-size: 11px; background: var(--surface);
+  .fork-textarea { width: 100%; font-family: inherit; font-size: var(--text-xs); background: var(--surface);
                     color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
   .fork-row { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
 
-  /* Panel 4 — Fork Tree (tracefork-bge.15) */
+  /* Right rail — Forks tab (Fork Tree, tracefork-bge.15) */
   .forktree-empty { padding: 40px; color: var(--muted); text-align: center; }
   .forktree-svg { display: block; margin: 12px auto; }
   .forktree-node { fill: var(--blue); cursor: pointer; }
   .forktree-node:hover { fill: var(--orange); }
   .forktree-node.forktree-root { fill: var(--green); cursor: default; }
   .forktree-edge { stroke: var(--border); stroke-width: 2; }
-  .forktree-label { fill: var(--text); font-size: 11px; font-family: ui-monospace, monospace; }
+  .forktree-label { fill: var(--text); font-size: var(--text-xs); font-family: var(--font-mono); }
   .forktree-root-label { fill: var(--green); }
-  .forktree-desc { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+  .forktree-desc { fill: var(--muted); font-size: 10px; font-family: var(--font-mono); }
 
   /* Causal heatmap overlay on fork-tree nodes (tracefork-bge.35/37): a
      branch's divergence_step cross-referenced against data.causal_edges.
@@ -143,16 +201,37 @@
   .forktree-node-necessary { stroke: var(--yellow); stroke-width: 3; }
   .forktree-node-sufficient { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2,2; }
 
-  /* Panel 5 — Cost Profile (tracefork-bge.52) */
+  /* Right rail — Cost tab (Cost Profile, tracefork-bge.52) */
   .cost-empty { padding: 40px; color: var(--muted); text-align: center; }
-  .cost-section h3 { font-size: 11px; color: var(--muted); margin: 12px 14px 4px; text-transform: uppercase; }
-  .cost-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+  .cost-section h3 { font-size: var(--text-xs); color: var(--muted); margin: 12px 14px 4px; text-transform: uppercase; }
+  .cost-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-xs); }
   .cost-row .cost-name { color: var(--text); }
   .cost-row .cost-meta { color: var(--muted); font-size: 10px; }
   .cost-row .cost-usd { color: var(--green); text-align: right; min-width: 60px; }
-  .cost-total { padding: 10px 14px; font-size: 12px; font-weight: bold; border-top: 1px solid var(--border);
+  .cost-total { padding: 10px 14px; font-size: var(--text-sm); font-weight: bold; border-top: 1px solid var(--border);
                 display: flex; justify-content: space-between; }
 </style>
+<!-- TF:theme-boot -->
+<script>
+// Zero-FOUC theme boot: resolve the persisted theme (localStorage
+// "tracefork-theme", JSON-encoded by the toggle) — or, on first visit,
+// prefers-color-scheme — and stamp it on <html data-theme> before first
+// paint. Default dark. Never throws (file:// / privacy modes can make
+// localStorage or matchMedia unavailable).
+(function () {
+  var theme = 'dark';
+  try {
+    var raw = localStorage.getItem('tracefork-theme');
+    if (raw !== null) {
+      try { theme = JSON.parse(raw); } catch (e) { theme = raw; }
+    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      theme = 'light';
+    }
+  } catch (e) {}
+  if (theme !== 'light' && theme !== 'dark') theme = 'dark';
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
 </head>
 <body>
 <header>
@@ -162,34 +241,183 @@
   <span class="tag" id="replay-tag" onclick="jumpToDivergence()" title="click to rewind to the diverging step"></span>
   <span class="tag" id="boundary-tag"></span>
   <span class="tag" id="redacted-tag"></span>
+  <button type="button" id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="toggle color theme" title="toggle color theme">◐</button>
 </header>
-<div class="layout">
-  <div class="panel" id="timeline-panel">
-    <div class="panel-header">Timeline</div>
-    <div id="timeline-scrubber"></div>
-    <div id="timeline-content"><div class="loading">loading…</div></div>
-  </div>
+<!-- TF:shell -->
+<div class="layout" id="workbench">
+  <nav class="rail rail-left" id="rail-left" role="navigation" aria-label="Timeline rail">
+    <div class="rail-body">
+      <div class="panel" id="timeline-panel">
+        <div class="panel-header">Timeline
+          <button type="button" class="rail-toggle" id="rail-left-toggle" onclick="toggleRail('left')" aria-label="collapse timeline rail" aria-expanded="true" title="collapse timeline rail">«</button>
+        </div>
+        <div id="timeline-scrubber"></div>
+        <div id="timeline-content"><div class="loading">loading…</div></div>
+      </div>
+    </div>
+    <button type="button" class="rail-expand" id="rail-left-expand" onclick="toggleRail('left')" aria-label="expand timeline rail" title="expand timeline rail"><span aria-hidden="true">»</span><span class="rail-expand-label">Timeline</span></button>
+  </nav>
   <div class="panel" id="detail-panel">
     <div class="panel-header">Exchange Detail</div>
     <div id="detail-content"><div class="detail-empty">← select an exchange</div></div>
   </div>
-  <div class="panel" id="blame-panel">
-    <div class="panel-header">Blame</div>
-    <div id="blame-content"><div class="blame-empty">run tracefork blame to populate</div></div>
-  </div>
-  <div class="panel" id="forktree-panel">
-    <div class="panel-header">Fork Tree</div>
-    <div id="forktree-content"><div class="loading">loading…</div></div>
-  </div>
-  <div class="panel" id="cost-panel">
-    <div class="panel-header">Cost Profile</div>
-    <div id="cost-content"><div class="loading">loading…</div></div>
-  </div>
+  <nav class="rail rail-right" id="rail-right" role="navigation" aria-label="Analysis rail">
+    <div class="rail-body">
+      <div class="rail-tabs" role="tablist" aria-label="Analysis panels">
+        <button type="button" class="rail-tab active" id="rail-tab-blame" role="tab" data-tab="blame" aria-selected="true" aria-controls="blame-panel" onclick="selectRailTab('blame')">Blame</button>
+        <button type="button" class="rail-tab" id="rail-tab-forks" role="tab" data-tab="forks" aria-selected="false" aria-controls="forktree-panel" onclick="selectRailTab('forks')">Forks</button>
+        <button type="button" class="rail-tab" id="rail-tab-cost" role="tab" data-tab="cost" aria-selected="false" aria-controls="cost-panel" onclick="selectRailTab('cost')">Cost</button>
+        <button type="button" class="rail-toggle" id="rail-right-toggle" onclick="toggleRail('right')" aria-label="collapse analysis rail" aria-expanded="true" title="collapse analysis rail">»</button>
+      </div>
+      <div class="panel rail-tabpanel" id="blame-panel" role="tabpanel" data-tabpanel="blame" aria-labelledby="rail-tab-blame">
+        <div class="panel-header">Blame</div>
+        <div id="blame-content"><div class="blame-empty">run tracefork blame to populate</div></div>
+      </div>
+      <div class="panel rail-tabpanel" id="forktree-panel" role="tabpanel" data-tabpanel="forks" aria-labelledby="rail-tab-forks" hidden>
+        <div class="panel-header">Fork Tree</div>
+        <div id="forktree-content"><div class="loading">loading…</div></div>
+      </div>
+      <div class="panel rail-tabpanel" id="cost-panel" role="tabpanel" data-tabpanel="cost" aria-labelledby="rail-tab-cost" hidden>
+        <div class="panel-header">Cost Profile</div>
+        <div id="cost-content"><div class="loading">loading…</div></div>
+      </div>
+    </div>
+    <button type="button" class="rail-expand" id="rail-right-expand" onclick="toggleRail('right')" aria-label="expand analysis rail" title="expand analysis rail"><span aria-hidden="true">«</span><span class="rail-expand-label">Analysis</span></button>
+  </nav>
 </div>
 
 <script>
 // ── data source ───────────────────────────────────────────────────────────
 let DATA = null;
+
+// ── TF foundation namespace ────────────────────────────────────────────────
+// Zero-dependency building blocks for the workbench UI. Purely additive: the
+// existing globals and inline onclick handlers keep working exactly as before.
+const TF = {
+  // TF.esc / TF.escAttr — the file's existing escape()/escapeAttr(); every
+  // interpolated untrusted value goes through one of these (function
+  // declarations hoist, so these refs resolve even though they're below).
+  esc: escape,
+  escAttr: escapeAttr,
+  // TF.h(tag, attrs, ...children) — hyperscript DOM builder: attributes via
+  // setAttribute ('class' → className, on* function → addEventListener),
+  // children appended as text nodes (never innerHTML) unless already Nodes.
+  h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === null || v === undefined) return;
+      if (k === 'class') el.className = v;
+      else if (k.slice(0, 2) === 'on' && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else el.setAttribute(k, String(v));
+    });
+    const append = (child) => {
+      if (child === null || child === undefined) return;
+      if (Array.isArray(child)) { child.forEach(append); return; }
+      el.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
+    };
+    children.forEach(append);
+    return el;
+  },
+  // TF.store — localStorage JSON get/set, try/catch-wrapped (file:// and
+  // privacy modes can make localStorage throw); a miss/error reads as the
+  // fallback, never an exception.
+  store: {
+    get(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw === null ? fallback : JSON.parse(raw);
+      } catch (e) { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* storage unavailable */ }
+    },
+  },
+  // TF.keys — keyboard manager: register({key: handler}) installs ONE shared
+  // document keydown listener that ignores input/textarea/select focus.
+  keys: {
+    _map: {},
+    _installed: false,
+    register(map) {
+      Object.assign(this._map, map || {});
+      this._install();
+    },
+    _install() {
+      if (this._installed) return;
+      this._installed = true;
+      document.addEventListener('keydown', (e) => {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+        const handler = this._map[e.key];
+        if (typeof handler === 'function') handler(e);
+      });
+    },
+  },
+};
+
+// ── theme toggle ────────────────────────────────────────────────────────────
+// Flips <html data-theme> (swapping in the [data-theme="light"] token block),
+// persists to localStorage "tracefork-theme" (the key the zero-FOUC head boot
+// reads), and re-syncs the header button. ◐ is the pre-JS placeholder glyph.
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  TF.store.set('tracefork-theme', next);
+  _syncThemeToggle();
+}
+
+function _syncThemeToggle() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  const light = document.documentElement.dataset.theme === 'light';
+  btn.textContent = light ? '🌙' : '☀';
+  const label = light ? 'switch to dark theme' : 'switch to light theme';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+}
+
+// ── workbench shell: collapsible rails + right-rail tabs ────────────────────
+// Pure re-parenting of the existing panels — every render function below still
+// targets the same element ids and runs regardless of rail/tab visibility.
+const _RAIL_TABS = ['blame', 'forks', 'cost'];
+
+function _setRailCollapsed(side, collapsed) {
+  const rail = document.getElementById('rail-' + side);
+  if (!rail) return;
+  rail.classList.toggle('collapsed', collapsed);
+  const toggle = document.getElementById('rail-' + side + '-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
+}
+
+function toggleRail(side) {
+  const rail = document.getElementById('rail-' + side);
+  if (!rail) return;
+  const collapsed = !rail.classList.contains('collapsed');
+  _setRailCollapsed(side, collapsed);
+  TF.store.set('tracefork-rail-' + side, collapsed);
+}
+
+function selectRailTab(name, persist) {
+  if (_RAIL_TABS.indexOf(name) === -1) name = 'blame';
+  document.querySelectorAll('#rail-right .rail-tab').forEach(tab => {
+    const active = tab.getAttribute('data-tab') === name;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('#rail-right .rail-tabpanel').forEach(panel => {
+    panel.hidden = panel.getAttribute('data-tabpanel') !== name;
+  });
+  if (persist !== false) TF.store.set('tracefork-rail-tab', name);
+}
+
+// Restore persisted shell state and sync the theme glyph. Runs at script parse
+// (the DOM above is already parsed) — independent of the async data boot so the
+// shell is correct even when data loading fails.
+(function initShell() {
+  _setRailCollapsed('left', TF.store.get('tracefork-rail-left', false) === true);
+  _setRailCollapsed('right', TF.store.get('tracefork-rail-right', false) === true);
+  selectRailTab(TF.store.get('tracefork-rail-tab', 'blame'), false);
+  _syncThemeToggle();
+})();
 
 async function loadData() {
   if (window.__TRACEFORK_DATA__) {
