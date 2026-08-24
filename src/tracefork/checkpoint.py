@@ -60,6 +60,71 @@ _CREATE_CHECKPOINT_SCHEMA = """
 """
 
 
+# ── path confinement (security fix) ─────────────────────────────────────────
+#
+# `open_sqlite` runs `PRAGMA journal_mode=WAL` on whatever file it opens, and
+# every helper below runs `executescript(_CREATE_CHECKPOINT_SCHEMA)` (a
+# `CREATE TABLE IF NOT EXISTS`) before reading — so pointing any of these at
+# an arbitrary path WRITES to it (new tables gained, journal_mode flipped)
+# even though the caller only wanted to read. `server.py`'s
+# `GET /api/checkpoint/tail?path=...` is exactly that: an unauthenticated,
+# CSRF-reachable GET taking a caller-supplied path. `resolve_confined_checkpoint_path`
+# is the gate: nothing is tailable unless the operator names an allowed
+# directory (the server wires it in via `init_checkpoint_dirs`) — the same
+# opt-in-only posture `fork_allowlist.py`'s `TRACEFORK_FORK_AGENTS` already
+# establishes for the click-to-fork endpoints (merely running the server must
+# never be enough, by itself, to let a request touch an arbitrary file).
+CHECKPOINT_DIRS_ENV = "TRACEFORK_CHECKPOINT_DIRS"
+
+
+class CheckpointPathNotAllowedError(RuntimeError):
+    """Raised when a checkpoint path isn't confined to an allowlisted directory."""
+
+
+def parse_checkpoint_dirs_env(raw: str | None = None) -> list[str]:
+    """Parse a comma-separated list of allowed checkpoint directories.
+
+    Reads `TRACEFORK_CHECKPOINT_DIRS` when `raw` is `None` (mirrors
+    `fork_allowlist.py`'s `parse_allowlist_env` env-var pattern); an
+    unset/empty value parses to `[]` — opt-in only, never a default-open
+    allowlist.
+    """
+    text = os.environ.get(CHECKPOINT_DIRS_ENV, "") if raw is None else raw
+    return [entry.strip() for entry in text.split(",") if entry.strip()]
+
+
+def resolve_confined_checkpoint_path(path: str, allowed_dirs: list[str]) -> str:
+    """Resolve `path` and verify it lives inside one of `allowed_dirs`.
+
+    Both `path` and each of `allowed_dirs` are resolved via `os.path.realpath`
+    (following symlinks) before comparing, so a symlink can't be used to
+    escape a confined directory. Raises `CheckpointPathNotAllowedError`
+    (naming what IS allowlisted, the same style
+    `fork_allowlist.resolve_agent_fn` already uses) when `allowed_dirs` is
+    empty — default deny, an operator must opt in — or `path` resolves
+    outside every allowed directory. Returns the resolved, absolute path a
+    caller should use in place of the raw, untrusted input, so a later
+    `os.path.exists`/`open_sqlite` call can't be re-tricked by a symlink
+    swapped in between this check and that use (TOCTOU) for a `path` that
+    otherwise pointed inside an allowed directory.
+    """
+    if not allowed_dirs:
+        raise CheckpointPathNotAllowedError(
+            "no checkpoint directories are allowlisted; set "
+            f"{CHECKPOINT_DIRS_ENV} (or pass --allow-checkpoint-dir to "
+            "`tracefork serve`) to opt in"
+        )
+    real_path = os.path.realpath(path)
+    for allowed in allowed_dirs:
+        real_allowed = os.path.realpath(allowed)
+        if real_path == real_allowed or real_path.startswith(real_allowed + os.sep):
+            return real_path
+    raise CheckpointPathNotAllowedError(
+        f"path {path!r} is not inside an allowlisted checkpoint directory; "
+        f"allowlisted: {sorted(allowed_dirs)}"
+    )
+
+
 class CheckpointWriter:
     """Durably appends recorded exchanges to ``path`` one at a time.
 

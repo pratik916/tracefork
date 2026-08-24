@@ -4,12 +4,20 @@ Scope (see checkpoint.py's module docstring): exchanges only, not draws/nondet
 — a narrower-than-ideal but honest boundary rather than a silent gap.
 """
 
+import os
+
 import httpx
 import pytest
 
 from tests.fakes import AsyncScriptedFakeLLM, ScriptedFakeLLM, make_text_response
 from tracefork import AsyncRecorder, Recorder
-from tracefork.checkpoint import CheckpointWriter, recover_checkpoint
+from tracefork.checkpoint import (
+    CheckpointPathNotAllowedError,
+    CheckpointWriter,
+    parse_checkpoint_dirs_env,
+    recover_checkpoint,
+    resolve_confined_checkpoint_path,
+)
 from tracefork.tape import Tape
 
 TEXT_RESP = make_text_response("hi")
@@ -149,3 +157,67 @@ async def test_async_recorder_checkpoint_path_durable_before_exit(tmp_path):
     final_tape, was_finalized = recover_checkpoint(ckpt_path)
     assert was_finalized is True
     assert final_tape.digest() == rec.tape.digest()
+
+
+# ── resolve_confined_checkpoint_path / parse_checkpoint_dirs_env ────────────
+# Security fix: `GET /api/checkpoint/tail?path=` used to take an unvalidated
+# filesystem path on an unauthenticated GET and — via `open_sqlite`'s
+# `PRAGMA journal_mode=WAL` plus the read helpers' `executescript` — WRITE to
+# it. These are the confinement primitives that gate it (see server.py).
+
+
+def test_resolve_confined_checkpoint_path_denies_by_default_no_allowlist(tmp_path):
+    target = tmp_path / "ckpt.db"
+    target.write_bytes(b"")
+    with pytest.raises(CheckpointPathNotAllowedError, match="no checkpoint directories"):
+        resolve_confined_checkpoint_path(str(target), [])
+
+
+def test_resolve_confined_checkpoint_path_allows_path_inside_allowed_dir(tmp_path):
+    allowed = tmp_path / "checkpoints"
+    allowed.mkdir()
+    target = allowed / "ckpt.db"
+    target.write_bytes(b"")
+    resolved = resolve_confined_checkpoint_path(str(target), [str(allowed)])
+    assert resolved == os.path.realpath(str(target))
+
+
+def test_resolve_confined_checkpoint_path_denies_path_outside_allowed_dir(tmp_path):
+    allowed = tmp_path / "checkpoints"
+    allowed.mkdir()
+    third_party = tmp_path / "someone-elses.db"
+    third_party.write_bytes(b"")
+    with pytest.raises(CheckpointPathNotAllowedError, match="not inside an allowlisted"):
+        resolve_confined_checkpoint_path(str(third_party), [str(allowed)])
+
+
+def test_resolve_confined_checkpoint_path_denies_sibling_dir_with_shared_prefix(tmp_path):
+    """`/tmp/checkpoints-evil` must not pass a naive `startswith('/tmp/checkpoints')`
+    prefix check against allowed dir `/tmp/checkpoints`."""
+    allowed = tmp_path / "checkpoints"
+    allowed.mkdir()
+    sibling = tmp_path / "checkpoints-evil"
+    sibling.mkdir()
+    target = sibling / "ckpt.db"
+    target.write_bytes(b"")
+    with pytest.raises(CheckpointPathNotAllowedError):
+        resolve_confined_checkpoint_path(str(target), [str(allowed)])
+
+
+def test_resolve_confined_checkpoint_path_blocks_symlink_escape(tmp_path):
+    allowed = tmp_path / "checkpoints"
+    allowed.mkdir()
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"")
+    link = allowed / "escape.db"
+    link.symlink_to(outside)
+    with pytest.raises(CheckpointPathNotAllowedError):
+        resolve_confined_checkpoint_path(str(link), [str(allowed)])
+
+
+def test_parse_checkpoint_dirs_env_unset_is_empty_default_deny():
+    assert parse_checkpoint_dirs_env("") == []
+
+
+def test_parse_checkpoint_dirs_env_parses_comma_separated_trimmed():
+    assert parse_checkpoint_dirs_env(" /a/b , /c/d ,, ") == ["/a/b", "/c/d"]

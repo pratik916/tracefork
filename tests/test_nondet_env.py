@@ -158,6 +158,73 @@ def test_drifting_nondet_get_env_reads_fresh_value_at_replay(monkeypatch):
     assert drifted == "drifted_value"
 
 
+# ── redact_fn: get_env draws route through the Redactor, not just HTTP bytes ─
+
+
+def test_get_env_without_redact_fn_is_untouched(monkeypatch):
+    """Default `redact_fn=None` is byte-identical to before this parameter
+    existed."""
+    monkeypatch.setenv("TF_ENV_PLAIN", "plain-value")
+    nd = RecordingNondet()
+    v = nd.get_env("TF_ENV_PLAIN")
+    assert v == "plain-value"
+    assert nd.draws == [("env", "1\0TF_ENV_PLAIN\0plain-value")]
+
+
+def test_recording_nondet_get_env_applies_redact_fn_to_stored_value_only(monkeypatch):
+    """The live caller still gets the real value (recording must not lie
+    about what's actually in the environment); only the STORED draw is
+    transformed -- a stored-bytes concern, mirroring redact.py's request/
+    response redaction."""
+    monkeypatch.setenv("TF_ENV_SECRET", "sk-ant-super-secret-value")
+    seen: list[bytes] = []
+
+    def redact_fn(data: bytes) -> bytes:
+        seen.append(data)
+        return data.replace(b"sk-ant-super-secret-value", b"REDACTED")
+
+    nd = RecordingNondet(redact_fn=redact_fn)
+    v = nd.get_env("TF_ENV_SECRET")
+
+    assert v == "sk-ant-super-secret-value"
+    assert seen == [b"sk-ant-super-secret-value"]
+    assert nd.draws == [("env", "1\0TF_ENV_SECRET\0REDACTED")]
+
+
+def test_get_env_redact_fn_not_invoked_for_unset_var(monkeypatch):
+    """An unset var has nothing to redact -- flag/name/empty-value must
+    round-trip exactly as the no-redaction case, and the callback must not
+    even be invoked."""
+    monkeypatch.delenv("TF_ENV_UNSET_REDACT", raising=False)
+    seen: list[bytes] = []
+    nd = RecordingNondet(redact_fn=lambda d: (seen.append(d), d)[1])
+
+    v = nd.get_env("TF_ENV_UNSET_REDACT")
+
+    assert v is None
+    assert seen == []
+    assert nd.draws == [("env", "0\0TF_ENV_UNSET_REDACT\0")]
+
+
+def test_get_env_redaction_replays_the_placeholder_never_the_live_secret(monkeypatch):
+    """A redacted get_env draw replays deterministically like any other --
+    ReplayNondet is completely unmodified -- but it replays AS the
+    placeholder, never the live secret: once a secret never survives onto
+    the tape, replay structurally cannot hand it back (redact.py's "no knob
+    to keep a live secret on a tape", extended to this channel)."""
+    monkeypatch.setenv("TF_ENV_SECRET2", "top-secret-value")
+
+    def redact_fn(data: bytes) -> bytes:
+        return data.replace(b"top-secret-value", b"REDACTED")
+
+    nd = RecordingNondet(redact_fn=redact_fn)
+    nd.get_env("TF_ENV_SECRET2")
+
+    replay = ReplayNondet(nd.draws)
+    assert replay.get_env("TF_ENV_SECRET2") == "REDACTED"
+    assert replay.fully_consumed()
+
+
 # ── End-to-end record → replay receipt (mirrors test_nondet.py) ────────────
 
 

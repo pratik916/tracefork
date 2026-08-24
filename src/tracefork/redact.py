@@ -303,7 +303,14 @@ class Redactor:
         request redaction into the matcher seam (`RedactingMatcher`); the tool
         seam (`tools.py`) has no httpx request/matcher, so it applies request
         redaction directly through this method to both the stored frame and the
-        replay-time frame, keeping the divergence fingerprint consistent."""
+        replay-time frame, keeping the divergence fingerprint consistent. A third
+        seam applies it the same way: `nondet.py`'s `get_env`/`read_file` draws
+        can pull a secret straight out of the live environment/filesystem,
+        bypassing the HTTP request/response bytes entirely — `recorder.py` wires
+        `RecordingNondet(redact_fn=redactor.apply_request)` so that channel is
+        never a hole in "there is no knob to keep a live secret on a tape"
+        either. `nondet.py` deliberately stays a zero-internal-import leaf
+        module and takes a plain `Callable`, not a `Redactor`, for this."""
         data = req_body
         for fn in self.request_filters:
             result = fn(data)

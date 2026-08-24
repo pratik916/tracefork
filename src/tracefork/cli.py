@@ -215,6 +215,7 @@ def fork(
     from tracefork.boundary_guard import ConfinementSpec, ConfinementViolationError
     from tracefork.confinement_diagnostics import diagnose_confinement
     from tracefork.fork import BranchSpec, ForkEngine
+    from tracefork.matcher import get_matcher
     from tracefork.store import TapeStore
 
     db = TapeStore(str(store))
@@ -225,6 +226,9 @@ def fork(
         warning = format_basis_drift_warning(recorded_basis, current_basis())
         if warning is not None:
             typer.echo(warning)
+
+    recorded_matcher_name = parent_tape.provenance.get("matcher_name")
+    matcher = get_matcher(recorded_matcher_name) if recorded_matcher_name else None
 
     mutated_response = response_file.read_bytes()
 
@@ -245,7 +249,9 @@ def fork(
     )
 
     try:
-        branch = ForkEngine.fork(parent_tape, spec, agent_fn, confinement=confinement)
+        branch = ForkEngine.fork(
+            parent_tape, spec, agent_fn, confinement=confinement, matcher=matcher
+        )
     except ConfinementViolationError as exc:
         diag = diagnose_confinement(exc)
         typer.echo("\n  Confinement violation")
@@ -352,6 +358,8 @@ def coalition_fork(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    from tracefork.matcher import get_matcher
+
     db = TapeStore(str(store))
     parent_tape = db.load_tape(run_id)
 
@@ -360,6 +368,9 @@ def coalition_fork(
         warning = format_basis_drift_warning(recorded_basis, current_basis())
         if warning is not None:
             typer.echo(warning)
+
+    recorded_matcher_name = parent_tape.provenance.get("matcher_name")
+    matcher = get_matcher(recorded_matcher_name) if recorded_matcher_name else None
 
     module_path, fn_name = agent.rsplit(":", 1)
     mod = importlib.import_module(module_path)
@@ -372,7 +383,9 @@ def coalition_fork(
     )
 
     try:
-        branch = ForkEngine.fork_coalition(parent_tape, spec_obj, agent_fn, confinement=confinement)
+        branch = ForkEngine.fork_coalition(
+            parent_tape, spec_obj, agent_fn, confinement=confinement, matcher=matcher
+        )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     except ConfinementViolationError as exc:
@@ -1027,15 +1040,24 @@ def serve(
         "click-to-fork server endpoints (tracefork-bge.36). Omit for today's "
         "default: no agent allowlisted, every fork endpoint 403s.",
     ),
+    allow_checkpoint_dir: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--allow-checkpoint-dir",
+        help="Directory path, repeatable — allowlists a directory "
+        "GET /api/checkpoint/tail may read checkpoint files from. Omit for "
+        "today's default: no directory allowlisted, the endpoint 403s every "
+        "request (see checkpoint.py's resolve_confined_checkpoint_path).",
+    ),
 ) -> None:
     """Start the tracefork web UI server on port 7777."""
     import uvicorn
 
     from tracefork.server import app as fastapi_app
-    from tracefork.server import init_fork_allowlist, init_store
+    from tracefork.server import init_checkpoint_dirs, init_fork_allowlist, init_store
 
     init_store(str(store))
     init_fork_allowlist(dict(entry.split("=", 1) for entry in allow_fork_agent if "=" in entry))
+    init_checkpoint_dirs(list(allow_checkpoint_dir))
     typer.echo(f"  tracefork serve → http://127.0.0.1:{port}")
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
@@ -1104,8 +1126,13 @@ def blame(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    from tracefork.matcher import get_matcher
+
     db = TapeStore(str(store))
     tape = db.load_tape(run_id)
+
+    recorded_matcher_name = tape.provenance.get("matcher_name")
+    matcher = get_matcher(recorded_matcher_name) if recorded_matcher_name else None
 
     module_path, fn_name = agent.rsplit(":", 1)
     agent_fn = getattr(importlib.import_module(module_path), fn_name)
@@ -1147,6 +1174,7 @@ def blame(
         confidence=confidence,
         null_flip_rate=null_flip_rate,
         fdr_q=fdr_q,
+        matcher=matcher,
     )
 
     ci_pct = round(confidence * 100)

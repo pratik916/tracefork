@@ -55,6 +55,7 @@ from . import pricing
 from .boundary_guard import ConfinementSpec
 from .constants import SONNET
 from .fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
+from .matcher import RequestMatcher
 from .nondet import find_divergence
 from .observability import instrument
 from .plugins import ORACLE_GROUP, Registry
@@ -787,6 +788,7 @@ class BlameEngine:
         min_valid_fraction: float = 0.5,
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> BlameReport:
         """Fork each exchange `k` times with a perturbed response and measure how
         often the graded outcome flips relative to the parent run.
@@ -817,6 +819,15 @@ class BlameEngine:
         projected trial count and whether it ran confined (see
         `BudgetGovernor.confinement_risk`); this is pure disclosure and never
         raises on its own.
+
+        `matcher` (default `None`, byte-identical to before when left off) is
+        forwarded to every `ForkEngine.fork()` trial call exactly like
+        `fork()`'s own `matcher=` kwarg (see `matcher.py`) — pass the SAME
+        `RequestMatcher` `tape` was recorded with so a canonicalizing/
+        redacting tape's prefix/mutation-point comparisons match the tape's
+        actual stored fingerprints instead of raw bytes it never stored,
+        which would otherwise make every trial diverge (UNDEFINED, not a
+        genuine NO_FLIP) and silently read as `flip_rate=0.0`.
         """
         est = BudgetGovernor.estimate(tape, k=k)
         if est.est_usd > budget_usd:
@@ -847,6 +858,7 @@ class BlameEngine:
                     api_key,
                     boundary_guard,
                     confinement,
+                    matcher,
                 )
                 total_forks += 1
                 if outcome is TrialOutcome.FLIP:
@@ -925,6 +937,7 @@ class BlameEngine:
         api_key: str,
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> tuple[TrialOutcome, bool]:
         """Run one fork trial; return ``(outcome, diverged)``.
 
@@ -937,6 +950,10 @@ class BlameEngine:
         ``except Exception`` below and counted UNDEFINED — never a silent
         NO_FLIP — but is not itself a `DivergenceError`, so ``diverged`` stays
         False for it.
+
+        `matcher` (default `None`, forwarded straight to `ForkEngine.fork()`)
+        is the SAME `RequestMatcher` `tape` was recorded with — see `rank()`'s
+        own `matcher` doc for why this must not stay raw-sha256-only.
         """
         mutated_resp, tail_transport_obj = perturb_factory(step_idx)
         tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
@@ -950,6 +967,7 @@ class BlameEngine:
                 api_key=api_key,
                 boundary_guard=boundary_guard,
                 confinement=confinement,
+                matcher=matcher,
             )
         except Exception as exc:
             # A diverged (agent not deterministic up to the step) or otherwise
@@ -979,6 +997,7 @@ class BlameEngine:
         k: int,
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> _StepTally:
         """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
         set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
@@ -990,8 +1009,8 @@ class BlameEngine:
         they would for an equivalent sequence of single-step trials. The tail
         transport is the one associated with the *highest-indexed* coalition
         member — for a one-element coalition this reduces to exactly
-        ``_run_trial``'s behaviour. ``boundary_guard``/``confinement`` are
-        forwarded to `ForkEngine.fork_coalition()` exactly like ``_run_trial``
+        ``_run_trial``'s behaviour. ``boundary_guard``/``confinement``/``matcher``
+        are forwarded to `ForkEngine.fork_coalition()` exactly like ``_run_trial``
         forwards them to `ForkEngine.fork()`; a violation is caught below and
         counted UNDEFINED.
         """
@@ -1012,6 +1031,7 @@ class BlameEngine:
                     api_key=api_key,
                     boundary_guard=boundary_guard,
                     confinement=confinement,
+                    matcher=matcher,
                 )
             except Exception as exc:
                 tally.undefined += 1
@@ -1050,6 +1070,7 @@ class BlameEngine:
         boundary_guard: bool = False,
         async_batches: list[list[int]] | None = None,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> ShapleyReport:
         """Temporal (order-restricted) Shapley blame — additive to `rank()`.
 
@@ -1132,6 +1153,11 @@ class BlameEngine:
         upper bound here, see `BudgetGovernor.confinement_risk`) and whether it
         ran confined; pure disclosure, never a gate on its own.
 
+        `matcher` (default `None`) is forwarded the same way, to both the
+        sufficiency pass and every coalition-walk trial — see `rank()`'s own
+        `matcher` doc for why this must be the SAME `RequestMatcher` `tape`
+        was recorded with.
+
         Reuses `_run_coalition_trials`/`CoalitionSpec` completely unchanged for
         every coalition evaluation, `async_batches` or not — a coalition is
         always just the SET of steps forced so far; only the SEQUENCE of sets
@@ -1172,6 +1198,7 @@ class BlameEngine:
             api_key=f"{api_key}-sufficiency",
             boundary_guard=boundary_guard,
             confinement=confinement,
+            matcher=matcher,
         )
         sufficiency_by_step = {r.step_index: r for r in single_step.results}
         parent_outcome = single_step.parent_outcome
@@ -1202,6 +1229,7 @@ class BlameEngine:
                 k,
                 boundary_guard,
                 confinement,
+                matcher,
             )
             coalition_forks += k
             return tally.flips / tally.valid if tally.valid > 0 else math.nan

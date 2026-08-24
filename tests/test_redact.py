@@ -19,6 +19,7 @@ Offline, zero API keys.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import anthropic
@@ -180,6 +181,56 @@ def test_secret_env_value_scrubbed_in_request_and_response(monkeypatch):
     assert b"sk-ant-super-secret-value" not in stored_resp
     assert REDACTED in stored_req
     assert REDACTED in stored_resp
+
+
+def test_secret_env_value_scrubbed_in_get_env_nondet_draw(monkeypatch):
+    """This module's own docstring promises "there is no knob to keep a live
+    secret on a tape" -- but `NondetSource.get_env` is a second channel that
+    can pull a secret straight out of the environment, entirely bypassing the
+    HTTP request/response bytes redacted above. Regression: a
+    `get_env("ANTHROPIC_API_KEY")` draw must be scrubbed too, or a
+    `safe_defaults()` tape can still leak the key verbatim."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-super-secret-value")
+    fake = ScriptedFakeLLM([make_text_response("hi")])
+    client = _sync_client(fake)
+    redactor = safe_defaults()
+    with Recorder(client, redactor=redactor) as rec:
+        v = rec._nondet.get_env("ANTHROPIC_API_KEY")
+        rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    # The live agent still gets the real value to actually use...
+    assert v == "sk-ant-super-secret-value"
+    # ...but it never survives onto the tape.
+    env_draws = [val for kind, val in rec.tape.draws if kind == "env"]
+    assert env_draws == [f"1\0ANTHROPIC_API_KEY\0{REDACTED_STR}"]
+
+
+def test_secret_env_value_scrubbed_in_read_file_nondet_draw(monkeypatch, tmp_path):
+    """Same regression, for the read_file draw channel: a file whose content
+    happens to contain a known secret env value must not land verbatim on the
+    tape's stored envelope either."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-super-secret-value")
+    p = tmp_path / "creds.txt"
+    p.write_bytes(b"ANTHROPIC_API_KEY=sk-ant-super-secret-value\n")
+    fake = ScriptedFakeLLM([make_text_response("hi")])
+    client = _sync_client(fake)
+    redactor = safe_defaults()
+    with Recorder(client, redactor=redactor) as rec:
+        data = rec._nondet.read_file(str(p))
+        rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    assert data == b"ANTHROPIC_API_KEY=sk-ant-super-secret-value\n"
+    read_file_draws = [val for kind, val in rec.tape.draws if kind == "read_file"]
+    assert len(read_file_draws) == 1
+    stored = base64.b64decode(json.loads(read_file_draws[0])["content_b64"])
+    assert b"sk-ant-super-secret-value" not in stored
+    assert REDACTED in stored
 
 
 def test_secret_value_redactor_ignores_short_values(monkeypatch):

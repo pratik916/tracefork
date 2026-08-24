@@ -66,7 +66,13 @@ class Recorder:
     the fingerprinting seam (record and replay still hash the same redacted
     form), scrubs the response body before it is stored, and — if the redactor
     also scrubs message content — marks ``tape.content_redacted = True``
-    (forensic-only; see the README's Redaction section).
+    (forensic-only; see the README's Redaction section). It also reaches the
+    ``NondetSource`` ``get_env``/``read_file`` draw channels (``nondet.py``):
+    ``RecordingNondet`` is constructed with ``redact_fn=redactor.apply_request``
+    so a secret read directly via ``get_env("ANTHROPIC_API_KEY")`` or pulled
+    out of a file via ``read_file`` is redacted before it lands on the tape,
+    the same "no knob to keep a live secret on a tape" guarantee applied to a
+    second channel HTTP bytes alone don't cover.
 
     ``config`` is an opt-in ``TraceforkConfig`` (see ``config.py``); the
     default (``None``) is likewise byte-identical to today. When given *and*
@@ -145,17 +151,23 @@ class Recorder:
         # observability.py) — covers the whole recording window, enter to exit.
         self._span_cm = traced_span("tracefork.record", agent_name=self._agent_name)
         self._span_cm.__enter__()
-        # RecordingNondet captures the real datetime.now and uuid.uuid4 in __init__
-        # before we patch uuid.uuid4 below. Order matters.
-        self._nondet = RecordingNondet()
-        self._tape = Tape(agent_name=self._agent_name)
-        # Share the draws list so recording nondet populates the tape's draws directly
-        self._tape.draws = self._nondet.draws
         # An explicit `redactor=` always wins; otherwise fall back to `config`'s
         # (default `config=None` → `None`, byte-identical to today).
         redactor = self._redactor
         if redactor is None and self._config is not None:
             redactor = self._config.build_redactor()
+        # RecordingNondet captures the real datetime.now and uuid.uuid4 in __init__
+        # before we patch uuid.uuid4 below. Order matters. `redact_fn=` routes
+        # get_env/read_file draws through the SAME redaction pipeline as HTTP
+        # request/response bytes (redact.py's "no knob to keep a live secret
+        # on a tape" applies to this channel too) -- `None` when no redactor
+        # is in use, byte-identical to before this parameter existed.
+        self._nondet = RecordingNondet(
+            redact_fn=redactor.apply_request if redactor is not None else None
+        )
+        self._tape = Tape(agent_name=self._agent_name)
+        # Share the draws list so recording nondet populates the tape's draws directly
+        self._tape.draws = self._nondet.draws
         if redactor is not None:
             self._tape.content_redacted = redactor.content_redacted
 
@@ -294,12 +306,15 @@ class AsyncRecorder:
         # observability.py) — covers the whole recording window, enter to exit.
         self._span_cm = traced_span("tracefork.record", agent_name=self._agent_name)
         self._span_cm.__enter__()
-        self._nondet = RecordingNondet()
-        self._tape = Tape(agent_name=self._agent_name)
-        self._tape.draws = self._nondet.draws
         redactor = self._redactor
         if redactor is None and self._config is not None:
             redactor = self._config.build_redactor()
+        # See the sync Recorder for the redact_fn contract.
+        self._nondet = RecordingNondet(
+            redact_fn=redactor.apply_request if redactor is not None else None
+        )
+        self._tape = Tape(agent_name=self._agent_name)
+        self._tape.draws = self._nondet.draws
         if redactor is not None:
             self._tape.content_redacted = redactor.content_redacted
 

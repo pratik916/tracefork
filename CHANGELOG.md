@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- `Tape.digest()`'s draw hash-chain framing changed (a fixed-width sha256 digest
+  now frames each draw's `kind`/`value` instead of an unescaped, variable-length
+  delimiter). **This changes the digest of any recorded tape whose `draws` is
+  non-empty** — a reproduced hash collision (two structurally different draw
+  logs hashing equal) made this the one release where a fingerprint change is
+  acceptable. Tapes with no draws are unaffected. If you have committed/pinned
+  tape digests from a pre-1.0.0 build, regenerate them.
+
 ## [0.3.0] - 2026-07-17
 
 This release lands the full **P2 + P3 improvement backlog (44 items)**, completing the

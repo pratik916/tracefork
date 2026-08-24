@@ -35,14 +35,35 @@ replayed call's `path` matches the recorded one (a stronger check than
 clock/uuid/random allow) before returning the exact decoded bytes, touching
 the filesystem not at all. `DriftingNondet` needs no override — it inherits
 `RecordingNondet.read_file`, so a "replay" with drift re-reads the real file
-fresh, exactly like its existing clock/uuid/random/env behavior. v1 stores
-`read_file` content raw/unredacted on the tape — the same default posture as
-HTTP exchange bytes before `redact.py`'s `Redactor` opts in. Wiring
-redaction through here is deliberately deferred to a follow-up bead rather
-than coupling this zero-internal-import leaf module to `redact.py`'s
-httpx/matcher/tape import chain; the size cap is the shipped mitigating
-control in the meantime (bounds worst-case exposure since `read_file` is an
-explicit, deliberate per-call choice, not auto-discovered).
+fresh, exactly like its existing clock/uuid/random/env behavior.
+
+Both `get_env` and `read_file` are the two draw kinds that can pull a secret
+straight out of the live environment/filesystem — `redact.py`'s module
+docstring is explicit that "there is no knob to keep a live secret on a
+tape", and that promise is only as strong as its weakest channel.
+`RecordingNondet` accepts an optional keyword-only `redact_fn: Callable[
+[bytes], bytes] | None = None` (default `None`, byte-identical to before
+this parameter existed) applied ONLY to the bytes about to be STORED —
+`get_env`'s value half of the `"{flag}\0{name}\0{value}"` triple (never
+`flag`/`name`, so the round-trip/name-assertion properties above are
+unaffected) and `read_file`'s envelope (`size`/`sha256`/`content_b64` are
+all recomputed over the *redacted* bytes, so the envelope stays internally
+self-consistent — `sha256` always describes what `content_b64` actually
+decodes to). The value/bytes handed back to the live caller are always the
+real, unredacted ones — recording must never lie to the agent about what's
+actually in the environment/on disk; only the tape's stored copy is
+transformed, mirroring how header/secret-env redaction already treats HTTP
+request/response bytes (`redact.py`). A draw redacted this way replays
+deterministically like any other — `ReplayNondet` is completely unmodified —
+but it replays AS the placeholder, never the live secret: once a secret
+never survives onto the tape, replay structurally cannot hand it back,
+exactly the same trade-off `redact.py` already documents for message
+content. `nondet.py` deliberately takes a plain `Callable`, not `redact.py`'s
+`Redactor` type, so this module stays a zero-internal-import leaf —
+`recorder.py` is the one that owns both imports and wires
+`redact_fn=redactor.apply_request` when a `Redactor` is in use (`None`
+otherwise), reusing the exact same pipeline `tools.py`'s non-httpx JSON-RPC
+seam already applies directly for the same reason.
 
 The SDK masks transport exceptions as `APIConnectionError`; `find_divergence`
 unwraps `__cause__`/`__context__` to recover a `DivergenceError`.
@@ -57,6 +78,7 @@ import json
 import os
 import random
 import uuid
+from collections.abc import Callable
 from typing import Protocol
 
 #: Default cap for `RecordingNondet.read_file` (256 KiB). `read_file` is
@@ -102,13 +124,22 @@ class NondetSource(Protocol):
 class RecordingNondet:
     """Draws genuinely real values and logs each draw."""
 
-    def __init__(self, *, max_read_file_bytes: int = DEFAULT_MAX_READ_FILE_BYTES) -> None:
+    def __init__(
+        self,
+        *,
+        max_read_file_bytes: int = DEFAULT_MAX_READ_FILE_BYTES,
+        redact_fn: Callable[[bytes], bytes] | None = None,
+    ) -> None:
         # Capture the real datetime.now, uuid.uuid4, and random.random at init
         # time, before Recorder.__enter__ patches datetime.datetime with a subclass.
         self._real_now = datetime.datetime.now
         self._real_uuid4 = uuid.uuid4
         self._real_random = random.random
         self._max_read_file_bytes = max_read_file_bytes
+        # Applied only to the bytes about to be STORED (get_env's value half,
+        # read_file's envelope) -- never to what's handed back to the live
+        # caller. See the module docstring.
+        self._redact_fn = redact_fn
         self.draws: list[tuple[str, str]] = []
 
     def now_iso(self) -> str:
@@ -137,7 +168,14 @@ class RecordingNondet:
         # variable the tape recorded. POSIX env values can't contain a NUL
         # byte, so this is lossless and collision-free.
         flag = "1" if v is not None else "0"
-        self.draws.append(("env", f"{flag}\0{name}\0{v if v is not None else ''}"))
+        # Redaction (if wired) only ever transforms the STORED value half --
+        # never `flag`/`name`, so the round-trip/name-assertion properties
+        # above are untouched. The value returned to the live caller (below)
+        # is always the real one; only what lands in `draws` is redacted.
+        stored_value = v if v is not None else ""
+        if v is not None and self._redact_fn is not None:
+            stored_value = self._redact_fn(stored_value.encode()).decode("utf-8")
+        self.draws.append(("env", f"{flag}\0{name}\0{stored_value}"))
         return v
 
     def read_file(self, path: str) -> bytes:
@@ -153,15 +191,18 @@ class RecordingNondet:
             )
         with open(path, "rb") as f:
             data = f.read()
-        # v1 stores content raw/unredacted -- see the module docstring for
-        # the deliberate no-redaction-yet decision and the size cap that
-        # mitigates it in the meantime.
+        # Redaction (if wired) only ever transforms the STORED envelope --
+        # size/sha256/content_b64 are recomputed over the redacted bytes so
+        # the envelope stays internally self-consistent (sha256 always
+        # describes what content_b64 actually decodes to). The bytes
+        # returned to the live caller (below) are always the real ones.
+        stored_data = data if self._redact_fn is None else self._redact_fn(data)
         envelope = json.dumps(
             {
                 "path": path,
-                "size": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "content_b64": base64.b64encode(data).decode("ascii"),
+                "size": len(stored_data),
+                "sha256": hashlib.sha256(stored_data).hexdigest(),
+                "content_b64": base64.b64encode(stored_data).decode("ascii"),
             },
             sort_keys=True,
         )

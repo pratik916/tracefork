@@ -70,9 +70,17 @@ The product lives in `src/tracefork/`:
   KiB) *before* touching the file — over-cap raises `ReadFileTooLargeError` with no
   partial/truncated draw ever landing on the tape — then logs a JSON envelope
   (`path`/`size`/`sha256`/`content_b64`) so `ReplayNondet.read_file` can assert the same path
-  and return the exact bytes with zero filesystem access on replay. `read_file` stores
-  content raw/unredacted today (redaction through `redact.py` is a deliberate follow-up); the
-  size cap is the shipped mitigating control in the meantime. `find_divergence()` unwraps a
+  and return the exact bytes with zero filesystem access on replay. Both `get_env` and
+  `read_file` route the bytes about to be STORED (never what's handed back to the live
+  caller) through an optional `redact_fn: Callable[[bytes], bytes] | None` constructor
+  parameter — `recorder.py` wires `redact_fn=redactor.apply_request` when a `Redactor`
+  (`redact.py`) is in use, `None` otherwise (byte-identical to before). `nondet.py` stays a
+  zero-internal-import leaf module (it takes a plain `Callable`, not `redact.py`'s
+  `Redactor` type) — the same non-httpx-redaction pattern `tools.py` already established. A
+  redacted draw still replays deterministically (`ReplayNondet` is unmodified) but replays
+  AS the placeholder, never the live secret. The size cap remains the pre-redaction
+  mitigating control (it gates on the real file size before any redaction runs).
+  `find_divergence()` unwraps a
   `DivergenceError` from the `APIConnectionError` the SDK wraps transport exceptions in —
   **keep this; without it a real divergence looks like a network blip.**
 - `boundary_guard.py` — `BoundaryGuard`, an **opt-in** (default off) record-mode guard:

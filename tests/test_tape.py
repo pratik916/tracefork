@@ -1,6 +1,8 @@
 import os
 import tempfile
 
+import pytest
+
 from tracefork.tape import Tape, sha256_hex
 
 
@@ -120,3 +122,127 @@ def test_digest_excludes_provenance():
     }
     assert t1.provenance != t2.provenance
     assert t1.digest() == t2.digest()
+
+
+# ── item 4: draw-framing hash-chain collision ────────────────────────────────
+
+
+def test_digest_does_not_collide_on_ambiguous_draw_framing():
+    """Reproduces the exact collision from the readiness plan: an unescaped,
+    variable-length 'D:kind:value\\n' delimiter lets a draw VALUE containing an
+    embedded 'D:'-prefixed line forge what looks like a second draw record, so
+    two structurally different tapes hashed equal. Framing each field through a
+    fixed-width digest (as exchanges already do) must make them differ."""
+    t1 = Tape(draws=[("env", "1\x00MY\x00a\nD:clock:2020-01-01T00:00:00")])
+    t2 = Tape(draws=[("env", "1\x00MY\x00a"), ("clock", "2020-01-01T00:00:00")])
+    assert t1.digest() != t2.digest()
+
+
+def test_digest_no_collision_for_adversarial_draw_values():
+    """Property-style check: draw values containing the framing delimiters
+    themselves (':', '\\n', 'D:', 'X:', 'T:') must not let one draw list's
+    digest collide with a structurally different draw list's digest."""
+    adversarial_lists: list[list[tuple[str, str]]] = [
+        [("env", "a\nD:clock:b")],
+        [("env", "a"), ("clock", "b")],
+        [("env", "a:b\nX:c:d")],
+        [("env", "a:b"), ("__x", "c:d")],
+        [("clock", "a\nT:x:y")],
+        [("clock", "a"), ("__t", "x:y")],
+        [("k", "v")],
+        [("k:v", "")],
+        [("", "k:v")],
+        [("a", "b"), ("c", "d")],
+        [("a:b", "c"), ("d", "")],
+    ]
+    digests = []
+    for draws in adversarial_lists:
+        t = Tape(draws=draws)
+        digests.append(t.digest())
+    for i in range(len(digests)):
+        for j in range(i + 1, len(digests)):
+            assert digests[i] != digests[j], (
+                f"draw lists {adversarial_lists[i]!r} and "
+                f"{adversarial_lists[j]!r} collided: {digests[i]}"
+            )
+
+
+def test_digest_still_deterministic_and_sensitive_after_framing_fix():
+    """The framing fix must not weaken the existing digest properties: same
+    content -> same digest, and a real content change still changes it."""
+    assert _make_tape().digest() == _make_tape().digest()
+    t1 = _make_tape()
+    t2 = _make_tape()
+    t2.draws[0] = ("clock", "2026-01-02T00:00:00+00:00")
+    assert t1.digest() != t2.digest()
+
+
+# ── item 5: provenance / request_urls persistence through save()/load() ─────
+
+
+def test_provenance_and_request_urls_roundtrip_through_save_load():
+    tape = _make_tape()
+    tape.provenance = {
+        "matcher_name": "redacting",
+        "boundary_guard": "true",
+        "nondet_mode": "recording",
+    }
+    tape.request_urls = ["https://api.example/v1/messages", "https://api.example/v1/messages"]
+    with tempfile.NamedTemporaryFile(suffix=".tape.sqlite", delete=False) as f:
+        path = f.name
+    try:
+        tape.save(path)
+        loaded = Tape.load(path)
+        assert loaded.provenance == tape.provenance
+        assert loaded.request_urls == tape.request_urls
+        # digest must still be unaffected by either field (metadata, per invariant)
+        assert loaded.digest() == tape.digest()
+    finally:
+        os.unlink(path)
+
+
+def test_load_legacy_db_without_provenance_or_request_url_meta_rows():
+    """A `.tape.sqlite` written before this fix (or by any code path that
+    still only writes the five original meta rows) has no `provenance` /
+    `request_urls` meta rows at all. `load()` must upcast such a DB to the
+    documented defaults instead of raising."""
+    import sqlite3
+
+    tape = _make_tape()
+    with tempfile.NamedTemporaryFile(suffix=".tape.sqlite", delete=False) as f:
+        path = f.name
+    try:
+        tape.save(path)
+        # Simulate a legacy DB by deleting the new meta rows this fix adds.
+        con = sqlite3.connect(path)
+        con.execute("DELETE FROM meta WHERE key IN ('provenance', 'request_urls')")
+        con.commit()
+        con.close()
+
+        loaded = Tape.load(path)
+        assert loaded.provenance == {}
+        assert loaded.request_urls == [""] * len(loaded.exchanges)
+    finally:
+        os.unlink(path)
+
+
+def test_replay_verifier_raises_provenance_mismatch_after_save_load_roundtrip():
+    """The acceptance test from the readiness plan: record a tape with a
+    non-default matcher, save it to disk, reload it, and confirm
+    `ReplayVerifier.verify()` raises `ProvenanceMismatchError` up front rather
+    than the loaded tape silently losing its provenance block and the
+    mismatch instead surfacing as a generic byte divergence."""
+    from tracefork.replay import ProvenanceMismatchError, ReplayVerifier
+
+    tape = _make_tape()
+    tape.provenance = {"matcher_name": "redacting", "boundary_guard": "false"}
+    with tempfile.NamedTemporaryFile(suffix=".tape.sqlite", delete=False) as f:
+        path = f.name
+    try:
+        tape.save(path)
+        loaded = Tape.load(path)
+        verifier = ReplayVerifier(loaded, lambda client: None)  # default matcher: identity
+        with pytest.raises(ProvenanceMismatchError):
+            verifier.verify()
+    finally:
+        os.unlink(path)

@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
+from .checkpoint import CheckpointPathNotAllowedError, resolve_confined_checkpoint_path
 from .cost_profile import compute_cost_profile, cost_profile_to_dict
 from .fork import BranchSpec, ForkEngine
 from .fork_allowlist import AgentNotAllowlistedError, estimate_single_fork_usd, resolve_agent_fn
@@ -52,6 +53,26 @@ _fork_allowlist: dict[str, str] = {}
 def init_fork_allowlist(allowlist: dict[str, str]) -> None:
     global _fork_allowlist
     _fork_allowlist = dict(allowlist)
+
+
+# ── checkpoint-tail path confinement (security fix) ─────────────────────────
+#
+# `GET /api/checkpoint/tail` reads whatever SQLite file `path` names — but
+# `open_sqlite` runs `PRAGMA journal_mode=WAL` and `checkpoint.py`'s
+# "read-only" helpers run `executescript(CREATE TABLE IF NOT EXISTS ...)`, so
+# opening ANY file this way WRITES to it. An unauthenticated, CSRF-reachable
+# GET must never be able to point that at an arbitrary third-party SQLite
+# file. Nothing is tailable unless the operator names an allowed directory
+# via `init_checkpoint_dirs` (wired from `cli.py`'s
+# `serve --allow-checkpoint-dir` flag) — an empty allowlist (the default)
+# 403s every request, the same opt-in-only posture `fork_allowlist.py`
+# already establishes for the click-to-fork endpoints above.
+_checkpoint_dirs: list[str] = []
+
+
+def init_checkpoint_dirs(dirs: list[str]) -> None:
+    global _checkpoint_dirs
+    _checkpoint_dirs = list(dirs)
 
 
 class ForkEstimateRequest(BaseModel):
@@ -177,6 +198,20 @@ async def get_run(run_id: str) -> JSONResponse:
     # overlay (tracefork-bge.35). Existing `/api/run` consumers that ignore
     # the new key are unaffected.
     data["causal_edges"] = store.causal_edges_for_run(run_id)
+    # Additive: step_index-keyed blame/shapley dicts derived from the
+    # `causal_edges` rows just fetched above — zero extra store round trips.
+    # Mirrors `cli.py`'s `report` command's `blame_dict`/`shapley_dict` shape
+    # (`{step_index: row}`), except built from the persisted `causal_edges`
+    # row shape directly rather than a `--blame-report`/`--shapley-report`
+    # JSON file (this endpoint has no such file to read); `report.py`'s
+    # `_tape_to_data`/`generate_report` docstrings already document that the
+    # `causal_edges` row shape is an accepted `shapley` input. `{}` (falsy)
+    # when a run has no rows for that method, same neutral empty-state
+    # pattern every other key here already uses.
+    data["blame"] = {e["step_index"]: e for e in data["causal_edges"] if e.get("method") == "blame"}
+    data["shapley"] = {
+        e["step_index"]: e for e in data["causal_edges"] if e.get("method") == "shapley"
+    }
     # Additive: per-model/per-tool cost dashboard (tracefork-bge.52), same
     # one-line pattern as the `branches`/`causal_edges` lines above.
     data["cost_profile"] = cost_profile_to_dict(compute_cost_profile(tape))
@@ -184,6 +219,35 @@ async def get_run(run_id: str) -> JSONResponse:
     # blame edges reachable via fork-promotion lineage, possibly from other
     # run_ids. `data["run_id"]` is already set above.
     data["causal_closure"] = store.causal_closure(run_id)
+    # Additive: branch_id -> full delta-tape report data — the exact shape
+    # `GET /api/branch/{id}` already returns, baked in here too so a
+    # fork-tree click needs no extra round trip. Mirrors `cli.py`'s `report`
+    # command's run_id path verbatim, including its `ForkPointDriftError`
+    # handling: a branch whose cited fork point has drifted since it was
+    # forked renders an explicit `{"error": "fork_point_drift"}` marker
+    # instead of aborting this whole response.
+    branch_details: dict[str, dict] = {}
+    for b in data["branches"]:
+        bid = b["branch_id"]
+        try:
+            branch = store.load_branch(bid)
+        except ForkPointDriftError as exc:
+            branch_details[bid] = {"error": "fork_point_drift", "detail": str(exc)}
+            continue
+        branch_details[bid] = {
+            **_tape_to_data(branch["delta_tape"]),
+            "divergence_step": branch["divergence_step"],
+            "mutation_desc": branch["mutation_desc"],
+            "branch_digest": branch["branch_digest"],
+            "parent_run_id": branch["parent_run_id"],
+        }
+    data["branch_details"] = branch_details
+    # `data["replay"]` deliberately stays the `{}` empty state `_tape_to_data`
+    # already defaults to: a replay receipt needs live re-execution of the
+    # recording agent (`ReplayVerifier(tape, agent_fn).verify()`), which this
+    # read-only GET must never trigger implicitly — the same documented scope
+    # limit `cli.py`'s `report` command has by default (it only computes one
+    # when `--agent` is explicitly passed).
     return JSONResponse(data)
 
 
@@ -260,12 +324,20 @@ async def tail_checkpoint_endpoint(
     """Live-tail SSE endpoint (tracefork-bge.61) over a
     `checkpoint.CheckpointWriter`-backed recording at `path`. Read-only —
     never controls the writer's own process (see `live.py`'s module
-    docstring for the interactive-breakpoint scope note)."""
-    if not os.path.exists(path):
+    docstring for the interactive-breakpoint scope note). `path` must
+    resolve inside an operator-allowlisted directory (see
+    `init_checkpoint_dirs` above) — 403 otherwise, checked BEFORE any
+    `os.path.exists`/`open_sqlite` call ever touches the raw, untrusted
+    path."""
+    try:
+        real_path = resolve_confined_checkpoint_path(path, _checkpoint_dirs)
+    except CheckpointPathNotAllowedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    if not os.path.exists(real_path):
         raise HTTPException(status_code=404, detail=f"no checkpoint file at {path!r}")
     return StreamingResponse(
         tail_checkpoint(
-            path, since_seq=since_seq, poll_interval=poll_interval, max_polls=max_polls
+            real_path, since_seq=since_seq, poll_interval=poll_interval, max_polls=max_polls
         ),
         media_type="text/event-stream",
     )

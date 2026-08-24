@@ -2,6 +2,7 @@
 
 import itertools
 import threading
+import uuid
 
 import anthropic
 import httpx
@@ -23,6 +24,7 @@ from tracefork.blame import (
     z_from_confidence,
 )
 from tracefork.faults import FAULT_MARKER, FAULT_MARKER_BYTES
+from tracefork.matcher import redacting_matcher
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -1032,3 +1034,127 @@ def test_async_batches_credits_both_halves_of_a_symmetric_conjunction(m_samples)
     assert payload.necessity is True
     assert gate.shapley_value == pytest.approx(0.5)
     assert payload.shapley_value == pytest.approx(0.5)
+
+
+# ── request matcher (canonicalizing / redacting parent tapes) ────────────────
+#
+# `BlameEngine.rank()`/`shapley_rank()` fork every candidate step through
+# `ForkEngine`. A tape recorded through a non-identity `RequestMatcher` (e.g.
+# `redacting_matcher()`) stores the CANONICAL form of each request; if the
+# engine doesn't thread that same matcher into its own fork calls, every
+# trial diverges and the step's `flip_rate` silently reads as 0.0 -- a
+# deceptive non-flip reading is what `trustworthy`/`divergence_rate` exist to
+# catch, but a caller that only glances at `flip_rate` would be misled.
+
+SINGLE_STEP_SUCCESS = make_text_response("SUCCESS — booking confirmed")
+SINGLE_STEP_FAIL = make_text_response("FAIL — no flights available")
+
+
+def _single_step_agent_rotating_key(client: anthropic.Anthropic) -> str:
+    """One-turn agent whose only per-call variation is a fresh idempotency
+    key on every real invocation -- exactly the volatile body field
+    `redacting_matcher()` is built to strip before hashing."""
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "book a flight"}],
+        extra_body={"idempotency_key": uuid.uuid4().hex},
+    )
+    return r.content[0].text
+
+
+def _record_single_step_redacting_tape(resp: bytes) -> Tape:
+    """Record with `redacting_matcher()` so the tape stores the CANONICAL
+    (idempotency-key-stripped) request form, not the raw body."""
+    fake = ScriptedFakeLLM([resp])
+    tape = Tape()
+    transport = TraceforkTransport("record", tape, fake, matcher=redacting_matcher())
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=transport),
+        max_retries=0,
+    )
+    _single_step_agent_rotating_key(client)
+    return tape
+
+
+def test_blame_rank_without_matcher_silently_reads_zero_on_a_redacting_tape():
+    """Negative control: `BlameEngine.rank()` with no `matcher=` against a
+    tape recorded through `redacting_matcher()` cannot compare fingerprints
+    correctly, so every trial diverges. The step's `flip_rate` reads as a
+    deceptive 0.0 -- only `trustworthy=False`/`divergence_rate=1.0` reveal
+    this is total data loss, not a measured non-flip."""
+    tape = _record_single_step_redacting_tape(SINGLE_STEP_SUCCESS)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return SINGLE_STEP_FAIL, ScriptedFakeLLM([])
+
+    report = BlameEngine.rank(
+        tape,
+        _single_step_agent_rotating_key,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=3,
+        budget_usd=100.0,
+    )
+
+    assert len(report.results) == 1
+    step0 = report.results[0]
+    assert step0.flip_rate == 0.0
+    assert step0.valid_trials == 0
+    assert step0.trustworthy is False
+    assert step0.divergence_rate == 1.0
+
+
+def test_blame_rank_honors_matcher_and_recovers_the_true_flip_rate():
+    """The fix: threading the SAME matcher the tape was recorded with lets
+    every trial's fork succeed, recovering the genuine flip-rate (perturbing
+    the tape's only step to FAIL always flips SUCCESS -> FAIL) instead of
+    the silent 0.0/all-UNDEFINED reading above."""
+    tape = _record_single_step_redacting_tape(SINGLE_STEP_SUCCESS)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return SINGLE_STEP_FAIL, ScriptedFakeLLM([])
+
+    report = BlameEngine.rank(
+        tape,
+        _single_step_agent_rotating_key,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=3,
+        budget_usd=100.0,
+        matcher=redacting_matcher(),
+    )
+
+    assert len(report.results) == 1
+    step0 = report.results[0]
+    assert step0.flip_rate == 1.0
+    assert step0.valid_trials == 3
+    assert step0.trustworthy is True
+    assert step0.divergence_rate == 0.0
+
+
+def test_blame_rank_matcher_none_default_preserves_existing_behavior():
+    """`matcher=None` (the implicit default) must leave `rank()`'s behavior
+    byte-identical to every pre-existing test_blame.py case (all recorded
+    with the implicit identity matcher)."""
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.rank(
+        tape,
+        _booking_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=3,
+        budget_usd=100.0,
+        matcher=None,
+    )
+    top = max(report.results, key=lambda r: r.flip_rate)
+    assert top.step_index == 1
+    assert top.flip_rate == 1.0

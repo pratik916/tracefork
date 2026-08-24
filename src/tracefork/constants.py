@@ -29,6 +29,31 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 TAPE_MAGIC = b"TFTAPE\x00"
 TAPE_FORMAT_VERSION = 6
 
+# ── digest() hash-chain framing ─────────────────────────────────────────────
+#
+# Documentation-only version marker for `Tape.digest()`'s hash-chain framing
+# scheme (there is no on-disk envelope for a digest — it is a pure function
+# recomputed from tape content every time — so nothing branches on this
+# constant; it exists so CHANGELOG.md and code comments have a stable name
+# for "the framing scheme in effect", the same way TAPE_FORMAT_VERSION names
+# the envelope encoding).
+#
+# v1 (pre-1.0.0) framed each draw as `b"D:" + kind.encode() + b":" +
+# value.encode() + b"\n"` — an unescaped, variable-length delimiter. A draw
+# VALUE under environment/agent control (e.g. `RecordingNondet.get_env`
+# packing a raw POSIX env value, which may itself contain `:` and `\n`) could
+# embed a line that looked like a second `D:`/`X:`/`T:` record, so two
+# structurally different draw logs could hash to the IDENTICAL digest — see
+# CHANGELOG.md's 1.0.0 entry for the reproduced collision. v2 frames each
+# draw's `kind` and `value` through a FIXED-WIDTH sha256 hex digest first,
+# exactly as exchange/tool-exchange lines already did, so no draw content can
+# forge chain-delimiter bytes. This changes every digest for a tape that
+# contains draws — deliberate, and the one release this is allowed to happen
+# in (see CHANGELOG.md). It does NOT add any field to what `digest()` hashes
+# over (draws/exchanges/tool_exchanges only) and does NOT touch the on-disk
+# `to_bytes`/`save` envelope in any way — TAPE_FORMAT_VERSION is unchanged.
+DIGEST_CHAIN_VERSION = 2
+
 # Model IDs (consult claude-api skill before editing)
 SONNET = "claude-sonnet-4-6"
 HAIKU = "claude-haiku-4-5-20251001"

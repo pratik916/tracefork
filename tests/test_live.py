@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from tracefork.checkpoint import CheckpointWriter
 from tracefork.live import tail_checkpoint
 from tracefork.server import app as fastapi_app
+from tracefork.server import init_checkpoint_dirs
 from tracefork.tape import Tape
 
 
@@ -82,6 +83,7 @@ def test_server_tail_checkpoint_endpoint_streams_sse_and_404s_on_missing_path(tm
     writer.append_exchange(b"req1", b"resp1")
     writer.finalize(Tape(agent_name="a"))
 
+    init_checkpoint_dirs([str(tmp_path)])
     client = TestClient(fastapi_app)
     resp = client.get("/api/checkpoint/tail", params={"path": path})
     assert resp.status_code == 200
@@ -93,3 +95,4 @@ def test_server_tail_checkpoint_endpoint_streams_sse_and_404s_on_missing_path(tm
         "/api/checkpoint/tail", params={"path": str(tmp_path / "nope.sqlite")}
     )
     assert missing_resp.status_code == 404
+    init_checkpoint_dirs([])  # reset default-deny for later tests
