@@ -5,27 +5,50 @@ name: Publish to PyPI
 # already-tagged version). Requires a matching trusted publisher configured on PyPI:
 #   PyPI project: tracefork · owner: pratik916 · repo: tracefork
 #   workflow: release.yml · environment: pypi
+#
+# `publish` is gated on `test`, which runs scripts/e2e.sh — the same single-receipt,
+# offline, $0 gate a human runs locally (full lint/type/test suite, self-validation,
+# replay-fixture-corpus check, competing-fault bench, build, twine check, and the
+# wheel-install smoke test) — so nothing reaches PyPI without every proof re-run
+# fresh on the tagged commit, independent of what CI reported earlier.
 
 on:
   release:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  test:
+    name: Full end-to-end gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+      - name: Run the full offline end-to-end gate
+        run: bash scripts/e2e.sh
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/tracefork
     permissions:
+      contents: read
       id-token: write # OIDC token for PyPI Trusted Publishing
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
       - name: Build sdist and wheel
         run: uv build
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 (v1.14.2)

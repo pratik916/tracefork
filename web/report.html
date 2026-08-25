@@ -10,7 +10,7 @@
   :root {
     /* color tokens — dark theme (default, GitHub-dark) */
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #c9d1d9; --muted: #6e7681; --green: #3fb950;
+    --text: #c9d1d9; --muted: #838b95; --green: #3fb950;
     --blue: #58a6ff; --orange: #f0883e; --purple: #d2a8ff;
     --red: #f85149; --yellow: #e3b341;
     /* semantic badge backgrounds (tags, blame/shapley/evidence badges, notes) */
@@ -25,6 +25,10 @@
     --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
     --radius: 6px;
     --focus-ring: 2px solid var(--blue);
+    /* tells the UA to render native controls (range sliders, scrollbars,
+       form-field chrome) in dark UI, matching this theme -- overridden to
+       'light' below when [data-theme="light"] is active */
+    color-scheme: dark;
   }
   [data-theme="light"] {
     /* light theme (GitHub-light-inspired) — stamped on <html> by the theme boot */
@@ -35,6 +39,7 @@
     --badge-pass-bg: #dafbe1; --badge-fail-bg: #ffebe9;
     --badge-info-bg: #ddf4ff; --badge-warn-bg: #fff8c5;
     --badge-redacted-bg: #fff1e5;
+    color-scheme: light;
   }
   :focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
   body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: var(--text-md); }
@@ -101,9 +106,9 @@
   .blame-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--badge-pass-bg); color: var(--green); }
   .blame-badge.high { background: var(--badge-fail-bg); color: var(--red); }
 
-  /* Shapley necessity/sufficiency quadrant badge (tracefork-bge.54), inline
-     in the Timeline panel's per-exchange row next to the blame flip-rate
-     badge -- no new panel. */
+  /* Shapley necessity/sufficiency quadrant badge, inline in the Timeline
+     panel's per-exchange row next to the blame flip-rate badge -- no new
+     panel. */
   .shapley-badge { float: right; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 4px; }
   .shapley-badge.critical { background: var(--badge-fail-bg); color: var(--red); }
   .shapley-badge.necessary { background: var(--badge-warn-bg); color: var(--yellow); }
@@ -134,7 +139,7 @@
   .blame-header-row { padding: 6px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
                        display: flex; gap: 8px; font-size: 10px; color: var(--muted); }
 
-  /* Selected / support-evidence / external-anchor vocabulary (tracefork-bge.70) */
+  /* Selected / support-evidence / external-anchor vocabulary */
   .evidence-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; margin-left: 6px; }
   .evidence-badge.selected { background: var(--badge-fail-bg); color: var(--red); }
   .evidence-badge.support { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
@@ -176,12 +181,12 @@
   .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .trust-warn { color: var(--yellow); }
 
-  /* Click-to-fork inline UI (tracefork-bge.36) */
+  /* Click-to-fork inline UI */
   .fork-textarea { width: 100%; font-family: inherit; font-size: var(--text-xs); background: var(--surface);
                     color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
   .fork-row { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
 
-  /* Right rail — Forks tab (Fork Tree, tracefork-bge.15) */
+  /* Right rail — Forks tab (Fork Tree) */
   .forktree-empty { padding: 40px; color: var(--muted); text-align: center; }
   .forktree-svg { display: block; margin: 12px auto; }
   .forktree-node { fill: var(--blue); cursor: pointer; }
@@ -192,8 +197,8 @@
   .forktree-root-label { fill: var(--green); }
   .forktree-desc { fill: var(--muted); font-size: 10px; font-family: var(--font-mono); }
 
-  /* Causal heatmap overlay on fork-tree nodes (tracefork-bge.35/37): a
-     branch's divergence_step cross-referenced against data.causal_edges.
+  /* Causal heatmap overlay on fork-tree nodes: a branch's divergence_step
+     cross-referenced against data.causal_edges.
      `-responsible` (blame's FDR-selected set) wins the fill color;
      `-necessary`/`-sufficient` (Shapley) are stroke-only encodings so both
      can be visible on the same node at once. */
@@ -201,7 +206,7 @@
   .forktree-node-necessary { stroke: var(--yellow); stroke-width: 3; }
   .forktree-node-sufficient { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2,2; }
 
-  /* Right rail — Cost tab (Cost Profile, tracefork-bge.52) */
+  /* Right rail — Cost tab (Cost Profile) */
   .cost-empty { padding: 40px; color: var(--muted); text-align: center; }
   .cost-section h3 { font-size: var(--text-xs); color: var(--muted); margin: 12px 14px 4px; text-transform: uppercase; }
   .cost-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-xs); }
@@ -210,6 +215,29 @@
   .cost-row .cost-usd { color: var(--green); text-align: right; min-width: 60px; }
   .cost-total { padding: 10px 14px; font-size: var(--text-sm); font-weight: bold; border-top: 1px solid var(--border);
                 display: flex; justify-content: space-between; }
+
+  /* ── Responsive breakpoints ──────────────────────────────────────────────
+     Two breakpoints, kept at the SAME px values across report.html/
+     runs.html/session_report.html so the three templates reflow at
+     consistent widths: 860px (tablet -- report.html's 3-zone workbench
+     shell stops fitting side-by-side) and 560px (phone -- header/toolbar
+     rows get too cramped to stay on one line). */
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 32vh) minmax(220px, 1fr) minmax(160px, 32vh); }
+    .rail-left, .rail-right { width: 100%; }
+    .rail-left { border-right: none; border-bottom: 1px solid var(--border); }
+    .rail-right { border-left: none; border-top: 1px solid var(--border); }
+    .rail.collapsed { width: 100%; height: 40px; }
+    .rail.collapsed .rail-expand { flex-direction: row; width: 100%; height: 40px; padding: 0 var(--sp-3); }
+    .rail-expand-label { writing-mode: horizontal-tb; }
+  }
+  @media (max-width: 560px) {
+    header { flex-wrap: wrap; row-gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
+    header .run-meta { order: 10; flex-basis: 100%; }
+    .theme-toggle { margin-left: 0; }
+    .layout { grid-template-rows: minmax(140px, 30vh) minmax(200px, 1fr) minmax(140px, 30vh); }
+    .blame-bar-wrap { display: none; }
+  }
 </style>
 <!-- TF:theme-boot -->
 <script>
@@ -464,8 +492,8 @@ function renderTimeline(data) {
   document.getElementById('timeline-content').innerHTML = html;
 }
 
-// Shapley necessity/sufficiency quadrant badge (tracefork-bge.54): reuses
-// blame.py's already-shipped ShapleyResult fields (necessity/sufficiency
+// Shapley necessity/sufficiency quadrant badge: reuses blame.py's already-shipped
+// ShapleyResult fields (necessity/sufficiency
 // booleans + their scores), the same shape store.py's causal_edges rows
 // carry. `info` is `undefined` for any exchange with no shapley data (the
 // default, empty `data.shapley` case) -- renders nothing, byte-identical to
@@ -577,7 +605,7 @@ function renderBlame(data) {
   document.getElementById('blame-content').innerHTML = headerHtml + rowsHtml;
 }
 
-// Shepherd-style Slice vocabulary (tracefork-bge.70): 'selected' reuses
+// Shepherd-style Slice vocabulary: 'selected' reuses
 // blame.py's already-shipped FlipRateResult.responsible (the FDR-controlled
 // responsible set); anything else -- including a legacy pre-trust-flags
 // blame dict that lacks `responsible` entirely -- is 'support evidence',
@@ -592,7 +620,7 @@ function evidenceBadgeHtml(info) {
   return `<span class="evidence-badge ${cls}" title="${escapeAttr(title)}">${label}</span>`;
 }
 
-// 'external-anchor' entries (tracefork-bge.70): responsible=1 causal edges
+// 'external-anchor' entries: responsible=1 causal edges
 // reachable via fork-promotion lineage (`store.causal_closure`) that belong
 // to OTHER run_ids -- Shepherd's "causal parent outside the current slice's
 // own content". Entries matching THIS run are already covered by
@@ -628,11 +656,18 @@ function renderTrustFlags(info) {
 let _selected = -1;
 function selectExchange(i) {
   if (!DATA || i < 0 || i >= DATA.exchanges.length) return;
+  // Scoped to #timeline-content: an unscoped `[data-i="N"]` selector also
+  // matches the scrubber tick with the same data-i (rendered into
+  // #timeline-scrubber, which sits BEFORE #timeline-content in the DOM), so
+  // querySelector's first-match-in-document-order semantics would toggle
+  // .active on the tick instead of the exchange-item row -- the Timeline
+  // list's selected-step highlight would never render. The tick's own
+  // .active state is handled separately by updateScrubberPosition below.
   if (_selected >= 0) {
-    document.querySelector(`[data-i="${_selected}"]`)?.classList.remove('active');
+    document.querySelector(`#timeline-content [data-i="${_selected}"]`)?.classList.remove('active');
   }
   _selected = i;
-  document.querySelector(`[data-i="${i}"]`)?.classList.add('active');
+  document.querySelector(`#timeline-content [data-i="${i}"]`)?.classList.add('active');
   const ex = DATA.exchanges[i];
   const reqJson = syntaxHighlight(JSON.stringify(ex.request || {}, null, 2));
   const respJson = syntaxHighlight(JSON.stringify(ex.response_preview || {}, null, 2));
@@ -656,7 +691,7 @@ function selectExchange(i) {
   renderForkUi(i);
 }
 
-// ── click-to-fork inline UI (tracefork-bge.36) ──────────────────────────────
+// ── click-to-fork inline UI ──────────────────────────────────────────────────
 // Live-mode-only: a static report file structurally cannot spend money, so
 // it keeps the same honest 'live-mode-only' text affordance renderForkTree's
 // branch clicks already use for the analogous case.
@@ -738,7 +773,7 @@ async function confirmFork(i) {
   }
 }
 
-// ── Timeline scrubber (tracefork-bge.51) ────────────────────────────────────
+// ── Timeline scrubber ──────────────────────────────────────────────────────
 // Play/step/slider/click-to-jump UI wired to exchange INDEX -- the only
 // ordering axis the pipeline records today (`Tape.exchanges` is a bare
 // (req_bytes, resp_bytes) tuple list; `report.py`'s `_tape_to_data` never
@@ -856,7 +891,7 @@ function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
 // the attribute.
 function escapeAttr(s) { return escape(String(s)).replace(/"/g, '&quot;'); }
 
-// ── Panel 4 — Fork Tree (tracefork-bge.15) ──────────────────────────────────
+// ── Panel 4 — Fork Tree ────────────────────────────────────────────────────
 // Git-graph-style row layout: one row per branch, ranked by divergence_step,
 // each edging straight up to the root run. `branches` is the flat summary
 // `TapeStore.list_branches` returns (branch_id/divergence_step/mutation_desc/
@@ -871,7 +906,7 @@ function renderForkTree(data) {
     el.innerHTML = '<div class="forktree-empty">no forked branches</div>';
     return;
   }
-  // Causal heatmap lookups (tracefork-bge.35): data.causal_edges is the flat
+  // Causal heatmap lookups: data.causal_edges is the flat
   // `store.causal_edges_for_run` shape (blame + shapley rows, see
   // `_edge_row_to_dict`) -- split by method and indexed by step_index so a
   // branch's divergence_step can be cross-referenced with no second query.
@@ -928,8 +963,8 @@ function renderForkTree(data) {
 
 function onForkNodeClick(branchId) {
   const detailEl = document.getElementById('detail-content');
-  // Static reports generated with the run_id/store path (tracefork-bge.37)
-  // bake in every branch's full delta-tape detail -- render it directly, no
+  // Static reports generated with the run_id/store path bake in every
+  // branch's full delta-tape detail -- render it directly, no
   // fetch, before falling back to a live server or the static placeholder.
   const embedded = DATA.branch_details && DATA.branch_details[branchId];
   if (embedded) {
@@ -971,7 +1006,7 @@ function onForkNodeClick(branchId) {
     });
 }
 
-// ── Panel 5 — Cost Profile (tracefork-bge.52) ───────────────────────────────
+// ── Panel 5 — Cost Profile ─────────────────────────────────────────────────
 // Per-model/per-tool cost dashboard from `data.cost_profile` (the shape
 // `cost_profile.cost_profile_to_dict` returns). Per-tool cost is an honest
 // over-count for multi-tool exchanges (Anthropic bills per-exchange, not
@@ -1011,8 +1046,11 @@ function renderCostProfile(data) {
 (async () => {
   try {
     DATA = await loadData();
-    document.getElementById('run-meta').textContent =
-      `${DATA.agent_name || 'unknown agent'} · ${DATA.exchanges.length} exchanges · ${DATA.created_at || ''}`;
+    document.getElementById('run-meta').textContent = [
+      DATA.agent_name || 'unknown agent',
+      `${DATA.exchanges.length} exchanges`,
+      DATA.created_at || null,
+    ].filter(Boolean).join(' · ');
     renderTimeline(DATA);
     renderScrubber(DATA);
     renderBlame(DATA);
@@ -1022,7 +1060,7 @@ function renderCostProfile(data) {
     renderForkTree(DATA);
     renderCostProfile(DATA);
     if (DATA.exchanges.length > 0) {
-      // OTel exemplar back-link (tracefork-bge.53): a redirect from
+      // OTel exemplar back-link: a redirect from
       // /otel/{trace_id}/{span_id} lands on /?run_id=X&step=N -- auto-select
       // exchange N instead of the hardcoded 0. Absent/invalid param is
       // byte-identical to before (clamped into range, default 0).

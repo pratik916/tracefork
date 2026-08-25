@@ -168,6 +168,76 @@ def test_interleaved_all_five_kinds_round_trip_in_order(tmp_path, monkeypatch):
     assert replay.fully_consumed()
 
 
+# ── redact_fn: read_file draws route through the Redactor too ──────────────
+
+
+def test_read_file_without_redact_fn_is_untouched(tmp_path):
+    """Default `redact_fn=None` is byte-identical to before this parameter
+    existed."""
+    p = tmp_path / "plain.txt"
+    p.write_bytes(b"plain content")
+
+    nd = RecordingNondet()
+    data = nd.read_file(str(p))
+
+    assert data == b"plain content"
+    envelope = json.loads(nd.draws[0][1])
+    assert base64.b64decode(envelope["content_b64"]) == b"plain content"
+    assert envelope["sha256"] == hashlib.sha256(b"plain content").hexdigest()
+
+
+def test_recording_nondet_read_file_applies_redact_fn_to_stored_envelope_only(tmp_path):
+    """The live caller still gets the real bytes (recording must not lie
+    about what's actually on disk); only the STORED envelope is transformed,
+    and size/sha256 describe the redacted bytes so the envelope stays
+    internally self-consistent."""
+    p = tmp_path / "secret.txt"
+    p.write_bytes(b"the secret is sk-ant-super-secret-value here")
+
+    def redact_fn(data: bytes) -> bytes:
+        return data.replace(b"sk-ant-super-secret-value", b"REDACTED")
+
+    nd = RecordingNondet(redact_fn=redact_fn)
+    data = nd.read_file(str(p))
+
+    assert data == b"the secret is sk-ant-super-secret-value here"
+
+    envelope = json.loads(nd.draws[0][1])
+    stored = base64.b64decode(envelope["content_b64"])
+    assert stored == b"the secret is REDACTED here"
+    assert b"sk-ant-super-secret-value" not in stored
+    assert envelope["sha256"] == hashlib.sha256(stored).hexdigest()
+    assert envelope["size"] == len(stored)
+
+
+def test_read_file_redaction_replays_the_placeholder_never_the_live_file(tmp_path):
+    """Same replay-time trade-off as get_env: redaction is deterministic and
+    replay-safe, but replay hands back the placeholder, never the live
+    content -- it was never stored in the first place."""
+    p = tmp_path / "secret2.txt"
+    p.write_bytes(b"leak-me")
+
+    nd = RecordingNondet(redact_fn=lambda d: b"REDACTED")
+    nd.read_file(str(p))
+
+    replay = ReplayNondet(nd.draws)
+    assert replay.read_file(str(p)) == b"REDACTED"
+    assert replay.fully_consumed()
+
+
+def test_read_file_redact_fn_does_not_affect_the_size_cap_check(tmp_path):
+    """The size-cap pre-check runs against the REAL file size (before any
+    redaction), never the redacted/stored size -- redaction is a
+    stored-bytes transform, not a cap-evasion mechanism."""
+    p = tmp_path / "big.bin"
+    p.write_bytes(b"x" * 100)
+
+    nd = RecordingNondet(max_read_file_bytes=50, redact_fn=lambda d: b"")
+    with pytest.raises(ReadFileTooLargeError, match=r"100.*50"):
+        nd.read_file(str(p))
+    assert nd.draws == []
+
+
 # ── coverage.py: tape_draw_coverage tallies the new "read_file" kind ───────
 
 

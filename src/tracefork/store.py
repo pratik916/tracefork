@@ -505,6 +505,12 @@ class TapeStore:
         tape, unless ``overwrite=True`` is passed to replace it explicitly.
         """
         rid = run_id or uuid.uuid4().hex[:12]
+        if not created_at:
+            # Additive default only: a caller that omits created_at gets a
+            # real current-time timestamp instead of "", so a freshly-saved
+            # tape's row never sorts before every non-empty ISO-8601 string
+            # in prune()'s plain string comparison (created_at < older_than_iso).
+            created_at = datetime.now(UTC).isoformat()
         blob = tape.to_bytes()
         with self._write_lock:
             self._con.execute("BEGIN IMMEDIATE")

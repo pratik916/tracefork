@@ -1,10 +1,27 @@
 [project]
 name = "tracefork"
-version = "0.3.0"
+version = "1.0.0"
 description = "Time-travel debugger for AI agents: bit-exact record/replay, fork any step, causal blame with confidence intervals."
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.40",
+    # CAP <1: anthropic 1.0.0 (2026-08-20) moved to Pydantic's httpx2 fork
+    # (Requires-Dist: httpx2<3,>=2.0.0, no httpx at all) and its
+    # `client.copy(http_client=...)` seam (recorder.py's exact idiom) now
+    # type-checks the arg against httpx2.Client, raising TypeError on a real
+    # httpx.Client — tracefork's whole record seam depends on that idiom, so
+    # this is a hard incompatibility, not a speculative Schreiner-style
+    # private-internals hedge. Floor >=0.109 is exactly the version uv.lock
+    # already pins and the full test suite already exercises, so raising it
+    # carries no new incompatibility risk. Do NOT remove this cap without
+    # first porting recorder.py/transport.py/etc. off `httpx.BaseTransport`
+    # to whatever httpx2 exposes. TODO(caps): anthropic-1.x/httpx2 port.
+    "anthropic>=0.109,<1",
+    # Direct dependency, not just anthropic's transitive: tracefork subclasses
+    # httpx.BaseTransport directly (transport.py) and imports httpx in 17
+    # modules under src/tracefork/. Never declaring this let `pip install
+    # tracefork` silently rely on anthropic's own httpx pin -- which broke
+    # the moment anthropic 1.0.0 dropped httpx for httpx2 (see the cap above).
+    "httpx>=0.27,<1",
     "zstandard>=0.22",
     "typer>=0.12",
     "fastapi>=0.115",
@@ -19,13 +36,13 @@ keywords = [
     "causal-inference", "anthropic", "observability", "determinism",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Debuggers",
     "Topic :: Software Development :: Testing",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -166,8 +183,29 @@ Changelog = "https://github.com/pratik916/tracefork/blob/main/CHANGELOG.md"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+# Explicit denylist so the sdist file-selection does NOT depend on
+# .gitignore inheritance for safety -- hatchling's default sdist sweep
+# selects by .gitignore PATTERN, not git-tracking status, so an untracked
+# file matching no ignore rule (docs/shepherd-gap-analysis.md, before the
+# corresponding .gitignore entry landed) still shipped verbatim, and that
+# file must never land in a built artifact (see this repo's naming policy).
+# These excludes hold even if .gitignore is ever edited to drop the
+# matching lines -- belt AND suspenders, not either/or.
+exclude = [
+    "/docs/shepherd-gap-analysis.md",
+    "/.hypothesis",
+    "/.claude",
+]
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/tracefork_spike", "src/tracefork"]
+# tracefork_spike (Spike 0, retired) is deliberately NOT listed here: shipping
+# it as a second top-level installed package would claim the tracefork_spike
+# name on every user's sys.path and offer a colliding, incompatible Tape
+# class. It stays runnable from a source checkout only -- pytest's
+# `pythonpath = ["src", "."]` (below) and uv's editable-install .pth both
+# already put src/ on the path independent of this packages list.
+packages = ["src/tracefork"]
 
 # Ship the single-file web UI inside the package so `report` and `serve` work from
 # an installed wheel, not only from an editable/source checkout.
@@ -180,6 +218,27 @@ packages = ["src/tracefork_spike", "src/tracefork"]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--strict-markers"
+# `filterwarnings = ["error", ...]` (turning every warning into a hard
+# failure) is deliberately NOT enabled yet. `server.py`'s `init_store` now
+# closes the previous global `_store` before reassigning (see
+# `if _store is not None: _store.close()`), which fixed the specific
+# repeated-`init_store()`-across-`test_cli_smoke.py` leak this pass could
+# verify -- but re-attempting the flip at the 1.0.0 gate (full suite,
+# `--junit-xml`, `--cov`) still reproduces the SAME class of failure the
+# original deferral predicted, from a DIFFERENT resource: an unclosed
+# `socket.socket` (not a database connection) triggers a
+# `PytestUnraisableExceptionWarning` at a nondeterministic GC pass,
+# attributed to whichever unrelated test happens to be running at the time
+# (`tests/test_faults.py::test_all_fault_classes_validate`,
+# `tests/test_conftest.py::test_real_create_connection_is_blocked`, and
+# others across two consecutive full-suite runs at the SAME commit --
+# proving it's GC-timing flake, not a real per-test regression). A flaky
+# gate is worse than no stricter gate for a project whose thesis is
+# determinism -- reverted the flip and left `--strict-markers` alone.
+# Re-attempt only after finding and closing the actual leaking socket
+# (likely an unclosed httpx/`TestClient` transport somewhere in the suite,
+# not yet located); see planning/HANDOFF.md.
 
 [tool.ruff]
 target-version = "py312"
@@ -200,7 +259,10 @@ no_implicit_optional = true
 warn_unused_ignores = true
 
 [tool.coverage.run]
-source = ["src/tracefork", "src/tracefork_spike"]
+# tracefork_spike excluded: retired prototype code (see the wheel packages
+# comment above) -- including it would inflate the reported coverage number
+# with code that isn't part of the shipped product.
+source = ["src/tracefork"]
 branch = true
 
 [tool.coverage.report]

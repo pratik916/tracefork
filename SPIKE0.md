@@ -1,5 +1,16 @@
 # Spike 0 — bit-exact record/replay (the headline-risk de-risk)
 
+> **Status: superseded by v1 (2026-08-25).** This document records the *original* Spike 0
+> de-risk and its (deliberately narrow) proven scope. Two things this spike named as future
+> work have since shipped in v1 and are proven, not just planned: **streaming SSE**
+> capture/replay (`transport.py` tees response bytes chunk-by-chunk in both record and
+> replay mode) and **asyncio concurrency-graph determinism** (the completion order of
+> concurrent `asyncio.gather` fan-out is recorded and re-imposed on replay — see
+> `README.md`'s Determinism boundary section). Where this document still says either is
+> "out of scope," read that as historical — true when Spike 0 was written, superseded by
+> v1. Test counts and the pasted receipt below are as of Spike 0's original run and are not
+> re-verified against the current suite; see `README.md`/`CLAUDE.md` for current numbers.
+
 **Question:** Can we record a tool-using Anthropic-SDK agent run and replay it
 **bit-exact**, with proof, for **$0 and no network**, within a *declared* determinism
 boundary? This is the one assumption the whole tracefork project rests on (feature
@@ -13,8 +24,8 @@ list receipt **R1**). If replay is only "mostly exact," the product collapses.
   recorded exchanges ........ 2
   nondeterminism draws ...... 2  (clock + id, virtualized)
   request hashes matched .... 2/2
-  tape fingerprint .......... 2e206e1176dab7c80fcabd13…
-  replay fingerprint ........ 2e206e1176dab7c80fcabd13…
+  tape fingerprint .......... <sha256, illustrative — matches replay fingerprint>…
+  replay fingerprint ........ <sha256, illustrative — matches tape fingerprint>…
   network calls / spend ..... 0 / $0.00
   agent final answer ........ 'Done — your flight to Tokyo is booked. Confirmation CONF_…'
 
@@ -27,8 +38,10 @@ list receipt **R1**). If replay is only "mostly exact," the product collapses.
   RESULT: PASS
 ```
 
-Run it yourself: `uv run python -m tracefork_spike` (receipt) and `uv run pytest -q`
-(8 tests). No `ANTHROPIC_API_KEY` required.
+Run it yourself: `uv run python -m tracefork_spike` (receipt) and
+`uv run pytest tests/test_spike0.py -q` (8 tests — this file's own suite; `uv run
+pytest -q` with no path runs the whole project, currently far more than 8). No
+`ANTHROPIC_API_KEY` required.
 
 ## What it proves
 
@@ -66,17 +79,23 @@ In-scope and proven here: a **single-process, synchronous** agent whose only
 nondeterminism sources are **clock** and **id generation**, both routed through the
 `NondetSource` seam, talking to the API through the SDK's injectable httpx transport.
 
-Deliberately out of scope for Spike 0 (tracked, not solved):
+Deliberately out of scope for Spike 0 (tracked, not solved *at the time*):
 
 - **Streaming SSE bytes.** Used non-streaming here. Capture/replay is mechanically
   identical (same transport seam, tee the response bytes); streaming only adds the
-  SDK's SSE accumulator on top of identical bytes. Next spike step.
+  SDK's SSE accumulator on top of identical bytes. Called "next spike step" here —
+  **superseded in v1**: `transport.py` now tees and replays SSE chunk-by-chunk, in
+  scope and tested, not a future step.
 - **Cross-process replay.** Record and replay run in one process, so request
   serialization is trivially stable. Persisted-tape replay across processes needs the
   SDK's body serialization to be byte-stable across runs — likely true (pydantic), but
-  must be proven separately.
+  must be proven separately. (Still the case in v1: replay stays single-process.)
 - **Threads / asyncio scheduling / subprocess** nondeterminism — explicitly outside
-  the v1 boundary.
+  the v1 boundary *as originally scoped here*. **Superseded in v1** for asyncio
+  specifically: concurrent `asyncio.gather` fan-out completion order is captured
+  through `NondetSource` and re-imposed on replay (see `README.md`'s Determinism
+  boundary section) — proven in scope, not just planned. Threads and subprocesses
+  remain genuinely out of scope.
 
 ## Biggest open architectural risk (flagged, not yet spiked)
 

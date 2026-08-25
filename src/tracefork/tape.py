@@ -128,10 +128,26 @@ class Tape:
     def digest(self) -> str:
         """sha256 hash chain over draws, then LLM exchanges, then tool exchanges
         — the tape fingerprint. An empty tool log contributes nothing, so the
-        digest of any pre-tool (LLM-only) tape is byte-identical to before."""
+        digest of any pre-tool (LLM-only) tape is byte-identical to before.
+
+        Draw chain framing (`DIGEST_CHAIN_VERSION` = 2, constants.py): each
+        draw's `kind` and `value` is hashed through a FIXED-WIDTH sha256 hex
+        digest before framing, exactly like exchange/tool-exchange lines
+        already were. A draw value is raw, environment/agent-controlled text
+        (e.g. a POSIX env var value, which may contain `:` or `\\n`); framing
+        it as a variable-length string let a crafted value forge what looked
+        like an extra `D:`/`X:`/`T:` record, so two structurally different
+        draw logs could hash equal. Fixed-width framing removes the ambiguity:
+        no draw content can ever produce chain-delimiter bytes."""
         h = hashlib.sha256()
         for kind, value in self.draws:
-            h.update(b"D:" + kind.encode() + b":" + value.encode() + b"\n")
+            h.update(
+                b"D:"
+                + sha256_hex(kind.encode()).encode()
+                + b":"
+                + sha256_hex(value.encode()).encode()
+                + b"\n"
+            )
         for req, resp in self.exchanges:
             h.update(b"X:" + sha256_hex(req).encode() + b":" + sha256_hex(resp).encode() + b"\n")
         for req, resp in self.tool_exchanges:
@@ -203,7 +219,7 @@ class Tape:
                 )
             con.execute("INSERT INTO meta VALUES ('boundary', ?)", (self.boundary,))
             con.execute("INSERT INTO meta VALUES ('agent_name', ?)", (self.agent_name,))
-            con.execute("INSERT INTO meta VALUES ('schema_version', '2')")
+            con.execute("INSERT INTO meta VALUES ('schema_version', '3')")
             con.execute(
                 "INSERT INTO meta VALUES ('content_redacted', ?)",
                 (str(int(self.content_redacted)),),
@@ -213,6 +229,20 @@ class Tape:
             con.execute(
                 "INSERT INTO meta VALUES ('async_batches', ?)",
                 (json.dumps(self.async_batches),),
+            )
+            # Provenance witness block (v5) and request-URL witness log (v6),
+            # persisted as JSON meta values for the same reason `async_batches`
+            # is: structural, not an event stream. Absent on legacy DBs (written
+            # before this fix) -> loads as `{}` / `[""] * len(exchanges)`, same
+            # upcast discipline as `to_bytes`/`from_bytes` (see `load`). Neither
+            # field feeds `digest()` — this is metadata persistence only.
+            con.execute(
+                "INSERT INTO meta VALUES ('provenance', ?)",
+                (json.dumps(self.provenance),),
+            )
+            con.execute(
+                "INSERT INTO meta VALUES ('request_urls', ?)",
+                (json.dumps(self.request_urls),),
             )
             con.execute("COMMIT")
         finally:
@@ -231,6 +261,7 @@ class Tape:
                 content_redacted=bool(int(meta.get("content_redacted", "0"))),
             )
             tape.async_batches = [list(b) for b in json.loads(meta.get("async_batches", "[]"))]
+            tape.provenance = dict(json.loads(meta.get("provenance", "{}")))
             for kind, a, b in con.execute("SELECT kind, a, b FROM events ORDER BY seq").fetchall():
                 if kind == "draw":
                     tape.draws.append((a, b))
@@ -238,6 +269,10 @@ class Tape:
                     tape.exchanges.append((blobs[a], blobs[b]))
                 elif kind == "tool_exchange":
                     tape.tool_exchanges.append((blobs[a], blobs[b]))
+            if "request_urls" in meta:
+                tape.request_urls = list(json.loads(meta["request_urls"]))
+            else:
+                tape.request_urls = [""] * len(tape.exchanges)
             return tape
         finally:
             con.close()

@@ -17,7 +17,13 @@ from tracefork.tape import Tape, open_sqlite
 # The exact digest of `_golden_tape()`, frozen at the pre-header format. If a change
 # to the version envelope ever perturbs this, the header has leaked into the
 # content-addressed hash chain — which the must-have forbids.
-GOLDEN_DIGEST = "93302637a9c2d12f983c3d2bae5150d63e902f427e8555b42b666c9e7fcb8c4e"
+#
+# Updated for DIGEST_CHAIN_VERSION = 2 (fixed-width sha256 framing of draw
+# kind/value, see Tape.digest() in tape.py): this is an intentional digest
+# change, not header leakage — draws are still part of the content hash, only
+# their framing changed to close a delimiter-forgery gap. Verified identical
+# across a fresh tape, a v2 round-trip, and the legacy v1 blob fixture.
+GOLDEN_DIGEST = "8753f6188737f97012f0b005f126daa6b9919deb54a047025b5e5b0e5dc0dbdc"
 
 _FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "legacy_tape_v1.blob"
 

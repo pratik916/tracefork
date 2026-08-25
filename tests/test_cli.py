@@ -343,3 +343,319 @@ def test_diff_step_mode_compares_two_tapes_at_one_step(tmp_path):
 
     result = runner.invoke(app, ["diff", run_a, run_b, "--step", "0", "--store", str(db)])
     assert result.exit_code == 0, result.output
+
+
+# ── --version ─────────────────────────────────────────────────────────────
+
+
+def test_version_flag_exits_0_and_prints_installed_package_version():
+    from importlib import metadata
+
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert metadata.version("tracefork") in result.output
+
+
+def test_version_flag_is_eager_and_does_not_require_a_subcommand():
+    """`--version` must short-circuit before Typer complains about a missing
+    subcommand — it's meant to work standalone, the way `--help` already does."""
+    result = runner.invoke(app, ["--version"])
+    assert "Missing command" not in result.output
+    assert "No such command" not in result.output
+
+
+# ── validate --check regression tolerance ───────────────────────────────────
+
+
+def test_validate_regressions_flags_a_real_drop_the_old_015_tolerance_would_hide():
+    """`ValidationRunner` is fully deterministic (see test_faults.py's exact-
+    value pin), so a 5-point precision drop between two runs at the same
+    k/n_runs is a real regression, not noise — the old ±0.15 tolerance would
+    have silently passed this."""
+    from tracefork.cli import _validate_regressions
+    from tracefork.constants import VALIDATE_CHECK_TOLERANCE
+
+    old = {
+        "top1_precision_by_class": {"corrupted_tool_output": 1.0},
+        "negative_control_max_flip": 0.0,
+    }
+    new = {
+        "top1_precision_by_class": {"corrupted_tool_output": 0.95},
+        "negative_control_max_flip": 0.0,
+    }
+
+    assert VALIDATE_CHECK_TOLERANCE < 0.15, "tolerance must be tighter than the old 0.15"
+    regressions = _validate_regressions(new, old, VALIDATE_CHECK_TOLERANCE)
+    assert regressions, "a 0.05 drop must be flagged under the tightened tolerance"
+    assert "corrupted_tool_output" in regressions[0]
+
+
+def test_validate_regressions_is_clean_for_identical_reports():
+    from tracefork.cli import _validate_regressions
+    from tracefork.constants import VALIDATE_CHECK_TOLERANCE
+
+    data = {
+        "top1_precision_by_class": {"corrupted_tool_output": 1.0},
+        "negative_control_max_flip": 0.0,
+    }
+    assert _validate_regressions(data, data, VALIDATE_CHECK_TOLERANCE) == []
+
+
+def test_validate_regressions_flags_negative_control_regression():
+    from tracefork.cli import _validate_regressions
+    from tracefork.constants import VALIDATE_CHECK_TOLERANCE
+
+    old = {"top1_precision_by_class": {}, "negative_control_max_flip": 0.0}
+    new = {"top1_precision_by_class": {}, "negative_control_max_flip": 0.10}
+
+    regressions = _validate_regressions(new, old, VALIDATE_CHECK_TOLERANCE)
+    assert any("negative_control_max_flip" in r for r in regressions)
+
+
+# ── CLI error routing: stderr, actionable messages, no tracebacks ──────────
+
+
+def test_resolve_agent_rejects_spec_without_colon():
+    import typer
+
+    from tracefork.cli import _resolve_agent
+
+    try:
+        _resolve_agent("nocolonhere")
+        raised = False
+    except typer.Exit as exc:
+        raised = True
+        assert exc.exit_code == 1
+    assert raised
+
+
+def test_resolve_agent_names_expected_format_on_missing_colon(capsys):
+    result = runner.invoke(
+        app,
+        [
+            "replay",
+            str(FIXTURES_DIR / "does-not-matter.tape.sqlite"),
+            "--agent",
+            "nocolonhere",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "ValueError" not in result.output
+    assert "pkg.module:fn" in result.output or "module:fn" in result.output.lower()
+
+
+def test_resolve_agent_names_the_module_on_import_failure():
+    result = runner.invoke(
+        app,
+        [
+            "replay",
+            str(FIXTURES_DIR / "does-not-matter.tape.sqlite"),
+            "--agent",
+            "nosuch.module:fn",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "ModuleNotFoundError" not in result.output
+    assert "nosuch.module" in result.output
+
+
+def test_load_tape_or_exit_on_missing_file_has_no_traceback():
+    result = runner.invoke(
+        app,
+        [
+            "replay",
+            "/nope/definitely-missing.tape.sqlite",
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+        ],
+    )
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"an uncaught {type(result.exception).__name__} means a real terminal run "
+        "would print a raw traceback"
+    )
+    assert "OperationalError" not in result.output
+    assert "/nope/definitely-missing.tape.sqlite" in result.output
+
+
+def test_blame_closes_tapestore_even_on_early_budget_exit(tmp_path, monkeypatch):
+    """`blame`'s `TapeStore` must be closed on every exit path — including the
+    pre-flight budget-gate's early `raise typer.Exit(1)` — or the sqlite
+    connection leaks. Asserts directly that `TapeStore.close` was actually
+    invoked (rather than relying on GC timing / `ResourceWarning`, which is
+    unreliable in-process: a CliRunner result can keep the frame — and its
+    `db` local — alive via its captured traceback long enough that `gc.collect()`
+    never reclaims it inside the test, silently passing a real leak)."""
+    close_calls = []
+    real_close = TapeStore.close
+
+    def _tracking_close(self):
+        close_calls.append(self)
+        return real_close(self)
+
+    monkeypatch.setattr(TapeStore, "close", _tracking_close)
+
+    db_path = tmp_path / "store.db"
+    store = TapeStore(str(db_path))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    close_calls.clear()  # only count the `blame` command's own open/close below
+
+    result = runner.invoke(
+        app,
+        [
+            "blame",
+            run_id,
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db_path),
+            "--budget",
+            "0",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert len(close_calls) == 1, (
+        "blame's TapeStore.close() must run exactly once on the budget-gate exit path"
+    )
+
+
+def test_fork_prints_confinement_diagnostic_not_a_raw_sdk_traceback(tmp_path):
+    """The Anthropic SDK wraps any exception its httpx transport raises in
+    `APIConnectionError` (the same wrapping `nondet.find_divergence`
+    documents and unwraps for `DivergenceError`) -- so a `ConfinementViolationError`
+    raised by the guarded `socket.connect` during the tail-record call was
+    reaching the user as a raw, unhandled `APIConnectionError`, not the
+    intended `except ConfinementViolationError` diagnostic. `--allowed-host`
+    excluding the real API host reproduces this fully offline/$0."""
+    from tracefork.wire import make_text_response
+
+    db_path = tmp_path / "store.db"
+    store = TapeStore(str(db_path))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+
+    response_file = tmp_path / "mutated.bytes"
+    response_file.write_bytes(make_text_response("mutated"))
+
+    result = runner.invoke(
+        app,
+        [
+            "fork",
+            run_id,
+            "--step",
+            "0",
+            "--response",
+            str(response_file),
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db_path),
+            "--allowed-host",
+            "host-that-is-not-the-real-api.invalid",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "Confinement violation" in result.output, result.output
+    assert "APIConnectionError" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_fork_closes_tapestore_when_the_tail_record_call_is_confined_offline(tmp_path, monkeypatch):
+    """`fork`'s `TapeStore` must be closed on an exception exit path too, not
+    just the pre-flight-gate path another test already covers. Declaring
+    `--allowed-host` that excludes the real API host makes
+    `ConfinementSpec`'s `socket.connect` guard reject the tail-record call's
+    connection attempt BEFORE any DNS/TCP happens (see `boundary_guard.py`),
+    so this stays fully offline/$0 like the rest of the suite.
+
+    Note: the SDK wraps the resulting `ConfinementViolationError` in an
+    `httpx`/`anthropic` `APIConnectionError` (the same wrapping
+    `nondet.find_divergence` already has to unwrap for `DivergenceError` —
+    see that function's docstring), so `fork`'s own
+    `except ConfinementViolationError` clause does not actually catch it
+    here; that's a separate, pre-existing gap flagged in this session's
+    final report, not something this test relies on. What this test proves
+    is narrower and still real: whatever exits the function, `db.close()`
+    must have run — asserted directly (see the `blame` test above for why
+    GC/`ResourceWarning` is unreliable here) rather than inferred."""
+    from tracefork.wire import make_text_response
+
+    close_calls = []
+    real_close = TapeStore.close
+
+    def _tracking_close(self):
+        close_calls.append(self)
+        return real_close(self)
+
+    monkeypatch.setattr(TapeStore, "close", _tracking_close)
+
+    db_path = tmp_path / "store.db"
+    store = TapeStore(str(db_path))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+    close_calls.clear()
+
+    response_file = tmp_path / "mutated.bytes"
+    response_file.write_bytes(make_text_response("mutated"))
+
+    result = runner.invoke(
+        app,
+        [
+            "fork",
+            run_id,
+            "--step",
+            "0",
+            "--response",
+            str(response_file),
+            "--agent",
+            "tracefork.validate:synthetic_agent",
+            "--store",
+            str(db_path),
+            "--allowed-host",
+            "host-that-is-not-the-real-api.invalid",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert len(close_calls) == 1, (
+        "fork's TapeStore.close() must run exactly once even when the tail-record call raises"
+    )
+
+
+def test_report_on_unknown_run_id_has_no_traceback(tmp_path):
+    db_path = tmp_path / "store.db"
+    from tracefork.store import TapeStore
+
+    TapeStore(str(db_path)).close()
+
+    result = runner.invoke(app, ["report", "no-such-run", "--store", str(db_path)])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "KeyError" not in result.output
+    assert "no-such-run" in result.output
+
+
+# ── packaging: tracefork_spike must never ship in the installed wheel ──────
+
+
+def test_tracefork_spike_is_not_a_wheel_package():
+    """`tracefork_spike` (Spike 0, retired) must stay source-checkout-only —
+    shipping it as a second top-level installed package would claim the
+    `tracefork_spike` name on every user's `sys.path` and offer a colliding,
+    incompatible `Tape` class. Regression guard for `pyproject.toml`'s
+    `[tool.hatch.build.targets.wheel]` `packages` list and
+    `[tool.coverage.run]`'s `source` list."""
+    import tomllib
+
+    pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    data = tomllib.loads(pyproject_path.read_text())
+
+    wheel_packages = data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert "src/tracefork_spike" not in wheel_packages
+    assert "src/tracefork" in wheel_packages
+
+    coverage_source = data["tool"]["coverage"]["run"]["source"]
+    assert "src/tracefork_spike" not in coverage_source
+    assert not any("tracefork_spike" in s for s in coverage_source)

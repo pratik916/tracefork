@@ -8,6 +8,7 @@ behaviour a fork must capture.
 
 import random
 import threading
+import uuid
 
 import anthropic
 import httpx
@@ -20,6 +21,7 @@ from tracefork.boundary_guard import (
     ConfinementViolationError,
 )
 from tracefork.fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
+from tracefork.matcher import redacting_matcher
 from tracefork.nondet import find_divergence
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
@@ -662,3 +664,124 @@ def test_fork_confinement_none_default_preserves_existing_behavior():
         parent_tape, spec, _conversation_agent, post_fork_transport=ScriptedFakeLLM([])
     )
     assert branch.divergence_step == 1
+
+
+# ── request matcher (canonicalizing / redacting parent tapes) ────────────────
+#
+# `ForkEngine` re-runs `agent_fn` and compares each rebuilt request against the
+# parent tape's stored bytes. A tape recorded through a non-identity
+# `RequestMatcher` (e.g. `redacting_matcher()`) stores the CANONICAL form of
+# each request, not its raw bytes, so a comparison that ignores the matcher
+# entirely (raw sha256 of the live request body vs. those canonical stored
+# bytes) can never match — even when the agent is perfectly deterministic and
+# only a rotating, matcher-stripped field (an idempotency key) legitimately
+# differs between the record-time and fork-time calls.
+
+
+def _agent_with_rotating_idempotency_key(client: anthropic.Anthropic) -> str:
+    """Single-turn agent whose only per-call variation is a fresh
+    idempotency key on every real invocation -- exactly the kind of volatile
+    body field `redacting_matcher()` is built to strip before hashing."""
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "book a flight"}],
+        extra_body={"idempotency_key": uuid.uuid4().hex},
+    )
+    return r.content[0].text
+
+
+def _record_rotating_key_tape(resp: bytes) -> Tape:
+    """Record with `redacting_matcher()` so the tape stores the CANONICAL
+    (idempotency-key-stripped) request form, not the raw body."""
+    fake = ScriptedFakeLLM([resp])
+    tape = Tape()
+    transport = TraceforkTransport("record", tape, fake, matcher=redacting_matcher())
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx.Client(transport=transport),
+        max_retries=0,
+    )
+    _agent_with_rotating_idempotency_key(client)
+    return tape
+
+
+def test_fork_without_matcher_diverges_on_a_redacting_tape():
+    """Negative control: `ForkEngine.fork()` called with no `matcher=` (the
+    default) compares raw sha256 against a parent tape recorded with
+    `redacting_matcher()`. The stored bytes are the CANONICAL form
+    (idempotency key stripped, re-shaped as {"method","body","url"} JSON),
+    which can never equal the live request's raw body -- so even a perfectly
+    deterministic agent's fork diverges. This proves the bug is real and
+    proves the fix below is doing genuine work, not a no-op."""
+    parent_tape = _record_rotating_key_tape(RESP_A)
+    spec = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+
+    try:
+        ForkEngine.fork(
+            parent_tape,
+            spec,
+            _agent_with_rotating_idempotency_key,
+            post_fork_transport=ScriptedFakeLLM([]),
+        )
+        raise AssertionError("expected DivergenceError")
+    except Exception as exc:
+        divergence = find_divergence(exc)
+        assert divergence is not None
+
+
+def test_fork_honors_matcher_on_a_redacting_tape():
+    """Passing the SAME matcher the parent tape was recorded with lets
+    `ForkEngine.fork()` compare canonical fingerprints instead of raw bytes,
+    so the rotating idempotency key (correctly stripped by
+    `redacting_matcher()`) no longer causes a false divergence."""
+    parent_tape = _record_rotating_key_tape(RESP_A)
+    spec = BranchSpec(divergence_step=0, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape,
+        spec,
+        _agent_with_rotating_idempotency_key,
+        post_fork_transport=ScriptedFakeLLM([]),
+        matcher=redacting_matcher(),
+    )
+
+    assert branch.divergence_step == 0
+    assert len(branch.delta_tape.exchanges) == 1
+    assert branch.delta_tape.exchanges[0][1] == RESP_B
+
+
+def test_fork_coalition_honors_matcher_on_a_redacting_tape():
+    """Same fix, exercised through `fork_coalition()`'s first-intervention
+    assertion (the coalition analogue of `fork()`'s mutation-point check)."""
+    parent_tape = _record_rotating_key_tape(RESP_A)
+    spec = CoalitionSpec.single(step=0, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork_coalition(
+        parent_tape,
+        spec,
+        _agent_with_rotating_idempotency_key,
+        post_fork_transport=ScriptedFakeLLM([]),
+        matcher=redacting_matcher(),
+    )
+
+    assert branch.divergence_step == 0
+    assert branch.delta_tape.exchanges[0][1] == RESP_B
+
+
+def test_fork_matcher_none_default_preserves_existing_behavior():
+    """`matcher=None` (the implicit default) must leave `fork()`'s behavior
+    byte-identical to every pre-existing test_fork.py case (all recorded with
+    the implicit identity matcher)."""
+    parent_tape = _build_two_turn_tape()
+    spec = BranchSpec(divergence_step=1, mutated_response=RESP_B)
+
+    branch = ForkEngine.fork(
+        parent_tape,
+        spec,
+        _conversation_agent,
+        post_fork_transport=ScriptedFakeLLM([]),
+        matcher=None,
+    )
+    assert branch.divergence_step == 1
+    assert branch.delta_tape.exchanges[0][1] == RESP_B

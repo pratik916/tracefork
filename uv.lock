@@ -4094,11 +4094,12 @@ wheels = [
 
 [[package]]
 name = "tracefork"
-version = "0.3.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "typer" },
     { name = "uvicorn" },
     { name = "zstandard" },
@@ -4162,7 +4163,7 @@ providers = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.40" },
+    { name = "anthropic", specifier = ">=0.109,<1" },
     { name = "autogen-core", marker = "extra == 'autogen'", specifier = ">=0.7,<1" },
     { name = "autogen-ext", marker = "extra == 'autogen'", specifier = ">=0.7,<1" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.34" },
@@ -4170,6 +4171,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-adk", marker = "extra == 'adk'", specifier = ">=2.3,<3" },
     { name = "google-genai", marker = "extra == 'providers'", specifier = ">=0.3" },
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "langchain-anthropic", marker = "extra == 'frameworks'", specifier = ">=1.4" },
     { name = "langchain-core", marker = "extra == 'frameworks'", specifier = ">=1.4" },

@@ -141,3 +141,16 @@ def test_all_fault_classes_validate():
     for fc, data in results.items():
         assert data["top1_precision"] >= 0.7, f"{fc}: precision {data['top1_precision']}"
         assert data["negative_control_max_flip"] < 0.3, f"{fc}: control too high"
+
+
+def test_all_fault_classes_pin_exact_precision_and_flat_control():
+    """The engine's headline claim — 1.00 top-1 precision, 0.00 negative-control
+    flip — is fully deterministic (the fakes are scripted, no randomness
+    anywhere in `ValidationRunner`), so every fault class must hit the EXACT
+    values, not just clear a loose >=0.7 bar. Pinning only one of the five
+    classes (as this suite did pre-1.0) leaves the other four's headline
+    number unverified — this closes that gap."""
+    for fc in FaultClass:
+        report = ValidationRunner(fc, k=3, n_runs=5).run()
+        assert report.top1_precision == 1.0, f"{fc}: {report.top1_precision}"
+        assert report.negative_control_max_flip == 0.0, f"{fc}: {report.negative_control_max_flip}"

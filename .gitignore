@@ -37,3 +37,12 @@ docs/superpowers/
 planning/
 .superpowers/
 blame_*.md
+
+# Untracked local-only analysis and dev-tool scaffolding: hatchling's default
+# sdist file-selection sweeps by .gitignore pattern, not git-tracking status,
+# so anything landmine-adjacent here must be listed explicitly rather than
+# relying on staying untracked. docs/shepherd-gap-analysis.md in particular
+# must never land in a built artifact -- see this repo's naming policy.
+docs/shepherd-gap-analysis.md
+.hypothesis/
+.claude/

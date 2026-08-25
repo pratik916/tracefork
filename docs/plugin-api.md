@@ -110,20 +110,37 @@ caller.
 
 ## Stability policy
 
-Treat this the way a `pluggy`/`hookspec`-style plugin host treats its public
-hook surface — the registry mechanism is a versioned contract, independent of
-what's registered through it:
+This is the plugin-mechanism-specific instance of the project-wide policy in
+[`docs/stability.md`](stability.md) — read that document for what SemVer covers everywhere
+else. Treat the registry mechanism the way a `pluggy`/`hookspec`-style plugin host treats its
+public hook surface — a versioned contract, independent of what's registered through it:
 
-* **Public, SemVer-covered API:** `tracefork.plugins.Registry` (the class and
-  all its public methods: `register`, `get_or_raise`, `names`,
-  `load_entry_points`), the five group constants
-  (`PROVIDER_GROUP`/`ORACLE_GROUP`/`SERIALIZER_GROUP`/`MATCHER_GROUP`/
-  `ADAPTER_GROUP`), the `TRACEFORK_ALLOW_PLUGINS` environment variable name
-  and its comma-separated/`*` syntax, and the five protocols
-  (`ProviderAdapter`/`Oracle`/`TapeSerializer`/`RequestMatcher`/
-  `FrameworkAdapter`). A breaking change to any of these is a major-version
-  bump with a deprecation note in `CHANGELOG.md`, same as any other public
-  API in this project.
+* **Public, SemVer-covered API, each importable from the top-level `tracefork` package** (per
+  `docs/stability.md` §1's rule that only `from tracefork import <Name>` is a supported import
+  path, never a `tracefork.<submodule>` deep import):
+  `from tracefork import Registry` (the class and all its public methods: `register`,
+  `get_or_raise`, `names`, `load_entry_points`); the five group constants
+  `from tracefork import PROVIDER_GROUP, ORACLE_GROUP, SERIALIZER_GROUP, MATCHER_GROUP,
+  ADAPTER_GROUP`; the `TRACEFORK_ALLOW_PLUGINS` environment variable name and its
+  comma-separated/`*` syntax (not a Python symbol, so no import path — the name itself is the
+  contract); and the five protocols `from tracefork import ProviderAdapter, Oracle,
+  TapeSerializer, RequestMatcher, FrameworkAdapter`. A breaking change to any of these is a
+  major-version bump with a deprecation note in `CHANGELOG.md`, per `docs/stability.md` §5.
+* **A known gap, stated plainly rather than papered over:** `Registry` is a class — actually
+  calling `register`/`get_or_raise`/`load_entry_points` against one of the five *real* registries
+  (the one `IdentityMatcher` etc. are actually registered in) means reaching the module-level
+  instance each owning module constructs (e.g. `tracefork.matcher.MATCHER_REGISTRY`), or the
+  equivalent per-group free function (`load_<thing>_entry_points`, `get_<thing>`,
+  `register_<thing>`, `registered_<things>` — e.g.
+  `tracefork.matcher.load_matcher_entry_points`) — and neither the registry instances nor these
+  functions are re-exported from top-level `tracefork`. By `docs/stability.md` §1's
+  submodule-import rule that makes them internal today, even though they're stable in practice
+  and this document's own Quick reference below uses them. Constructing your own
+  `Registry(group, kind=...)` does not help — it's a distinct, empty registry, not the module's
+  real one. Until the per-group registries and convenience functions are re-exported at the top
+  level (tracked as a follow-up, not yet done), treat the per-group submodule import
+  (`tracefork.matcher.load_matcher_entry_points` and its four siblings per group) as the
+  practical way to use this API, understanding it isn't SemVer-frozen by name today.
 * **Internal, not covered:** the concrete built-in registrations themselves
   (which providers/oracles/matchers/serializers/adapters ship, their exact
   names, and their implementation details) may change between minor versions

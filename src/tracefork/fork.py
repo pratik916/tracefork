@@ -4,8 +4,12 @@
 but intercepts its requests in three phases:
 
   1. prefix   (requests 0..k-1) — replayed from the parent tape, $0, and the
-     request body is sha256-asserted to match (the agent is deterministic up
-     to the fork point, so this must hold or the agent code changed);
+     request is fingerprint-asserted to match via a `RequestMatcher`
+     (`matcher.py`; default `IdentityMatcher`, raw sha256 — the pre-seam
+     contract) so a canonicalizing/redacting parent tape divergence-asserts
+     correctly instead of comparing raw bytes it never stored (the agent is
+     deterministic up to the fork point, so this must hold or the agent code
+     changed);
   2. mutation (request k = divergence_step) — the request still matches the
      parent (the agent hasn't seen the mutated response yet), but instead of
      the recorded response we serve `spec.mutated_response`;
@@ -81,6 +85,7 @@ from .constants import (
     CONFINEMENT_TIER_GUARDED,
     CONFINEMENT_TIER_NONE,
 )
+from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError
 from .observability import instrument
 from .tape import Tape, sha256_hex
@@ -191,28 +196,33 @@ class ForkTransport(httpx.BaseTransport):
         mutated_response: bytes,
         delta_tape: Tape,
         inner: httpx.BaseTransport,
+        matcher: RequestMatcher | None = None,
     ) -> None:
         self.parent = parent_tape
         self.k = divergence_step
         self.mutated = mutated_response
         self.delta = delta_tape
         self.inner = inner
+        # Default is identity: raw sha256(request.content) — the pre-seam
+        # contract, same fallback `transport.py`'s transports use.
+        self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self._i = 0
         self.prefix_replayed = 0
         self.tail_recorded = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        body = request.content
         i = self._i
         self._i += 1
 
         if i < self.k:
             # prefix — replay from parent, assert the agent rebuilt it exactly
             rec_req, rec_resp = self.parent.exchange(i)
-            if sha256_hex(rec_req) != sha256_hex(body):
+            rec_fp = self.matcher.stored_fingerprint(rec_req)
+            live_fp = self.matcher.live_fingerprint(request)
+            if rec_fp != live_fp:
                 raise DivergenceError(
                     f"fork prefix request #{i} diverged from parent tape "
-                    f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]}); "
+                    f"(recorded {rec_fp[:12]}, replay {live_fp[:12]}); "
                     f"the agent is not deterministic up to divergence_step {self.k}"
                 )
             self.prefix_replayed += 1
@@ -221,18 +231,22 @@ class ForkTransport(httpx.BaseTransport):
         if i == self.k:
             # divergence point — same request, mutated response
             rec_req, _ = self.parent.exchange(i)
-            if sha256_hex(rec_req) != sha256_hex(body):
+            rec_fp = self.matcher.stored_fingerprint(rec_req)
+            live_fp = self.matcher.live_fingerprint(request)
+            if rec_fp != live_fp:
                 raise DivergenceError(
                     f"fork request at divergence_step {i} diverged from parent tape "
-                    f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]})"
+                    f"(recorded {rec_fp[:12]}, replay {live_fp[:12]})"
                 )
-            self.delta.append_exchange(body, self.mutated)
+            stored_req = self.matcher.stored_request(request)
+            self.delta.append_exchange(stored_req, self.mutated)
             return _json_response(self.mutated, request)
 
         # tail — counterfactual territory, record fresh
         inner_resp = self.inner.handle_request(request)
         resp_body = inner_resp.read()
-        self.delta.append_exchange(body, resp_body)
+        stored_req = self.matcher.stored_request(request)
+        self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
         return httpx.Response(
             inner_resp.status_code,
@@ -319,6 +333,7 @@ class CoalitionForkTransport(httpx.BaseTransport):
         spec: CoalitionSpec,
         delta_tape: Tape,
         inner: httpx.BaseTransport,
+        matcher: RequestMatcher | None = None,
     ) -> None:
         self.parent = parent_tape
         self.spec = spec
@@ -326,23 +341,27 @@ class CoalitionForkTransport(httpx.BaseTransport):
         self.first_step = spec.first_step
         self.delta = delta_tape
         self.inner = inner
+        # Default is identity: raw sha256(request.content) — the pre-seam
+        # contract, same fallback `transport.py`'s transports use.
+        self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self._i = 0
         self.prefix_replayed = 0
         self.tail_recorded = 0
         self.interventions_applied = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        body = request.content
         i = self._i
         self._i += 1
 
         if i < self.first_step:
             # prefix — replay from parent, assert the agent rebuilt it exactly
             rec_req, rec_resp = self.parent.exchange(i)
-            if sha256_hex(rec_req) != sha256_hex(body):
+            rec_fp = self.matcher.stored_fingerprint(rec_req)
+            live_fp = self.matcher.live_fingerprint(request)
+            if rec_fp != live_fp:
                 raise DivergenceError(
                     f"coalition fork prefix request #{i} diverged from parent tape "
-                    f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]}); "
+                    f"(recorded {rec_fp[:12]}, replay {live_fp[:12]}); "
                     f"the agent is not deterministic up to the coalition's first "
                     f"intervention {self.first_step}"
                 )
@@ -352,28 +371,32 @@ class CoalitionForkTransport(httpx.BaseTransport):
         if i == self.first_step:
             # first intervention — same request as the parent, forced response
             rec_req, _ = self.parent.exchange(i)
-            if sha256_hex(rec_req) != sha256_hex(body):
+            rec_fp = self.matcher.stored_fingerprint(rec_req)
+            live_fp = self.matcher.live_fingerprint(request)
+            if rec_fp != live_fp:
                 raise DivergenceError(
                     f"coalition fork request at first intervention {i} diverged from "
-                    f"parent tape (recorded {sha256_hex(rec_req)[:12]}, replay "
-                    f"{sha256_hex(body)[:12]})"
+                    f"parent tape (recorded {rec_fp[:12]}, replay {live_fp[:12]})"
                 )
             mutated = self._interventions[i]
-            self.delta.append_exchange(body, mutated)
+            stored_req = self.matcher.stored_request(request)
+            self.delta.append_exchange(stored_req, mutated)
             self.interventions_applied += 1
             return _json_response(mutated, request)
 
         if i in self._interventions:
             # a later coalition member — force it, no assertion (already diverged)
             mutated = self._interventions[i]
-            self.delta.append_exchange(body, mutated)
+            stored_req = self.matcher.stored_request(request)
+            self.delta.append_exchange(stored_req, mutated)
             self.interventions_applied += 1
             return _json_response(mutated, request)
 
         # tail — counterfactual territory beyond the coalition, record fresh
         inner_resp = self.inner.handle_request(request)
         resp_body = inner_resp.read()
-        self.delta.append_exchange(body, resp_body)
+        stored_req = self.matcher.stored_request(request)
+        self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
         return httpx.Response(
             inner_resp.status_code,
@@ -412,11 +435,15 @@ class RebaseTransport(httpx.BaseTransport):
         new_parent_tape: Tape,
         delta_tape: Tape,
         inner: httpx.BaseTransport,
+        matcher: RequestMatcher | None = None,
     ) -> None:
         self.old_branch = old_branch
         self.new_parent = new_parent_tape
         self.delta = delta_tape
         self.inner = inner
+        # Default is identity: raw sha256(request.content) — the pre-seam
+        # contract, same fallback `transport.py`'s transports use.
+        self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
         self.first_step = old_branch.divergence_step
         self._intervened = set(old_branch.intervened_steps)
 
@@ -426,14 +453,19 @@ class RebaseTransport(httpx.BaseTransport):
             old_branch.divergence_step + j: exch
             for j, exch in enumerate(old_branch.delta_tape.exchanges)
         }
-        # Fingerprint (raw sha256 of the request bytes) -> FIFO queue of
-        # responses, built ONLY from the tail portion (steps that were NOT
-        # force-intervened) of the old branch's delta_tape -- the reuse
-        # candidates for a genuinely-new request during rebase.
+        # Fingerprint (via this same matcher, applied to the OLD branch's
+        # own STORED request bytes) -> FIFO queue of responses, built ONLY
+        # from the tail portion (steps that were NOT force-intervened) of
+        # the old branch's delta_tape -- the reuse candidates for a
+        # genuinely-new request during rebase. Using `stored_fingerprint`
+        # here (not raw sha256) keeps this queue's keys comparable to the
+        # `live_fingerprint` looked up in `handle_request` below when a
+        # non-identity matcher is in play.
         self._tail_fp_queue: dict[str, deque[bytes]] = {}
         for step, (req, resp) in self._old_by_step.items():
             if step not in self._intervened:
-                self._tail_fp_queue.setdefault(sha256_hex(req), deque()).append(resp)
+                fp = self.matcher.stored_fingerprint(req)
+                self._tail_fp_queue.setdefault(fp, deque()).append(resp)
 
         self._i = 0
         self.prefix_replayed = 0
@@ -442,42 +474,45 @@ class RebaseTransport(httpx.BaseTransport):
         self.tail_recorded = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        body = request.content
         i = self._i
         self._i += 1
 
         if i < self.first_step:
             # unchanged prefix — replay from the NEW parent, assert it still matches
             rec_req, rec_resp = self.new_parent.exchange(i)
-            if sha256_hex(rec_req) != sha256_hex(body):
+            rec_fp = self.matcher.stored_fingerprint(rec_req)
+            live_fp = self.matcher.live_fingerprint(request)
+            if rec_fp != live_fp:
                 raise DivergenceError(
                     f"rebase prefix request #{i} diverged from the new parent tape "
-                    f"(recorded {sha256_hex(rec_req)[:12]}, replay {sha256_hex(body)[:12]}); "
+                    f"(recorded {rec_fp[:12]}, replay {live_fp[:12]}); "
                     f"the new parent's prefix moved before the fork point {self.first_step}"
                 )
             self.prefix_replayed += 1
             return _json_response(rec_resp, request)
 
+        stored_req = self.matcher.stored_request(request)
+
         if i in self._intervened:
             # re-force this step to its ORIGINAL response — no assertion, the
             # base may have legitimately moved here
             _old_req, old_resp = self._old_by_step[i]
-            self.delta.append_exchange(body, old_resp)
+            self.delta.append_exchange(stored_req, old_resp)
             self.interventions_applied += 1
             return _json_response(old_resp, request)
 
         # tail — try reusing the old branch's own tail exchange by fingerprint
         # match before paying for a live re-record
-        queue = self._tail_fp_queue.get(sha256_hex(body))
+        queue = self._tail_fp_queue.get(self.matcher.live_fingerprint(request))
         if queue:
             reused_resp = queue.popleft()
-            self.delta.append_exchange(body, reused_resp)
+            self.delta.append_exchange(stored_req, reused_resp)
             self.tail_reused += 1
             return _json_response(reused_resp, request)
 
         inner_resp = self.inner.handle_request(request)
         resp_body = inner_resp.read()
-        self.delta.append_exchange(body, resp_body)
+        self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
         return httpx.Response(
             inner_resp.status_code,
@@ -501,6 +536,7 @@ class ForkEngine:
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> Branch:
         """Fork `parent_tape` at `spec.divergence_step`.
 
@@ -522,6 +558,14 @@ class ForkEngine:
         left `False` — declaring the writable-roots/allowed-hosts surface the
         re-executed agent may touch during this fork's tail-record phase.
 
+        `matcher` (default `None`, byte-identical to before when left off —
+        resolves to `matcher.IDENTITY_MATCHER`, raw sha256) is the same
+        `RequestMatcher` seam `transport.py` uses: pass the SAME matcher
+        `parent_tape` was RECORDED with (see `Tape.provenance["matcher_name"]`)
+        so the prefix/mutation-point divergence assertions above compare
+        fingerprints the tape actually stores, not raw request bytes a
+        canonicalizing/redacting matcher never persisted.
+
         Returns a `Branch` whose `delta_tape` holds only the exchanges from the
         divergence step onward.
         """
@@ -535,7 +579,9 @@ class ForkEngine:
             agent_name=parent_tape.agent_name,
         )
         inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
-        fork_transport = ForkTransport(parent_tape, step, spec.mutated_response, delta_tape, inner)
+        fork_transport = ForkTransport(
+            parent_tape, step, spec.mutated_response, delta_tape, inner, matcher=matcher
+        )
 
         client = anthropic.Anthropic(
             api_key=api_key,
@@ -580,6 +626,7 @@ class ForkEngine:
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
+        matcher: RequestMatcher | None = None,
     ) -> Branch:
         """Fork `parent_tape` at a coalition of steps, forcing each to its own response.
 
@@ -599,6 +646,12 @@ class ForkEngine:
         is a `ConfinementSpec` that FORCES the guard active for the
         `agent_fn(client)` call even when `boundary_guard` is left `False`,
         same as `fork()`.
+
+        `matcher` (default `None`, byte-identical to before when left off) is
+        the same `RequestMatcher` seam `fork()` accepts — pass the SAME
+        matcher `parent_tape` was recorded with so the prefix/first-
+        intervention divergence assertions compare fingerprints the tape
+        actually stores, same rationale as `fork()`'s own `matcher` param.
         """
         n = len(parent_tape.exchanges)
         for step in spec.steps:
@@ -610,7 +663,9 @@ class ForkEngine:
             agent_name=parent_tape.agent_name,
         )
         inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
-        fork_transport = CoalitionForkTransport(parent_tape, spec, delta_tape, inner)
+        fork_transport = CoalitionForkTransport(
+            parent_tape, spec, delta_tape, inner, matcher=matcher
+        )
 
         client = anthropic.Anthropic(
             api_key=api_key,
@@ -654,6 +709,7 @@ class ForkEngine:
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
+        matcher: RequestMatcher | None = None,
     ) -> Branch:
         """Rebase `old_branch` onto `new_parent_tape` — the version-control-
         rebase analogue of `fork()`/`fork_coalition()`.
@@ -679,6 +735,12 @@ class ForkEngine:
         `boundary_guard` (default `False`, byte-identical to before when left
         off) wraps *only* the `agent_fn(client)` call in a fresh
         `BoundaryGuard`, same as `fork()`/`fork_coalition()`.
+
+        `matcher` (default `None`, byte-identical to before when left off) is
+        the same `RequestMatcher` seam `fork()`/`fork_coalition()` accept —
+        pass the SAME matcher `new_parent_tape` (and `old_branch`) were
+        recorded with so the prefix assertion and the tail fingerprint-reuse
+        lookup compare fingerprints the tapes actually store.
         """
         step = old_branch.divergence_step
         if step < 0 or step > len(new_parent_tape.exchanges):
@@ -692,7 +754,9 @@ class ForkEngine:
             agent_name=new_parent_tape.agent_name,
         )
         inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
-        rebase_transport = RebaseTransport(old_branch, new_parent_tape, delta_tape, inner)
+        rebase_transport = RebaseTransport(
+            old_branch, new_parent_tape, delta_tape, inner, matcher=matcher
+        )
 
         client = anthropic.Anthropic(
             api_key=api_key,

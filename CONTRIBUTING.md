@@ -19,7 +19,7 @@ plus the dev toolchain (`pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`, `mypy`
 All of the following are offline and **$0** — no `ANTHROPIC_API_KEY`, no network:
 
 ```bash
-uv run pytest -q                        # full offline suite (65 tests, $0, no key)
+uv run pytest -q                        # full offline suite (1438 tests, $0, no key)
 uv run tracefork validate               # self-validation: blame vs injected, known faults
 uv run tracefork validate --check       # regression-gate vs experiments/validation_report_committed.json
 uv run ruff check .                     # lint
@@ -28,14 +28,32 @@ uv run mypy src/tracefork               # type check
 uv run python examples/demo_report.py   # generate the demo report (examples/demo_report.html)
 ```
 
-Run the full local gate before opening a PR:
+Run the single-receipt gate before opening a PR — it is the same one thing CI checks,
+so a green run here means CI will be green too:
+
+```bash
+bash scripts/e2e.sh
+```
+
+That's `uv sync`, lint, format check, type check, the full test suite with coverage,
+`scripts/check_executed_evidence.py` (CI's sentinel against faked-passing evidence),
+`tracefork validate --check`, the replay-fixture-corpus gate, `tracefork bench`, a
+package build + `twine check`, and a wheel-install smoke test — one PASS/FAIL verdict.
+For a faster inner loop while iterating, the individual commands it wraps still work on
+their own:
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run mypy src/tracefork && uv run pytest -q
 ```
 
-CI runs this same gate (plus `tracefork validate --check` and a package build) on every
-pull request.
+CI (`.github/workflows/ci.yml`) runs most of the same checks as `scripts/e2e.sh` — lint,
+format check, type check, tests + coverage with `--junit-xml`,
+`scripts/check_executed_evidence.py`, the `validate --check` regression gate, a package
+build, `twine check`, and the wheel-install smoke test — across Python 3.12/3.13/3.14,
+on every pull request. It does **not** separately run the replay-fixture-corpus gate
+(`tracefork replay --check`) or `tracefork bench`; `scripts/e2e.sh` is the strictly
+stronger local gate that also covers those two, which is why it — not the CI YAML — is
+the one command to run before opening a PR.
 
 ## Invariants a PR must respect
 
@@ -57,6 +75,12 @@ These are load-bearing for the project's claims and are enforced by review, not 
 If you're touching `src/tracefork/recorder.py`, `transport.py`, `fork.py`, or `blame.py`,
 re-read the relevant section of `CLAUDE.md` first — it documents the seams these files
 depend on.
+
+- **Adding, removing, or changing the signature of anything in `tracefork.__all__`, a CLI
+  command/flag, or the tape on-disk format is a SemVer-covered change.** Read
+  [`docs/stability.md`](docs/stability.md) first — it defines exactly what's covered and the
+  deprecation procedure a breaking change must follow (one minor release with a
+  `DeprecationWarning`/deprecation notice, removal only in the next major).
 
 ## Commit style
 
