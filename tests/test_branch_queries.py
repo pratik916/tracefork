@@ -280,3 +280,52 @@ def test_server_get_branch_related_returns_200_with_empty_lists_on_unknown_id(tm
         "ancestors": [],
         "siblings": [],
     }
+
+
+# ── save_tape's default created_at (tracefork item 28) ──────────────────────
+
+
+def test_save_tape_without_created_at_defaults_to_real_timestamp_not_prune_candidate(
+    tmp_path,
+):
+    """save_tape(tape, run_id=...) with no created_at used to default to '',
+    and prune()'s candidate filter is a plain string comparison
+    (created_at < older_than_iso) -- '' sorts before every non-empty
+    ISO-8601 string, so a tape recorded seconds ago was "older than the
+    year 2000" by that comparison. save_tape must now default created_at to
+    a real current-time ISO timestamp so a freshly-saved tape is never
+    returned as a prune candidate against a decades-old cutoff."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(_small_tape(b"fresh"), run_id="freshtape")
+
+        row = store._con.execute(
+            "SELECT created_at FROM tapes WHERE run_id=?", ("freshtape",)
+        ).fetchone()
+        assert row[0] != ""
+
+        report = store.prune(older_than_iso="2000-01-01T00:00:00+00:00", dry_run=True)
+        assert "freshtape" not in report.tapes_archived
+    finally:
+        store.close()
+
+
+def test_save_tape_explicit_created_at_still_honored(tmp_path):
+    """The default is purely additive: a caller that DOES pass created_at
+    keeps getting exactly that value, unmodified -- so the 209 existing
+    call sites that already thread a real created_at through (e.g.
+    bundle.py) are unaffected."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        store.save_tape(
+            _small_tape(b"old"), run_id="oldtape", created_at="1999-01-01T00:00:00+00:00"
+        )
+        row = store._con.execute(
+            "SELECT created_at FROM tapes WHERE run_id=?", ("oldtape",)
+        ).fetchone()
+        assert row[0] == "1999-01-01T00:00:00+00:00"
+
+        report = store.prune(older_than_iso="2000-01-01T00:00:00+00:00", dry_run=True)
+        assert "oldtape" in report.tapes_archived
+    finally:
+        store.close()

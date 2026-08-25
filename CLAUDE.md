@@ -10,7 +10,7 @@ step, and measure causal blame with confidence intervals — the instrument itse
 validated against runs with injected, known root-cause faults.
 
 **Current state: v1 built.** All five product pillars work offline and are tested
-(1306 tests, $0): streaming-capable record/replay with drift detection, the three-phase
+(1438 tests, $0): streaming-capable record/replay with drift detection, the three-phase
 fork engine, the causal blame engine with Wilson CIs and a budget governor, the
 single-file web report/UI, and the fault-injection self-validation suite (5 fault
 classes at 1.00 top-1 precision, plus a longer competing-fault fixture that measures
@@ -29,7 +29,7 @@ record/replay/fork are offline and $0 — **no `ANTHROPIC_API_KEY`, no network**
 
 ```bash
 uv sync --extra dev                  # install (anthropic, zstandard, typer, fastapi, uvicorn + pytest)
-uv run pytest -q                     # full offline suite (1306 tests)
+uv run pytest -q                     # full offline suite (1438 tests)
 uv run pytest tests/test_faults.py::test_validation_runner_fingers_fault_step -q   # one test
 uv run tracefork validate            # self-validation: blame vs injected, known faults
 uv run tracefork validate --check    # regression-gate vs experiments/validation_report_committed.json
@@ -759,6 +759,21 @@ The product lives in `src/tracefork/`:
   (`web/runs.html`, a plain multi-run dashboard/picker linking to `/?run_id=`).
   `report_session.py`'s session fork-board (`web/session_report.html`) is a separate
   template reusing `report.py`'s helpers, not part of this file.
+  **Workbench shell (`<!-- TF:shell -->` in `web/report.html`).** The page is a
+  three-region layout: a collapsible left rail (`#rail-left`, Timeline), a fixed
+  center panel (`#detail-panel`, Exchange Detail), and a collapsible right rail
+  (`#rail-right`) whose `role="tablist"` switches between Blame/Forks/Cost
+  (`selectRailTab`) — each tab a `hidden`-toggled `rail-tabpanel`, so exactly one
+  of `#blame-panel`/`#forktree-panel`/`#cost-panel` is visible at a time. Either
+  rail collapses to a 36px `.rail-expand` strip (`toggleRail`) with a
+  `writing-mode: vertical-rl` label, and both stack full-width on narrow
+  viewports (`@media` in the `<style>` block) instead of squeezing. Color is
+  driven entirely by CSS custom properties (`--surface`/`--text`/`--border`/
+  `--blue`/… ) redefined once under `[data-theme="light"]`; an inline
+  pre-paint script reads `localStorage`, falls back to
+  `prefers-color-scheme`, and stamps `<html data-theme>` before first paint to
+  avoid a flash, and `#theme-toggle` (`toggleTheme`) flips it at runtime. No
+  new JS library, no CDN — same vanilla-JS discipline as the rest of this file.
 - `wire.py` / `synthetic.py` — Anthropic wire-format builders and the offline
   Scripted/FaultAware fake transports, in the **package** so production never imports from
   `tests/`; `tests/fakes.py` re-exports them.

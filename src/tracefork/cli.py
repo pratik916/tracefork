@@ -772,7 +772,7 @@ def settlement_diff(
     ),
 ) -> None:
     """Export a winning fork's post-divergence tool-call side effects as a
-    portable, framework-agnostic settlement-diff artifact (tracefork-bge.69).
+    portable, framework-agnostic settlement-diff artifact.
 
     Loads the parent tape + branch via `TapeStore.load_tape`/`load_branch`
     (mirrors `diff`'s and `conflicts`' branch-mode loading), decodes
@@ -857,14 +857,14 @@ def report(
     """Generate a self-contained HTML report from a tape.
 
     When loaded via `run_id` (from `store`), the run's saved branches are
-    looked up and embedded as the report's fork-tree panel data
-    (tracefork-bge.15), together with the run's persisted causal edges
-    (`tracefork blame`'s saved blame/Shapley results, a free read — no
-    recompute) and each branch's full delta-tape detail, so the fork tree's
-    causal highlighting and click-to-inspect work with zero live server
-    (tracefork-bge.37). A branch whose cited fork point has drifted since it
-    was forked is surfaced as an explicit `{"error": "fork_point_drift", ...}`
-    marker rather than aborting the whole report. The `--tape` path has no
+    looked up and embedded as the report's fork-tree panel data, together
+    with the run's persisted causal edges (`tracefork blame`'s saved
+    blame/Shapley results, a free read — no recompute) and each branch's
+    full delta-tape detail, so the fork tree's causal highlighting and
+    click-to-inspect work with zero live server. A branch whose cited fork
+    point has drifted since it was forked is surfaced as an explicit
+    `{"error": "fork_point_drift", ...}` marker rather than aborting the
+    whole report. The `--tape` path has no
     store to look any of this up in — an honest, documented scope limit:
     those reports render an empty fork tree rather than a silently-populated
     one.
@@ -986,7 +986,7 @@ def receipt(
         help="Optional output path for a Shields.io endpoint-badge JSON derived from the receipt",
     ),
 ) -> None:
-    """Build a shareable, JSON-safe trust receipt for a tape (tracefork-bge.26).
+    """Build a shareable, JSON-safe trust receipt for a tape.
 
     Composes already-computed evidence — a fresh ($0) replay via --agent,
     plus `validation_report.json`/`bench_report.json` off disk if present —
@@ -1084,7 +1084,7 @@ def release_receipt(
         help="Directory the signed receipt JSON is written to, as <version>.json",
     ),
 ) -> None:
-    """Compose+sign a per-release trust receipt (tracefork-bge.50).
+    """Compose+sign a per-release trust receipt.
 
     Reads junit.xml/coverage.json/validation_report.json/bench_report.json off
     disk if present (an explicit absent marker otherwise), runs a fresh ($0,
@@ -1162,7 +1162,7 @@ def serve(
         [],
         "--allow-fork-agent",
         help="'name=module:fn', repeatable — allowlists an agent for the "
-        "click-to-fork server endpoints (tracefork-bge.36). Omit for today's "
+        "click-to-fork server endpoints. Omit for today's "
         "default: no agent allowlisted, every fork endpoint 403s.",
     ),
     allow_checkpoint_dir: list[str] = typer.Option(  # noqa: B008
@@ -2232,7 +2232,7 @@ def locate(
     ),
 ) -> None:
     """Locate a substring inside a tape (or its fork lineage) and print an
-    offline-checkable receipt (tracefork-bge.62): which exchange kind/index/
+    offline-checkable receipt: which exchange kind/index/
     side it was found in, plus blob_sha256/tape_digest -- hashes
     `Tape.digest()` itself already folds in, so any reader can re-hash the
     raw exchange bytes themselves and compare, no need to trust this command.
@@ -3093,7 +3093,7 @@ def _print_receipt(tape_path: Path, result, tape) -> None:
 def _print_trust_lines(tape) -> None:
     """Print the two trust/provenance lines (`Tape.boundary`/`content_redacted`)
     shared by the replay/verify receipt and the `report` command's terminal
-    echo (tracefork-bge.20) — a forensic-only or content-redacted tape must
+    echo — a forensic-only or content-redacted tape must
     not look identical to a verified one. Both fields are envelope metadata,
     never fed into `Tape.digest()` (see `tape.py`); this is a trust warning,
     not a pass/fail input.

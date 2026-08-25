@@ -9,14 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-08-25
 
+See [`docs/stability.md`](docs/stability.md) for what this project's SemVer promise
+covers, starting with this release.
+
 **tracefork graduates from Beta to Production/Stable.** This release ships no new
 product surface over 0.3.0 — it is a 1.0-readiness hardening pass that closes two
 real defects found during review (a draw hash-chain collision in `Tape.digest()`,
 and an unauthenticated, CSRF-reachable arbitrary-file-write path through the live
 checkpoint-tail endpoint), fixes a silent-divergence gap in the fork/blame CLI, and
 extends redaction to cover secrets read through `NondetSource` draws, not just HTTP
-bodies. Packaging metadata is re-pinned and made PEP 639-compliant. Suite: 1383
-tests passed (6 skipped), `validate --check` 1.00 top-1 across all five fault
+bodies. Packaging metadata is re-pinned and made PEP 639-compliant. Suite: 1438
+tests collected, 1432 passed (6 skipped), `validate --check` 1.00 top-1 across all five fault
 classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all green.
 
 ### Breaking

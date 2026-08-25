@@ -1046,8 +1046,11 @@ function renderCostProfile(data) {
 (async () => {
   try {
     DATA = await loadData();
-    document.getElementById('run-meta').textContent =
-      `${DATA.agent_name || 'unknown agent'} · ${DATA.exchanges.length} exchanges · ${DATA.created_at || ''}`;
+    document.getElementById('run-meta').textContent = [
+      DATA.agent_name || 'unknown agent',
+      `${DATA.exchanges.length} exchanges`,
+      DATA.created_at || null,
+    ].filter(Boolean).join(' · ');
     renderTimeline(DATA);
     renderScrubber(DATA);
     renderBlame(DATA);
