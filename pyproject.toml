@@ -1,6 +1,6 @@
 [project]
 name = "tracefork"
-version = "0.3.0"
+version = "1.0.0"
 description = "Time-travel debugger for AI agents: bit-exact record/replay, fork any step, causal blame with confidence intervals."
 requires-python = ">=3.12"
 dependencies = [
@@ -36,13 +36,13 @@ keywords = [
     "causal-inference", "anthropic", "observability", "determinism",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Debuggers",
     "Topic :: Software Development :: Testing",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -218,6 +218,27 @@ packages = ["src/tracefork"]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--strict-markers"
+# `filterwarnings = ["error", ...]` (turning every warning into a hard
+# failure) is deliberately NOT enabled yet. `server.py`'s `init_store` now
+# closes the previous global `_store` before reassigning (see
+# `if _store is not None: _store.close()`), which fixed the specific
+# repeated-`init_store()`-across-`test_cli_smoke.py` leak this pass could
+# verify -- but re-attempting the flip at the 1.0.0 gate (full suite,
+# `--junit-xml`, `--cov`) still reproduces the SAME class of failure the
+# original deferral predicted, from a DIFFERENT resource: an unclosed
+# `socket.socket` (not a database connection) triggers a
+# `PytestUnraisableExceptionWarning` at a nondeterministic GC pass,
+# attributed to whichever unrelated test happens to be running at the time
+# (`tests/test_faults.py::test_all_fault_classes_validate`,
+# `tests/test_conftest.py::test_real_create_connection_is_blocked`, and
+# others across two consecutive full-suite runs at the SAME commit --
+# proving it's GC-timing flake, not a real per-test regression). A flaky
+# gate is worse than no stricter gate for a project whose thesis is
+# determinism -- reverted the flip and left `--strict-markers` alone.
+# Re-attempt only after finding and closing the actual leaking socket
+# (likely an unclosed httpx/`TestClient` transport somewhere in the suite,
+# not yet located); see planning/HANDOFF.md.
 
 [tool.ruff]
 target-version = "py312"

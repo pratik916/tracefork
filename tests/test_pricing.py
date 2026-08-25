@@ -90,11 +90,11 @@ def test_bedrock_rates_lookup_matches_anthropic_direct_list_price():
 
 def test_bedrock_rates_scoped_lookup_does_not_leak_into_anthropic():
     # A Bedrock-prefixed id is not a first-party Anthropic model id -> scoped
-    # to "anthropic" it's a miss -> falls back to Sonnet, same as any unknown
-    # model (see test_known_model_wrong_provider_falls_back_to_sonnet).
+    # to "anthropic" it's a miss -> falls back to the fallback entry, same
+    # as any unknown model (see
+    # test_known_model_wrong_provider_falls_back_to_the_most_expensive_known_rate).
     assert pricing.get_rates("anthropic.claude-sonnet-4-6", "anthropic") == (
-        SONNET_INPUT_PER_TOKEN,
-        SONNET_OUTPUT_PER_TOKEN,
+        pricing.get_rates("claude-fable-5", "anthropic")
     )
 
 
@@ -111,22 +111,24 @@ def test_per_million_view_returns_stored_values():
 # ── unknown-model fallback (preserves pre-registry SONNET default) ───────────
 
 
-def test_unknown_model_falls_back_to_sonnet():
-    assert pricing.get_rates("totally-made-up-model") == (
-        SONNET_INPUT_PER_TOKEN,
-        SONNET_OUTPUT_PER_TOKEN,
+def test_unknown_model_falls_back_to_the_most_expensive_known_rate():
+    # Fail-safe fallback (item 27): an unrecognized model id resolves to
+    # the MOST EXPENSIVE known Anthropic rate, not Sonnet -- see
+    # pricing.json's "fallback" key and pricing.is_fallback_model().
+    assert pricing.get_rates("totally-made-up-model") == pricing.get_rates(
+        "claude-fable-5", "anthropic"
     )
+    assert pricing.is_fallback_model("totally-made-up-model") is True
 
 
-def test_none_model_falls_back_to_sonnet():
-    assert pricing.get_rates(None) == (SONNET_INPUT_PER_TOKEN, SONNET_OUTPUT_PER_TOKEN)
+def test_none_model_falls_back_to_the_most_expensive_known_rate():
+    assert pricing.get_rates(None) == pricing.get_rates("claude-fable-5", "anthropic")
 
 
-def test_known_model_wrong_provider_falls_back_to_sonnet():
+def test_known_model_wrong_provider_falls_back_to_the_most_expensive_known_rate():
     # gpt-4o is not an anthropic model → provider-scoped miss → fallback.
-    assert pricing.get_rates("gpt-4o", "anthropic") == (
-        SONNET_INPUT_PER_TOKEN,
-        SONNET_OUTPUT_PER_TOKEN,
+    assert pricing.get_rates("gpt-4o", "anthropic") == pricing.get_rates(
+        "claude-fable-5", "anthropic"
     )
 
 
@@ -134,7 +136,7 @@ def test_known_model_wrong_provider_falls_back_to_sonnet():
 
 
 def test_pricing_version_present():
-    assert pricing.pricing_version() == "2026-06b"
+    assert pricing.pricing_version() == "2026-08c"
 
 
 def test_registered_providers_and_models():

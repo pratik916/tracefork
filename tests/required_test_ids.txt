@@ -68,3 +68,8 @@ tests.test_selfaudit::test_no_unsanctioned_nondeterminism_calls_in_tracefork_sou
 # hand-rolled interval math.
 tests.test_property_ci_nesting::test_clopper_pearson_contains_jeffreys_unconditionally
 tests.test_property_ci_nesting::test_clopper_pearson_contains_wilson_and_agresti_coull_in_moderate_regime
+
+# validate's headline claim, exactly pinned across ALL five fault classes (not
+# just one) — 1.00 top-1 precision, 0.00 negative-control flip. This is the
+# most-quoted number in the README; it must never regress unnoticed.
+tests.test_faults::test_all_fault_classes_pin_exact_precision_and_flat_control

@@ -7,15 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-25
+
+**tracefork graduates from Beta to Production/Stable.** This release ships no new
+product surface over 0.3.0 — it is a 1.0-readiness hardening pass that closes two
+real defects found during review (a draw hash-chain collision in `Tape.digest()`,
+and an unauthenticated, CSRF-reachable arbitrary-file-write path through the live
+checkpoint-tail endpoint), fixes a silent-divergence gap in the fork/blame CLI, and
+extends redaction to cover secrets read through `NondetSource` draws, not just HTTP
+bodies. Packaging metadata is re-pinned and made PEP 639-compliant. Suite: 1383
+tests passed (6 skipped), `validate --check` 1.00 top-1 across all five fault
+classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all green.
+
 ### Breaking
 
-- `Tape.digest()`'s draw hash-chain framing changed (a fixed-width sha256 digest
-  now frames each draw's `kind`/`value` instead of an unescaped, variable-length
-  delimiter). **This changes the digest of any recorded tape whose `draws` is
-  non-empty** — a reproduced hash collision (two structurally different draw
-  logs hashing equal) made this the one release where a fingerprint change is
-  acceptable. Tapes with no draws are unaffected. If you have committed/pinned
-  tape digests from a pre-1.0.0 build, regenerate them.
+- **`Tape.digest()`'s draw hash-chain framing changed** (`tape.py`, `constants.
+  DIGEST_CHAIN_VERSION` 1 → 2): a fixed-width sha256 digest now frames each
+  draw's `kind`/`value` instead of an unescaped, variable-length delimiter,
+  closing a reproduced hash collision where two structurally different draw
+  logs hashed equal. **This changes the digest of any recorded tape whose
+  `draws` is non-empty** — this is the one release where a fingerprint change
+  is acceptable. Tapes with no draws (no `NondetSource` calls at all) are
+  byte-identical and unaffected. The versioned tape *envelope*
+  (`TAPE_FORMAT_VERSION`) is unchanged at v6 — every existing tape still
+  loads and replays with zero upcast/re-record needed; only its `digest()`
+  value may differ. If you have committed/pinned tape digests from a
+  pre-1.0.0 build, regenerate them (`tracefork replay --check` against your
+  own fixture corpus will tell you exactly which ones moved).
+- **Dependency floor raised: `anthropic>=0.109,<1`** (was `anthropic>=0.40`,
+  unbounded), **plus a new direct `httpx>=0.27,<1` requirement.** anthropic
+  1.0.0 (2026-08-20) moved off `httpx` onto Pydantic's `httpx2` fork, which
+  type-checks `client.copy(http_client=...)` against `httpx2.Client` —
+  `recorder.py`'s entire record seam depends on that exact idiom against a
+  real `httpx.Client`, so `anthropic>=1` is a hard incompatibility, not a
+  speculative cap. `httpx` was previously only an *implicit* transitive
+  dependency via anthropic; it is now declared directly since tracefork
+  itself subclasses `httpx.BaseTransport` and imports `httpx` in 17 modules.
+- **`GET /api/checkpoint/tail` is now default-deny (403).** Closes an
+  unauthenticated, CSRF-reachable GET that took a caller-supplied filesystem
+  path and, through `open_sqlite`'s `PRAGMA journal_mode=WAL` plus
+  `checkpoint.py`'s `executescript`-based "read-only" helpers, could actually
+  **write** to that path. `tracefork serve` now 403s the endpoint unless the
+  operator explicitly allowlists a directory via the new, repeatable
+  `--allow-checkpoint-dir <dir>` flag (same opt-in-only posture as
+  `--allow-fork-agent`); omitting it is the safe new default. If you rely on
+  live checkpoint tailing, add the flag naming your checkpoint directory.
+- **Redaction now also covers `NondetSource` draws, not just HTTP bodies.**
+  `get_env`/`read_file` route the bytes about to be stored (never what's
+  handed back to the live caller) through the same `redact_fn` a
+  `Recorder(redactor=...)` already wires for request/response bodies.
+  Previously, a redaction-enabled recording could still store a real secret
+  (e.g. `ANTHROPIC_API_KEY`) verbatim if the agent read it via
+  `NondetSource.get_env` rather than an HTTP header — that hole is closed. A
+  tape recorded **before** 1.0.0 with an unredacted secret in a draw is not
+  retroactively cleaned; re-record it if that's a concern. `redact_fn=None`
+  (no redactor configured) is byte-identical to before.
+
+### Fixed
+
+- **`ForkEngine.fork()`/`fork_coalition()`/`rebase()` and
+  `BlameEngine.rank()`/`shapley_rank()` now accept an optional `matcher=`**
+  (`fork.py`, `blame.py`), and the `fork`/`coalition-fork`/`blame` CLI
+  commands (`cli.py`) resolve it from the parent tape's recorded
+  `provenance["matcher_name"]`. Previously, forking or blaming a tape
+  recorded with a non-identity matcher (`--matcher gemini/bedrock/redacting`
+  via `tracefork proxy`, or any `Recorder(matcher=...)`) silently diverged on
+  every single trial, because the re-executed agent's requests were compared
+  with the default identity matcher instead of the one the tape was actually
+  recorded with. Tapes recorded with the (default) identity matcher are
+  unaffected.
+
+### Changed
+
+- **Packaging metadata brought to a real 1.0 bar** (`pyproject.toml`):
+  `Development Status :: 4 - Beta` → `5 - Production/Stable`; the deprecated
+  `License :: OSI Approved :: MIT License` Trove classifier is dropped —
+  `license = "MIT"` (a PEP 639 SPDX expression) is now the sole source of
+  truth for licensing, removing the ambiguity of declaring the same fact two
+  incompatible ways; adds a `Programming Language :: Python :: 3.14`
+  classifier.
+- **Wheel no longer ships the retired `tracefork_spike` package**
+  (`[tool.hatch.build.targets.wheel]`) — installing it as a second top-level
+  package on every user's `sys.path` risked a name collision with an
+  incompatible `Tape` class. Spike 0 stays runnable from a source checkout
+  (pytest's `pythonpath = ["src", "."]` and uv's editable install are
+  unaffected).
+- **sdist file selection is now an explicit denylist**
+  (`[tool.hatch.build.targets.sdist]`) instead of relying on `.gitignore`
+  inheritance — hatchling's default sweep selects by ignore *pattern*, not
+  git-tracking status, so an untracked file matching no ignore rule could
+  still ship verbatim in a built artifact. `docs/shepherd-gap-analysis.md`
+  (an intentionally-untracked local analysis that must never ship), plus
+  `.hypothesis/` and `.claude/`, are now excluded belt-and-suspenders
+  regardless of `.gitignore`'s own state.
+- **Coverage measurement excludes retired Spike 0 code**
+  (`[tool.coverage.run]`) — `src/tracefork_spike` no longer inflates the
+  reported coverage number with code that isn't part of the shipped product.
+- Shared dual-theme design tokens and contrast fixes across `web/report.html`,
+  `web/runs.html`, and `web/session_report.html` (visual polish only — no
+  API/data-shape change).
+
+### Upgrading from 0.3.x
+
+- **Every existing tape still loads and replays.** The versioned envelope
+  (`TAPE_FORMAT_VERSION`, still v6) didn't change — nothing needs re-recording
+  to be *readable*.
+- **A tape's `digest()` may have changed.** It changed if, and only if, that
+  tape has non-empty `draws` (i.e. its recording used `NondetSource` — clock,
+  uuid, random, env, or file draws). Re-verify/regenerate any pinned digest
+  with `tracefork replay --check <your-fixture-dir>`; a tape with no draws is
+  untouched.
+- **Pin `anthropic<1` if you haven't already.** `anthropic>=1.0` will now be
+  rejected at resolve time (`uv sync`/`pip install`) rather than silently
+  installing and breaking `Recorder` at import/record time.
+- **If you use `tracefork serve`'s live checkpoint tail**, add
+  `--allow-checkpoint-dir <dir>` — the endpoint now 403s by default.
+- **If you record through a non-identity matcher** (Gemini/Bedrock/redacting
+  proxy recordings), `fork`/`coalition-fork`/`blame` now work correctly out
+  of the box against those tapes — no CLI flag or workaround needed, the fix
+  reads the matcher straight from the tape's own `provenance`.
+- **If you use redaction** (`Recorder(redactor=...)`), newly-recorded tapes
+  now also redact secrets read via `NondetSource.get_env`/`read_file`.
+  Already-recorded (pre-1.0.0) tapes are unaffected by this change — the
+  redaction only applies going forward, at record time.
 
 ## [0.3.0] - 2026-07-17
 
@@ -725,7 +839,8 @@ everything below is additive around it: all engine internals stay byte-stable,
 - `src/tracefork_spike/` — the original Spike 0 that de-risked bit-exact, no-key replay
   within the declared determinism boundary.
 
-[Unreleased]: https://github.com/pratik916/tracefork/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pratik916/tracefork/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pratik916/tracefork/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/pratik916/tracefork/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pratik916/tracefork/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pratik916/tracefork/compare/v0.2.0...v0.2.1

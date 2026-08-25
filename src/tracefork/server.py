@@ -39,6 +39,8 @@ def get_store() -> TapeStore:
 
 def init_store(db_path: str = "store.db") -> None:
     global _store
+    if _store is not None:
+        _store.close()
     _store = TapeStore(db_path)
 
 

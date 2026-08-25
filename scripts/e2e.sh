@@ -44,6 +44,9 @@ rm -rf dist
 uv build
 uv run --with twine twine check dist/*
 
+echo "==> uv run python scripts/wheel_smoke.py --wheel dist/tracefork-*.whl"
+uv run python scripts/wheel_smoke.py --wheel dist/tracefork-*.whl
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════"
 echo "  PASS — tracefork end-to-end receipt: every gate green, \$0 spent."

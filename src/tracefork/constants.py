@@ -67,7 +67,7 @@ OPUS = "claude-opus-4-8"
 # (`tracefork/data/pricing.json`) MUST reproduce them exactly, so `BudgetGovernor`
 # behaviour is unchanged. The flat per-model `PRICING_TABLE` was replaced by the
 # provider-generic `(provider, model) -> rates` registry in `pricing.py`.
-PRICING_VERSION = "2026-06b"
+PRICING_VERSION = "2026-08c"
 SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
 SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
 HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
@@ -119,3 +119,20 @@ PROXY_BOUNDARY = "proxy-record-replay-v1"
 CONFINEMENT_TIER_NONE = "unconfined-v1"
 CONFINEMENT_TIER_GUARDED = "boundary-guard-v1"
 CONFINEMENT_TIER_DECLARED = "declared-allowlist-v1"
+
+# ── `validate --check` regression gate tolerance ────────────────────────────
+#
+# `cli.py`'s `validate --check` diffs a fresh `validate` run against
+# `experiments/validation_report_committed.json`. `ValidationRunner`/
+# `run_all_fault_classes` are fully deterministic given a fixed `k`/`n_runs`
+# (the injected faults and the fake LLMs they run against are scripted, no
+# `random`/`time`/network anywhere in the loop — see
+# `tests.test_faults::test_all_fault_classes_pin_exact_precision_and_flat_control`,
+# which pins every fault class's `top1_precision`/`negative_control_max_flip`
+# to the EXACT values 1.0/0.0, not just >=0.7). A ±0.15 tolerance on a
+# genuinely deterministic mechanism doesn't absorb noise — it just hides a
+# real regression up to 15 points before the gate notices, for a claim this
+# project's README quotes as its headline number. This tolerance exists only
+# to absorb floating-point summation-order jitter across process runs, not to
+# forgive a real precision drop.
+VALIDATE_CHECK_TOLERANCE = 0.02
