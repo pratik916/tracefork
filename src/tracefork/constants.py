@@ -26,8 +26,17 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # the URL path rather than the body (Gemini/Bedrock). Like `provenance`, it is
 # envelope/metadata only — NOT fed into `digest()` — so every existing tape's
 # content digest is unchanged, and v1-v5 tapes upcast to `[""] * len(exchanges)`.
+# v7 adds `response_status`/`response_content_type`: the real HTTP status code
+# and content-type captured at each exchange's real capture seam
+# (`transport.py`), parallel-indexed to `exchanges` — so a recorded non-2xx
+# response (e.g. a 429 rate-limit) replays with the SAME status/content-type
+# it was recorded with, instead of every replay response being hard-coded to
+# (200, "application/json"). Like `request_urls`, it is envelope/metadata
+# only — NOT fed into `digest()` — so every existing tape's content digest is
+# unchanged, and v1-v6 tapes upcast to `[200] * len(exchanges)` /
+# `["application/json"] * len(exchanges)`.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 6
+TAPE_FORMAT_VERSION = 7
 
 # ── digest() hash-chain framing ─────────────────────────────────────────────
 #

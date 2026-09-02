@@ -99,14 +99,19 @@ class TraceforkTransport(httpx.BaseTransport):
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
             stored_req = self.matcher.stored_request(request)
-            self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
+            resp_content_type = inner_resp.headers.get("content-type", "application/json")
+            self.tape.append_exchange(
+                stored_req,
+                stored_resp,
+                request_url=str(request.url),
+                response_status=inner_resp.status_code,
+                response_content_type=resp_content_type,
+            )
             if self.on_exchange is not None:
                 self.on_exchange(stored_req, stored_resp)
             return httpx.Response(
                 inner_resp.status_code,
-                headers={
-                    "content-type": inner_resp.headers.get("content-type", "application/json")
-                },
+                headers={"content-type": resp_content_type},
                 content=resp_body,
                 request=request,
             )
@@ -126,8 +131,8 @@ class TraceforkTransport(httpx.BaseTransport):
                 self._i += 1
                 self.matched += 1
                 return httpx.Response(
-                    200,
-                    headers={"content-type": "application/json"},
+                    self.tape.exchange_status(self._i - 1),
+                    headers={"content-type": self.tape.exchange_content_type(self._i - 1)},
                     content=rec_resp,
                     request=request,
                 )
@@ -137,16 +142,21 @@ class TraceforkTransport(httpx.BaseTransport):
             resp_body = inner_resp.read()
             stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
             stored_req = self.matcher.stored_request(request)
-            self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
+            resp_content_type = inner_resp.headers.get("content-type", "application/json")
+            self.tape.append_exchange(
+                stored_req,
+                stored_resp,
+                request_url=str(request.url),
+                response_status=inner_resp.status_code,
+                response_content_type=resp_content_type,
+            )
             if self.on_exchange is not None:
                 self.on_exchange(stored_req, stored_resp)
             self._i += 1
             self.new_episodes_recorded += 1
             return httpx.Response(
                 inner_resp.status_code,
-                headers={
-                    "content-type": inner_resp.headers.get("content-type", "application/json")
-                },
+                headers={"content-type": resp_content_type},
                 content=resp_body,
                 request=request,
             )
@@ -165,17 +175,30 @@ class TraceforkTransport(httpx.BaseTransport):
                 f"request #{self._i} diverged from tape "
                 f"(recorded {rec_fp[:12]}, replay {live_fp[:12]})"
             )
+        rec_status = self.tape.exchange_status(self._i)
+        rec_content_type = self.tape.exchange_content_type(self._i)
         self._i += 1
         self.matched += 1
         return httpx.Response(
-            200,
-            headers={"content-type": "application/json"},
+            rec_status,
+            headers={"content-type": rec_content_type},
             content=rec_resp,
             request=request,
         )
 
     def fully_consumed(self) -> bool:
         return self.mode == "replay" and self._i == len(self.tape.exchanges)
+
+
+#: Default per-``.wait()`` bound for the ordered-release gate (see
+#: ``AsyncTraceforkTransport._replay``). Replay serves recorded bytes from
+#: memory (no real network I/O), so a legitimate concurrent replay's entire
+#: ordered-release choreography completes in microseconds — this is a
+#: generous "clearly stuck, not just slow" threshold, not a performance
+#: tuning knob. Re-armed on every loop iteration, so a genuinely-progressing
+#: replay (each `notify_all()` waking this task well within the bound) never
+#: trips it regardless of how many exchanges are in flight.
+DEFAULT_ORDERED_RELEASE_TIMEOUT_S = 5.0
 
 
 class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
@@ -201,6 +224,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         redactor: Redactor | None = None,
         release_order: list[int] | None = None,
         on_exchange: Callable[[bytes, bytes], None] | None = None,
+        ordered_release_timeout: float = DEFAULT_ORDERED_RELEASE_TIMEOUT_S,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -216,6 +240,12 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         # to before this hook existed.
         self.on_exchange = on_exchange
         self._release_order_param = release_order
+        # Bounds each individual `self._cond.wait()` below (see
+        # `DEFAULT_ORDERED_RELEASE_TIMEOUT_S`) so a reordered/diverged live
+        # schedule raises `DivergenceError` instead of hanging forever — the
+        # sync transport's equivalent divergence is already an immediate hard
+        # error; this closes the async gate's silent-hang gap to match.
+        self._ordered_release_timeout = ordered_release_timeout
         self._i = 0
         self.matched = 0
 
@@ -261,7 +291,14 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
 
         stored_resp = self.redactor.apply_response(resp_body) if self.redactor else resp_body
         stored_req = self.matcher.stored_request(request)
-        self.tape.append_exchange(stored_req, stored_resp, request_url=str(request.url))
+        resp_content_type = inner_resp.headers.get("content-type", "application/json")
+        self.tape.append_exchange(
+            stored_req,
+            stored_resp,
+            request_url=str(request.url),
+            response_status=inner_resp.status_code,
+            response_content_type=resp_content_type,
+        )
         if self.on_exchange is not None:
             self.on_exchange(stored_req, stored_resp)
         idx = len(self.tape.exchanges) - 1
@@ -283,7 +320,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
 
         return httpx.Response(
             inner_resp.status_code,
-            headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
+            headers={"content-type": resp_content_type},
             content=resp_body,
             request=request,
         )
@@ -322,22 +359,40 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
             )
         idx = queue.popleft()
         _rec_req, rec_resp = self.tape.exchange(idx)
+        rec_status = self.tape.exchange_status(idx)
+        rec_content_type = self.tape.exchange_content_type(idx)
 
         # Ordered-release gate: hold this response until it is this exchange's
         # turn in the recorded completion order. Sequential runs never wait (the
         # condition is already satisfied on arrival); a fan-out replays in the
-        # recorded order regardless of the live arrival order.
+        # recorded order regardless of the live arrival order. Each individual
+        # wait is bounded (`_ordered_release_timeout`) so a reordered/diverged
+        # live schedule — one where no other task will ever supply the exchange
+        # `_release_pos` is still waiting on — raises `DivergenceError` instead
+        # of hanging forever; a genuinely-progressing replay re-arms the bound
+        # on every loop iteration and is woken by `notify_all()` well within it.
         async with self._cond:
             while self._release_order[self._release_pos] != idx:
-                await self._cond.wait()
+                try:
+                    await asyncio.wait_for(self._cond.wait(), timeout=self._ordered_release_timeout)
+                except TimeoutError as e:
+                    expected_idx = self._release_order[self._release_pos]
+                    raise DivergenceError(
+                        f"async replay ordered-release gate timed out after "
+                        f"{self._ordered_release_timeout}s: exchange #{idx} is "
+                        f"waiting for exchange #{expected_idx} to release first "
+                        f"(recorded completion order position {self._release_pos}), "
+                        f"but no in-flight request ever supplied it — the live "
+                        f"request order has diverged from the recorded schedule"
+                    ) from e
             self._release_pos += 1
             self._i += 1
             self.matched += 1
             self._cond.notify_all()
 
         return httpx.Response(
-            200,
-            headers={"content-type": "application/json"},
+            rec_status,
+            headers={"content-type": rec_content_type},
             content=rec_resp,
             request=request,
         )

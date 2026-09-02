@@ -81,6 +81,8 @@ import uuid
 from collections.abc import Callable
 from typing import Protocol
 
+from .errors import TraceforkError
+
 #: Default cap for `RecordingNondet.read_file` (256 KiB). `read_file` is
 #: designed for small config/state files an agent reads mid-run, not bulk
 #: blobs -- a file over this cap raises `ReadFileTooLargeError` rather than
@@ -88,11 +90,11 @@ from typing import Protocol
 DEFAULT_MAX_READ_FILE_BYTES: int = 256 * 1024
 
 
-class DivergenceError(RuntimeError):
+class DivergenceError(RuntimeError, TraceforkError):
     """Raised when a replay diverges from the recorded tape."""
 
 
-class ReadFileTooLargeError(RuntimeError):
+class ReadFileTooLargeError(RuntimeError, TraceforkError):
     """Raised by `RecordingNondet.read_file` when the target file exceeds
     `max_read_file_bytes` -- raised BEFORE any read or draw append, so no
     partial/truncated draw ever lands on the tape."""

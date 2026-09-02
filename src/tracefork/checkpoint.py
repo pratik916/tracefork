@@ -45,6 +45,7 @@ import os
 from typing import Any
 
 from .constants import BOUNDARY_V1
+from .errors import TraceforkError
 from .tape import Tape, open_sqlite
 
 _CREATE_CHECKPOINT_SCHEMA = """
@@ -77,7 +78,7 @@ _CREATE_CHECKPOINT_SCHEMA = """
 CHECKPOINT_DIRS_ENV = "TRACEFORK_CHECKPOINT_DIRS"
 
 
-class CheckpointPathNotAllowedError(RuntimeError):
+class CheckpointPathNotAllowedError(RuntimeError, TraceforkError):
     """Raised when a checkpoint path isn't confined to an allowlisted directory."""
 
 

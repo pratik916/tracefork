@@ -54,6 +54,7 @@ import httpx
 from . import pricing
 from .boundary_guard import ConfinementSpec
 from .constants import SONNET
+from .errors import TraceforkError
 from .fork import BranchSpec, CoalitionSpec, ForkEngine, StepIntervention
 from .matcher import RequestMatcher
 from .nondet import find_divergence
@@ -139,6 +140,37 @@ def _beta_ppf(q: float, a: float, b: float) -> float:
         else:
             hi = mid
     return 0.5 * (lo + hi)
+
+
+def t_from_confidence(confidence: float, df: int) -> float:
+    """Two-sided critical t for a confidence level at `df` degrees of freedom,
+    e.g. `t_from_confidence(0.95, df=2)` → ≈4.303. Converges to
+    `z_from_confidence` as `df` grows large (the t distribution's normal
+    limit) -- at the small sample counts `_normal_ci` actually sees
+    (`m_samples` repeats, typically 2-3), using the normal z-quantile instead
+    understates the interval width by roughly 2x.
+
+    Derived from the standard two-sided-tail identity relating the
+    Student-t distribution to the regularized incomplete beta function
+    (Abramowitz & Stegun 26.7.1):
+
+        P(|T| > t) = I_{df/(df+t^2)}(df/2, 1/2)   for t >= 0
+
+    so the critical t solving `P(|T| > t_crit) = 1 - confidence` is
+    recovered by inverting the incomplete beta at `x = df/(df+t_crit^2)` via
+    the SAME `_beta_ppf` bisection `proportion_ci`'s Jeffreys/Clopper-Pearson
+    backends above already use (reuse, not a new numerical method), then
+    solving `x = df/(df+t^2)` for `t`.
+    """
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be in (0, 1)")
+    if df < 1:
+        raise ValueError(f"t distribution requires df >= 1, got {df}")
+    alpha = 1.0 - confidence
+    x = _beta_ppf(alpha, df / 2.0, 0.5)
+    if x <= 0.0:
+        return math.inf
+    return math.sqrt(df * (1.0 - x) / x)
 
 
 def binom_sf_ge(k: int, n: int, p: float) -> float:
@@ -256,13 +288,24 @@ def proportion_ci(
 
 
 def _normal_ci(values: list[float], confidence: float) -> tuple[float, float]:
-    """Mean ± z·(sample standard error) confidence interval over repeated
+    """Mean ± t·(sample standard error) confidence interval over repeated
     estimates of a quantity bounded to ``[-1, 1]`` (a Shapley marginal
     contribution is the difference of two flip-rate proportions, each in
     ``[0, 1]``). Degenerates to a point interval at ``[mean, mean]`` when there
     are fewer than two samples or the samples have zero variance — an honest
     reflection of a deterministic estimator (e.g. a fully-scripted offline
     trial), not a bug.
+
+    Uses the Student-t quantile at ``df = n - 1`` (``t_from_confidence``),
+    not the normal z-quantile: at the small ``m_samples`` repeat counts this
+    is actually called with (typically 2-3), the sample standard error
+    itself is a noisy estimate of the true standard error, and the t
+    distribution's heavier tails correctly widen the interval to account for
+    that extra uncertainty (e.g. t(2, .975) ≈ 4.303 vs z ≈ 1.96 — the normal
+    approximation understates this interval by roughly 2.2x). The name
+    ``_normal_ci`` is legacy (kept so the one caller below and this item's
+    own acceptance criteria don't need renaming); despite the name, this has
+    never used a literal normal quantile since this fix.
     """
     n = len(values)
     if n == 0:
@@ -274,8 +317,8 @@ def _normal_ci(values: list[float], confidence: float) -> tuple[float, float]:
     stderr = math.sqrt(variance / n)
     if stderr == 0.0:
         return (max(-1.0, mean), min(1.0, mean))
-    z = z_from_confidence(confidence)
-    return (max(-1.0, mean - z * stderr), min(1.0, mean + z * stderr))
+    t = t_from_confidence(confidence, df=n - 1)
+    return (max(-1.0, mean - t * stderr), min(1.0, mean + t * stderr))
 
 
 # ── Oracle protocol ─────────────────────────────────────────────────────────
@@ -471,7 +514,7 @@ class ConfinementRisk:
 # ── BudgetGovernor ──────────────────────────────────────────────────────────
 
 
-class BudgetExceededError(RuntimeError):
+class BudgetExceededError(RuntimeError, TraceforkError):
     """Raised when a blame run's estimated cost exceeds the caller's budget."""
 
 
@@ -528,6 +571,26 @@ def _avg_tokens(tape: Tape) -> tuple[float, float]:
     return (sum(ins) / n, sum(outs) / n)
 
 
+def _avg_cache_tokens(tape: Tape) -> tuple[float, float]:
+    """Average (cache_read, cache_creation) input tokens per exchange —
+    parsed directly from each recorded response's ``usage`` block via
+    ``pricing.parse_cache_tokens`` (0, 0) per exchange with no cache activity,
+    e.g. a tape recorded before prompt caching was in play). A separate
+    function from ``_avg_tokens`` rather than an extended return tuple: that
+    function's 2-tuple return shape is depended on directly by
+    ``tests/test_providers.py``, outside this change's scope to alter."""
+    if not tape.exchanges:
+        return (0.0, 0.0)
+    reads: list[int] = []
+    creations: list[int] = []
+    for _req, resp in tape.exchanges:
+        r, c = pricing.parse_cache_tokens(resp)
+        reads.append(r)
+        creations.append(c)
+    n = len(tape.exchanges)
+    return (sum(reads) / n, sum(creations) / n)
+
+
 class BudgetGovernor:
     @staticmethod
     def estimate(
@@ -577,9 +640,17 @@ class BudgetGovernor:
             est_usd = n_forks * cost_per_fork_usd
         else:
             billed_calls = sum(n_candidates - 1 - i for i in range(n_candidates)) * k * multiplier
-            in_rate, out_rate = pricing.get_rates(model or _detect_model(tape))
+            resolved_model = model or _detect_model(tape)
+            in_rate, out_rate = pricing.get_rates(resolved_model)
+            cache_read_rate, cache_write_rate = pricing.get_cache_rates(resolved_model)
             avg_in, avg_out = _avg_tokens(tape)
-            est_usd = billed_calls * (avg_in * in_rate + avg_out * out_rate)
+            avg_cache_read, avg_cache_creation = _avg_cache_tokens(tape)
+            est_usd = billed_calls * (
+                avg_in * in_rate
+                + avg_out * out_rate
+                + avg_cache_read * cache_read_rate
+                + avg_cache_creation * cache_write_rate
+            )
         return BlameEstimate(n_candidates=n_candidates, n_forks=n_forks, est_usd=est_usd)
 
     @staticmethod

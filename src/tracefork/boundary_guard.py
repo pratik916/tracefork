@@ -69,8 +69,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .errors import TraceforkError
 
-class BoundaryViolationError(RuntimeError):
+
+class BoundaryViolationError(RuntimeError, TraceforkError):
     """Raised when guarded code performs an operation that bypasses
     `NondetSource` (thread/subprocess spawn, or a direct `random`/clock read)
     while a `BoundaryGuard` is active."""

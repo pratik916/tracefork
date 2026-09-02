@@ -117,13 +117,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from .errors import TraceforkError
 from .tape import Tape, open_sqlite
 
 if TYPE_CHECKING:
     from .blame import BlameReport, ShapleyReport
 
 
-class TapeConflictError(RuntimeError):
+class TapeConflictError(RuntimeError, TraceforkError):
     """Raised by ``save_tape`` when a ``run_id`` is reused with content whose
     ``Tape.digest()`` differs from what's already stored, and ``overwrite`` was
     not set. Pass ``overwrite=True`` to replace the stored tape explicitly.
@@ -148,7 +149,7 @@ def _decode_intervened_steps(raw: str) -> tuple[int, ...]:
     return tuple(json.loads(raw))
 
 
-class ForkPointDriftError(RuntimeError):
+class ForkPointDriftError(RuntimeError, TraceforkError):
     """Raised by ``load_branch`` when a branch's stored ``parent_tape_digest``
     (the parent tape's ``Tape.digest()`` at fork time) no longer matches the
     parent tape's CURRENT digest — i.e. the fork point this branch cites has
@@ -283,6 +284,22 @@ CREATE TABLE IF NOT EXISTS branches (
     confinement_tier            TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(parent_run_id) REFERENCES tapes(run_id)
 );
+
+-- `list_branches(parent_run_id)` is the store's hottest read filter (backs
+-- `report.py`'s fork-tree panel and `cli.py branch`'s DAG-relationship
+-- queries). Composite on (parent_run_id, created_at DESC) rather than just
+-- parent_run_id: `list_branches` filters on parent_run_id AND orders by
+-- created_at DESC, and this column order lets SQLite satisfy BOTH straight
+-- off the index (rows for a given parent_run_id are already stored in
+-- created_at DESC order) — an index on parent_run_id alone would still need
+-- a `USE TEMP B-TREE FOR ORDER BY` pass after the filter. `parent_run_id` is
+-- a base `branches` column since the original schema (unlike branch_digest/
+-- confinement_tier/etc., which needed a guarded `ALTER TABLE` migration), so
+-- this index is safe to declare directly in `_DDL` for both a brand-new
+-- database and a pre-existing one (`CREATE INDEX IF NOT EXISTS` re-runs
+-- harmlessly every `TapeStore.__init__` against an already-indexed table).
+CREATE INDEX IF NOT EXISTS idx_branches_parent_run_id
+    ON branches(parent_run_id, created_at DESC);
 
 -- Soft-archive targets for `TapeStore.prune()` — a pruned row is moved here,
 -- never hard-deleted (mirrors git gc / borg prune's mark-and-sweep-with-

@@ -30,6 +30,7 @@ import httpx
 
 from .certificate import ReplayCertificate
 from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
+from .errors import TraceforkError
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError, find_divergence
 from .observability import instrument
@@ -43,7 +44,7 @@ class DriftCause(enum.Enum):
     BOUNDARY_VIOLATION = "boundary_violation"
 
 
-class ProvenanceMismatchError(RuntimeError):
+class ProvenanceMismatchError(RuntimeError, TraceforkError):
     """Raised when a tape's recorded `provenance` (see `tape.Tape.provenance`)
     disagrees with the replay-time configuration — currently just whether the
     same `RequestMatcher` is in use. Opt-in: only fires when the tape's

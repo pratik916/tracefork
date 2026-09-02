@@ -95,3 +95,103 @@ def test_version_is_exported_and_matches_installed_package():
     assert hasattr(tracefork, "__version__")
     assert tracefork.__version__ == metadata.version("tracefork")
     assert "__version__" in tracefork.__all__
+
+
+# ── TraceforkError base class + full exception hierarchy ───────────────────
+#
+# Every tracefork-raised exception subclasses `TraceforkError`, so
+# `except tracefork.TraceforkError` catches any of them generically. Existing
+# `except SpecificError`/`except RuntimeError`/`except ValueError` call sites
+# are unaffected: each specific class keeps its original base(s) via multiple
+# inheritance, TraceforkError is only ever an ADDED ancestor.
+#
+_EXPECTED_TRACEFORK_ERROR_SUBCLASSES = [
+    # (module, class name) -- not every one of these is top-level re-exported
+    # from `tracefork` yet (that's a separate, already-closed concern); this
+    # test only asserts the hierarchy itself.
+    ("tracefork.blame", "BudgetExceededError"),
+    ("tracefork.boundary_guard", "BoundaryViolationError"),
+    ("tracefork.boundary_guard", "ConfinementViolationError"),
+    ("tracefork.certificate", "ProofEnvelopeError"),
+    ("tracefork.checkpoint", "CheckpointPathNotAllowedError"),
+    ("tracefork.eventstream", "EventStreamError"),
+    ("tracefork.nondet", "DivergenceError"),
+    ("tracefork.nondet", "ReadFileTooLargeError"),
+    ("tracefork.replay", "ProvenanceMismatchError"),
+    ("tracefork.query", "QueryError"),
+    ("tracefork.store", "TapeConflictError"),
+    ("tracefork.store", "ForkPointDriftError"),
+    ("tracefork.fork_allowlist", "AgentNotAllowlistedError"),
+]
+
+
+def test_traceforkerror_is_top_level_importable():
+    from tracefork import TraceforkError as TopLevel
+    from tracefork.errors import TraceforkError
+
+    assert TopLevel is TraceforkError
+    assert issubclass(TraceforkError, Exception)
+    assert "TraceforkError" in tracefork.__all__
+
+
+def test_every_specific_exception_subclasses_traceforkerror():
+    import importlib
+
+    from tracefork import TraceforkError
+
+    missing = []
+    for module_name, class_name in _EXPECTED_TRACEFORK_ERROR_SUBCLASSES:
+        cls = getattr(importlib.import_module(module_name), class_name)
+        if not issubclass(cls, TraceforkError):
+            missing.append(f"{module_name}.{class_name}")
+    assert missing == [], f"not TraceforkError subclasses: {missing}"
+
+
+def test_confinement_violation_error_still_matches_boundary_violation_error():
+    """Multiple inheritance must not disturb the existing subclass
+    relationship `ConfinementViolationError(BoundaryViolationError)` — every
+    pre-existing `pytest.raises(BoundaryViolationError, ...)` call site must
+    keep matching a raised `ConfinementViolationError`."""
+    assert issubclass(tracefork.ConfinementViolationError, tracefork.BoundaryViolationError)
+    assert issubclass(tracefork.ConfinementViolationError, tracefork.TraceforkError)
+
+
+def test_specific_exceptions_keep_their_original_base_class():
+    """Adding TraceforkError as a second base must not remove the original
+    one -- an existing `except RuntimeError`/`except ValueError` clause must
+    keep catching these."""
+    assert issubclass(tracefork.BudgetExceededError, RuntimeError)
+    assert issubclass(tracefork.BoundaryViolationError, RuntimeError)
+    from tracefork.certificate import ProofEnvelopeError
+
+    assert issubclass(ProofEnvelopeError, ValueError)
+    from tracefork.checkpoint import CheckpointPathNotAllowedError
+
+    assert issubclass(CheckpointPathNotAllowedError, RuntimeError)
+    from tracefork.eventstream import EventStreamError
+
+    assert issubclass(EventStreamError, Exception)
+    assert issubclass(tracefork.DivergenceError, RuntimeError)
+    from tracefork.nondet import ReadFileTooLargeError
+
+    assert issubclass(ReadFileTooLargeError, RuntimeError)
+    from tracefork.replay import ProvenanceMismatchError
+
+    assert issubclass(ProvenanceMismatchError, RuntimeError)
+    from tracefork.query import QueryError
+
+    assert issubclass(QueryError, Exception)
+    assert issubclass(tracefork.TapeConflictError, RuntimeError)
+    assert issubclass(tracefork.ForkPointDriftError, RuntimeError)
+
+
+def test_except_traceforkerror_catches_a_specific_raised_error():
+    from tracefork import TraceforkError
+    from tracefork.query import QueryError
+
+    try:
+        raise QueryError("bad query")
+    except TraceforkError as e:
+        assert isinstance(e, QueryError)
+    else:
+        raise AssertionError("TraceforkError did not catch a raised QueryError")

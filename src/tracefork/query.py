@@ -37,6 +37,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .diff import branch_diff, tape_diff
+from .errors import TraceforkError
 from .report import _tape_to_data
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ __all__ = [
 _VERBS = ("state", "diff", "causes", "tree")
 
 
-class QueryError(Exception):
+class QueryError(TraceforkError):
     """Bad query syntax, an out-of-range step, an unknown verb, or an unknown
     run_id/branch_id -- always a clean, printable message, never a raw
     `KeyError`/`ValueError`/`IndexError` escaping `dispatch()`."""

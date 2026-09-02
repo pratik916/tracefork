@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 from . import pricing
 from .constants import SONNET
+from .errors import TraceforkError
 from .providers import get_adapter
 from .tape import Tape
 
@@ -24,7 +25,7 @@ from .tape import Tape
 FORK_AGENTS_ENV = "TRACEFORK_FORK_AGENTS"
 
 
-class AgentNotAllowlistedError(RuntimeError):
+class AgentNotAllowlistedError(RuntimeError, TraceforkError):
     """Raised when an `agent_name` isn't in the fork endpoint's allowlist."""
 
 

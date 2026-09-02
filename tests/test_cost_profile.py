@@ -157,6 +157,108 @@ def test_cli_report_auto_embeds_cost_profile(tmp_path):
     assert data["cost_profile"]["by_model"][0]["n_exchanges"] == 1
 
 
+def _text_response_with_cache(
+    adapter: AnthropicAdapter,
+    text: str,
+    *,
+    model: str = SONNET,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+) -> bytes:
+    """Same pattern the multi-tool test above already uses: build a normal
+    response then patch in the two cache usage fields the shared builder
+    doesn't accept (providers/ is outside this wave's file ownership --
+    see planning/HANDOFF.md and pricing.parse_cache_tokens's docstring)."""
+    raw = adapter.build_text_response(
+        text, model=model, input_tokens=input_tokens, output_tokens=output_tokens
+    )
+    data = json.loads(raw)
+    data["usage"]["cache_read_input_tokens"] = cache_read_input_tokens
+    data["usage"]["cache_creation_input_tokens"] = cache_creation_input_tokens
+    return json.dumps(data).encode()
+
+
+def test_compute_cost_profile_accounts_for_cache_tokens_at_cached_rate():
+    """The bead's own literal acceptance criterion: cost_profile.py's per-
+    model aggregation must price cache_read_input_tokens/
+    cache_creation_input_tokens at the cached rate, folded into
+    total_cost_usd, not silently ignored."""
+    from tracefork.pricing import get_cache_rates
+
+    adapter = AnthropicAdapter()
+    tape = Tape(agent_name="t")
+    tape.append_exchange(
+        b"{}",
+        _text_response_with_cache(
+            adapter,
+            "hi",
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_input_tokens=5000,
+            cache_creation_input_tokens=1000,
+        ),
+    )
+
+    profile = compute_cost_profile(tape)
+    model_cost = profile.by_model[0]
+    assert model_cost.cache_read_tokens == 5000
+    assert model_cost.cache_creation_tokens == 1000
+
+    in_rate, out_rate = get_rates(SONNET)
+    cache_read_rate, cache_write_rate = get_cache_rates(SONNET)
+    expected_cache_cost = 5000 * cache_read_rate + 1000 * cache_write_rate
+    expected_base_cost = 100 * in_rate + 20 * out_rate
+    assert abs(model_cost.cache_cost_usd - expected_cache_cost) < 1e-9
+    assert abs(model_cost.total_cost_usd - (expected_base_cost + expected_cache_cost)) < 1e-9
+    assert abs(profile.total_cost_usd - (expected_base_cost + expected_cache_cost)) < 1e-9
+    # Cache cost must be a real, nonzero addition -- not silently dropped.
+    assert model_cost.cache_cost_usd > 0
+
+
+def test_compute_cost_profile_zero_cache_tokens_is_byte_identical_to_before():
+    """Regression guard: a tape with no cache activity at all must produce
+    EXACTLY the same total_cost_usd as before this fix -- the new fields
+    default to 0/0.0 and contribute nothing."""
+    adapter = AnthropicAdapter()
+    tape = Tape(agent_name="t")
+    tape.append_exchange(
+        b"{}", adapter.build_text_response("hi", model=SONNET, input_tokens=100, output_tokens=20)
+    )
+    profile = compute_cost_profile(tape)
+    model_cost = profile.by_model[0]
+    assert model_cost.cache_read_tokens == 0
+    assert model_cost.cache_creation_tokens == 0
+    assert model_cost.cache_cost_usd == 0.0
+
+    in_rate, out_rate = get_rates(SONNET)
+    expected = 100 * in_rate + 20 * out_rate
+    assert abs(model_cost.total_cost_usd - expected) < 1e-9
+
+
+def test_cost_profile_to_dict_includes_cache_fields():
+    adapter = AnthropicAdapter()
+    tape = Tape(agent_name="t")
+    tape.append_exchange(
+        b"{}",
+        _text_response_with_cache(
+            adapter,
+            "hi",
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_input_tokens=200,
+            cache_creation_input_tokens=50,
+        ),
+    )
+    d = cost_profile_to_dict(compute_cost_profile(tape))
+    parsed = json.loads(json.dumps(d))  # JSON round-trip safety
+    row = parsed["by_model"][0]
+    assert row["cache_read_tokens"] == 200
+    assert row["cache_creation_tokens"] == 50
+    assert row["cache_cost_usd"] > 0
+
+
 def test_server_get_run_includes_cost_profile(tmp_path):
     from fastapi.testclient import TestClient
 

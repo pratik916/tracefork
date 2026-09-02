@@ -53,7 +53,7 @@ Python **3.12** via [uv](https://docs.astral.sh/uv/). Everything below is offlin
 ```bash
 uv sync --extra dev
 
-uv run pytest -q                       # full offline suite (1484 tests, $0)
+uv run pytest -q                       # full offline suite (1532 tests, $0)
 uv run tracefork validate              # blame vs injected, known-root-cause faults
 uv run tracefork bench                 # discrimination among competing causes
 uv run python examples/demo_report.py  # write examples/demo_report.html (the screenshot)
@@ -294,14 +294,14 @@ src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html       the single-file UI: Timeline rail, Exchange Detail panel, and a
                       tabbed Blame/Forks/Cost analysis rail (both rails collapsible)
 examples/             runnable demo that produces the report above
-tests/                1484 offline tests ($0, no key)
+tests/                1532 offline tests ($0, no key)
 experiments/          committed reference reports for the regression gates
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                       # all 1484 offline tests
+uv run pytest -q                       # all 1532 offline tests
 uv run tracefork validate --check      # regression-gate vs committed report
 uv run tracefork replay --check experiments/replay_fixtures  # replay-corpus gate
 uv run tracefork bench                 # competing-cause discrimination
