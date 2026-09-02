@@ -1,12 +1,12 @@
 {
-  "version": "2026-08c",
+  "version": "2026-08d",
   "unit": "usd_per_million_tokens",
   "note": "Pinned, bundled snapshot loaded OFFLINE (no network fetch). Curated subset of list prices. Anthropic rates MUST match tracefork.constants exactly (BudgetGovernor byte-identity). `bedrock` entries are Claude-on-Bedrock InvokeModel model ids (see providers/bedrock.py); on-demand global-endpoint Bedrock pricing for Claude models matches the Anthropic direct API list price dollar-for-dollar (Anthropic sets the price) -- the `global.`-prefixed keys are the literal ids AWS documents as the recommended default for these models; Bedrock's optional CRIS regional endpoints (`us.`/`eu.`/`jp.`/`apac.` prefixes) carry a documented +10% premium NOT modeled here. `fallback` deliberately points at the MOST EXPENSIVE known Anthropic rate (Claude Fable 5), not the mid-tier Sonnet default it used to: an unrecognized model id is far more likely to be a newer, pricier release this snapshot hasn't caught up to yet than a cheaper one, and silently under-pricing a real spend estimate is the wrong failure mode for a budget governor -- see pricing.py's is_fallback_model(). Update `version` when values change.",
   "fallback": { "provider": "anthropic", "model": "claude-fable-5" },
   "providers": {
     "anthropic": {
       "claude-sonnet-4-6": { "input": 3.0, "output": 15.0 },
-      "claude-sonnet-5": { "input": 3.0, "output": 15.0 },
+      "claude-sonnet-5": { "input": 2.0, "output": 10.0 },
       "claude-haiku-4-5-20251001": { "input": 1.0, "output": 5.0 },
       "claude-opus-4-6": { "input": 5.0, "output": 25.0 },
       "claude-opus-4-7": { "input": 5.0, "output": 25.0 },

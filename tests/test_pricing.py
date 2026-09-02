@@ -136,7 +136,7 @@ def test_known_model_wrong_provider_falls_back_to_the_most_expensive_known_rate(
 
 
 def test_pricing_version_present():
-    assert pricing.pricing_version() == "2026-08c"
+    assert pricing.pricing_version() == "2026-08d"
 
 
 def test_registered_providers_and_models():

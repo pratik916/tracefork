@@ -57,7 +57,7 @@ def test_current_generation_models_are_in_the_snapshot():
     since was silently mispriced via the Sonnet default. Regression guard."""
     for model, expected in [
         ("claude-opus-5", (5.0 / _MILLION, 25.0 / _MILLION)),
-        ("claude-sonnet-5", (3.0 / _MILLION, 15.0 / _MILLION)),
+        ("claude-sonnet-5", (2.0 / _MILLION, 10.0 / _MILLION)),
         ("claude-fable-5", (10.0 / _MILLION, 50.0 / _MILLION)),
         ("claude-mythos-5", (10.0 / _MILLION, 50.0 / _MILLION)),
         ("claude-opus-4-7", (5.0 / _MILLION, 25.0 / _MILLION)),

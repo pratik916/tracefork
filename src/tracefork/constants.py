@@ -100,7 +100,7 @@ OPUS = "claude-opus-4-8"
 # (`tracefork/data/pricing.json`) MUST reproduce them exactly, so `BudgetGovernor`
 # behaviour is unchanged. The flat per-model `PRICING_TABLE` was replaced by the
 # provider-generic `(provider, model) -> rates` registry in `pricing.py`.
-PRICING_VERSION = "2026-08c"
+PRICING_VERSION = "2026-08d"
 SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
 SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
 HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
