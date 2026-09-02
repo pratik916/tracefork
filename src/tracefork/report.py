@@ -6,12 +6,25 @@ into the HTML template as `window.__TRACEFORK_DATA__ = {...}`.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 from pathlib import Path
 
 from .providers import get_adapter
 
 _INJECT_MARKER = "</head>"
+
+# A 400-exchange run's report can run into the hundreds of MB uncompressed
+# (see `_maybe_compressed_inject_script`'s docstring) -- nobody hits this in
+# the demo/quickstart (a handful of exchanges), but it is a real ceiling on
+# the product's usable scale. 50 is a documented, tunable default: small
+# enough that a genuinely long real run gets compressed automatically,
+# large enough that the demo/quickstart/every offline test's small tapes
+# never take the gzip path (keeping their output byte-for-byte identical to
+# before this feature existed). `generate_report`'s
+# `compression_step_threshold` parameter lets a caller widen or narrow it.
+DEFAULT_COMPRESSION_STEP_THRESHOLD = 50
 
 # `branch_details` (branch_id -> full delta-tape report data) is, by far, the
 # largest contributor to a report's payload once a run has more than a
@@ -257,6 +270,42 @@ def _safe_json(data: dict) -> str:
     )
 
 
+def _gzip_b64(data: dict) -> str:
+    """gzip-compress `data`'s COMPACT (no `indent=`) JSON encoding and
+    base64-encode the result for embedding in a <script> tag.
+
+    Unlike `_safe_json`, no `< > &` escaping is needed: the base64 alphabet
+    (`A-Za-z0-9+/=`) contains none of those characters, so a `</script>`
+    breakout is structurally impossible here regardless of what the
+    recorded agent I/O contained -- the escaping problem `_safe_json` exists
+    to solve doesn't apply to this path at all.
+    """
+    raw = json.dumps(data).encode("utf-8")
+    compressed = gzip.compress(raw, compresslevel=9)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def _inject_script(data: dict, compression_step_threshold: int) -> str:
+    """Build the `<script>` block that seeds the report's data, taking the
+    gzip+base64 path (`window.__TRACEFORK_DATA_GZIP_B64__`) once
+    `len(data["exchanges"])` reaches `compression_step_threshold`, the plain
+    path (`window.__TRACEFORK_DATA__`, byte-for-byte the same as before this
+    feature existed) otherwise.
+
+    Measured (this repo's own fixtures, a real multi-turn conversation --
+    see README.md's "Scale envelope (measured)" table for the full numbers):
+    at 400 exchanges, gzip+base64 shrinks the injected payload by roughly
+    50x versus the equivalent `_safe_json` text. `web/report.html`'s
+    `loadData` decodes the compressed path via the standard
+    `DecompressionStream('gzip')` Web API -- no new dependency, matching
+    this project's "no CDN, no library" discipline for `web/*.html`.
+    """
+    if len(data.get("exchanges", [])) >= compression_step_threshold:
+        payload = json.dumps(_gzip_b64(data))  # a base64 string -- json.dumps just quotes it
+        return f"\n<script>\nwindow.__TRACEFORK_DATA_GZIP_B64__ = {payload};\n</script>\n"
+    return f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
+
+
 def generate_report(
     tape,
     output_path: Path,
@@ -271,6 +320,7 @@ def generate_report(
     causal_closure: list[dict] | None = None,
     run_id: str | None = None,
     branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
+    compression_step_threshold: int = DEFAULT_COMPRESSION_STEP_THRESHOLD,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
@@ -306,6 +356,12 @@ def generate_report(
     branches no longer silently balloons the report; exceeding it embeds a
     `branch_details_truncated` notice alongside the (still fully valid,
     just partial) `branch_details` dict.
+    `compression_step_threshold` (default `DEFAULT_COMPRESSION_STEP_THRESHOLD`)
+    is the exchange count at or above which the tape payload is gzip+base64
+    compressed instead of embedded as plain (HTML-escaped) JSON — see
+    `_inject_script`'s docstring. A report under the threshold is
+    byte-for-byte identical to what this function produced before this
+    feature existed.
     """
     html = _template_path().read_text(encoding="utf-8")
     data = _tape_to_data(
@@ -321,7 +377,7 @@ def generate_report(
         run_id,
         branch_details_cap_bytes,
     )
-    inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
+    inject = _inject_script(data, compression_step_threshold)
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

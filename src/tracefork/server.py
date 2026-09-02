@@ -29,6 +29,37 @@ from .store import ForkPointDriftError, TapeStore
 # neither needed nor desirable.
 app = FastAPI(title="tracefork", docs_url=None, redoc_url=None)
 
+# ── Content-Security-Policy (tracefork-sis.42) ──────────────────────────────
+#
+# These pages render recorded, potentially third-party agent I/O -- an
+# escaping miss (like the session_report.html attribute-breakout XSS,
+# tracefork-sis.41) escalates from "one field renders wrong" to "arbitrary
+# script reads the whole tape" without a CSP to contain it. No external
+# origin is allowed anywhere (script/style/img/connect all scoped to
+# 'self'/inline/data: only, matching this app's own same-origin, no-CORS
+# design above). `'unsafe-inline'` on script/style is the one necessary
+# exception -- every one of these reports is a single dependency-free HTML
+# file with its app code AND its templated data payload as inline
+# <script>/style="..." (see report.py's `_safe_json`), so there is no
+# external file for a nonce/hash scheme to target; this is not a carve-out
+# for anything beyond what the file's own architecture already requires.
+# Identical, byte-for-byte, to the <meta http-equiv="Content-Security-
+# Policy"> tag web/report.html / web/runs.html / web/session_report.html
+# each carry for the static (no server) case -- this header is
+# defense-in-depth for the LIVE-served case (a header can't be stripped by
+# an early injection the way a <meta> tag theoretically could be, and takes
+# effect before any HTML is even parsed).
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; "
+    "script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
 _store: TapeStore | None = None
 
 
@@ -177,7 +208,7 @@ async def serve_ui() -> HTMLResponse:
     # Empty server URL → the UI fetches same-origin (works on any --port).
     inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
     html = html.replace("</head>", inject + "</head>", 1)
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"Content-Security-Policy": CONTENT_SECURITY_POLICY})
 
 
 @app.get("/runs", response_class=HTMLResponse)
@@ -190,7 +221,7 @@ async def serve_runs_page() -> HTMLResponse:
     html = _runs_template_path().read_text(encoding="utf-8")
     inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
     html = html.replace("</head>", inject + "</head>", 1)
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"Content-Security-Policy": CONTENT_SECURITY_POLICY})
 
 
 @app.get("/api/runs")

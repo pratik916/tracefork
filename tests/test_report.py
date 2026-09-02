@@ -149,6 +149,100 @@ def test_report_blame_includes_trust_flags():
         assert step0["trustworthy"] is False
 
 
+# ── Wilson CI as the primary visual mark (v1.0.0 readiness item 52) ────────
+# Before this, the 80px bar encoded only the flip_rate point estimate and
+# the Wilson interval was 10px muted text; trials/q_value/p_value were in
+# the payload and rendered nowhere.
+
+
+def test_blame_ci_range_bar_replaces_the_point_estimate_only_bar():
+    tape = _make_tape()
+    blame = {0: {"flip_rate": 0.8, "ci_lo": 0.6, "ci_hi": 0.95}}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, blame=blame)
+        content = out.read_text()
+        assert "function blameCiBarHtml(info, isDecisive)" in content
+        assert "blame-ci-range" in content
+        assert "blame-ci-point" in content
+        # the old point-estimate-only bar (width sized to flip_rate alone,
+        # nothing marking the interval) must be gone, not just supplemented
+        # -- distinct from .blame-bar-wrap, the (still-present) outer
+        # wrapper class this new bar renders inside of.
+        assert 'class="blame-bar${' not in content
+        assert ".blame-bar {" not in content
+        assert ".blame-bar.decisive {" not in content
+
+
+def test_blame_ci_bar_encodes_lo_hi_as_left_and_width_not_just_the_point():
+    tape = _make_tape()
+    blame = {0: {"flip_rate": 0.8, "ci_lo": 0.6, "ci_hi": 0.95}}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, blame=blame)
+        content = out.read_text()
+        start = content.index("function blameCiBarHtml(info, isDecisive)")
+        body = content[start : start + 900]
+        assert "clamp01(info.ci_lo)" in body
+        assert "clamp01(info.ci_hi)" in body
+        assert "clamp01(info.flip_rate)" in body
+        # the range's CSS left/width come from lo/hi, the point's left from
+        # flip_rate -- both distinct visual encodings on the same mark
+        assert 'style="left:${lo}%;width:' in body
+        assert 'style="left:${point}%"' in body
+
+
+def test_blame_panel_surfaces_trials_p_value_q_value_when_present():
+    tape = _make_tape()
+    blame = {
+        0: {
+            "flip_rate": 0.8,
+            "ci_lo": 0.6,
+            "ci_hi": 0.95,
+            "trials": 12,
+            "p_value": 0.0123,
+            "q_value": 0.0456,
+        }
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, blame=blame)
+        content = out.read_text()
+        assert "function blameStatsHtml(info)" in content
+        assert "n=${info.trials}" in content
+        assert "p=${info.p_value.toFixed(3)}" in content
+        assert "q=${info.q_value.toFixed(3)}" in content
+        # data round-trips into the payload the function above reads
+        data = _extract_data(content)
+        assert data["blame"]["0"]["trials"] == 12
+        assert data["blame"]["0"]["p_value"] == 0.0123
+        assert data["blame"]["0"]["q_value"] == 0.0456
+
+
+def test_blame_stats_html_degrades_gracefully_when_fields_are_absent():
+    """A legacy/partial blame dict without trials/p_value/q_value must not
+    render blank/NaN gaps -- each field is independently optional."""
+    tape = _make_tape()
+    blame = {0: {"flip_rate": 0.8, "ci_lo": 0.6, "ci_hi": 0.95}}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, blame=blame)
+        content = out.read_text()
+        start = content.index("function blameStatsHtml(info)")
+        body = content[start : start + 500]
+        assert "typeof info.trials === 'number'" in body
+        assert "typeof info.p_value === 'number'" in body
+        assert "typeof info.q_value === 'number'" in body
+
+
+def test_render_blame_wires_the_new_bar_and_stats_helpers():
+    content = (_REPO_ROOT / "web" / "report.html").read_text()
+    start = content.index("function renderBlame(data)")
+    body = content[start : start + 1200]
+    assert "blameCiBarHtml(info, isDecisive)" in body
+    assert "blameStatsHtml(info)" in body
+
+
 def test_report_defaults_replay_to_empty_dict_when_not_provided():
     tape = _make_tape()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -528,3 +622,151 @@ def test_generate_report_branch_details_cap_bytes_param_threads_through():
         data = _extract_data(out.read_text())
     assert len(data["branch_details"]) < 10
     assert data["branch_details_truncated"] is not None
+
+
+# ── compressed payload for large runs (v1.0.0 readiness item 34) ───────────
+# Measured: report.py's _safe_json used indent=2 and no compression, so a
+# 400-step run's HTML report ran into the hundreds of MB. gzip+base64 (no
+# new dependency; web/report.html decodes it with the standard
+# DecompressionStream Web API) is dramatically smaller. A run under the
+# threshold must round-trip byte-for-byte identical to before this feature
+# existed (all the OTHER tests in this file already pin that -- this
+# section is additive, not a replacement).
+
+
+def _make_tape_n(n: int):
+    responses = [make_text_response(f"reply {i}") for i in range(n)]
+    fake = ScriptedFakeLLM(responses)
+    tape = Tape(agent_name="test_agent")
+    transport = TraceforkTransport("record", tape, fake)
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+    )
+    messages: list[dict] = []
+    for i in range(n):
+        messages.append({"role": "user", "content": f"question {i}"})
+        resp = client.messages.create(model="claude-sonnet-4-6", max_tokens=100, messages=messages)
+        messages.append({"role": "assistant", "content": resp.content[0].text})
+    return tape
+
+
+def _extract_gzip_b64_data(content: str) -> dict:
+    import base64
+    import gzip
+
+    marker = "window.__TRACEFORK_DATA_GZIP_B64__ = "
+    start = content.find(marker) + len(marker)
+    end = content.find(";\n", start)
+    b64 = json.loads(content[start:end])  # the payload is a JSON-quoted base64 string
+    return json.loads(gzip.decompress(base64.b64decode(b64)))
+
+
+def test_report_under_threshold_still_uses_the_plain_uncompressed_path():
+    tape = _make_tape_n(5)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, compression_step_threshold=50)
+        content = out.read_text()
+        assert "window.__TRACEFORK_DATA__ = " in content
+        assert "window.__TRACEFORK_DATA_GZIP_B64__ = " not in content
+        data = _extract_data(content)
+        assert len(data["exchanges"]) == 5
+
+
+def test_report_at_or_above_threshold_uses_the_gzip_b64_path():
+    tape = _make_tape_n(5)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        # a low threshold exercises the compressed path without a slow,
+        # huge test fixture
+        generate_report(tape, out, compression_step_threshold=5)
+        content = out.read_text()
+        assert "window.__TRACEFORK_DATA_GZIP_B64__ = " in content
+        assert "window.__TRACEFORK_DATA__ = " not in content
+        data = _extract_gzip_b64_data(content)
+        assert len(data["exchanges"]) == 5
+
+
+def test_gzip_b64_payload_decompresses_to_functionally_identical_data():
+    """The compressed report must decode to the EXACT same `_tape_to_data`
+    shape the uncompressed path embeds -- functionally identical, per this
+    item's own acceptance bar, not merely "close enough"."""
+    tape = _make_tape_n(6)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        uncompressed = Path(tmpdir) / "plain.html"
+        compressed = Path(tmpdir) / "gz.html"
+        generate_report(tape, uncompressed, compression_step_threshold=100)
+        generate_report(tape, compressed, compression_step_threshold=1)
+        plain_data = _extract_data(uncompressed.read_text())
+        gzip_data = _extract_gzip_b64_data(compressed.read_text())
+        assert gzip_data == plain_data
+
+
+def test_gzip_b64_payload_is_html_safe_with_no_escaping_needed():
+    """A base64 alphabet (A-Za-z0-9+/=) contains no `< > &` -- a
+    `</script>`-breakout payload in the recorded content must survive
+    compression with no special-casing (unlike _safe_json's escaping)."""
+    tape = _make_tape_n(3)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, compression_step_threshold=1)
+        content = out.read_text()
+        marker = "window.__TRACEFORK_DATA_GZIP_B64__ = "
+        start = content.find(marker) + len(marker)
+        end = content.find(";\n", start)
+        payload = content[start:end]
+        assert "</script" not in payload
+        assert "<" not in payload and ">" not in payload and "&" not in payload
+        # and it's a real, non-trivial base64 string, not an empty stub
+        assert len(payload) > 20
+
+
+def test_gzip_b64_payload_shrinks_a_large_report_dramatically():
+    """Real measured evidence, not just a structural assertion: the
+    compressed report file must actually be smaller than the uncompressed
+    one for the SAME data, by a wide margin."""
+    tape = _make_tape_n(60)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        uncompressed = Path(tmpdir) / "plain.html"
+        compressed = Path(tmpdir) / "gz.html"
+        generate_report(tape, uncompressed, compression_step_threshold=1_000_000)
+        generate_report(tape, compressed, compression_step_threshold=50)
+        uncompressed_size = uncompressed.stat().st_size
+        compressed_size = compressed.stat().st_size
+        assert compressed_size < uncompressed_size
+        # a conservative floor, real ratio measured far higher
+        assert uncompressed_size / compressed_size > 5
+
+
+def test_report_under_threshold_is_byte_for_byte_identical_to_default_behavior():
+    """The default `compression_step_threshold` must never change output for
+    small tapes -- every OTHER test in this file (written before this
+    feature existed) generates a report with NO threshold override at all,
+    so this pins that the new parameter's default keeps them passing."""
+    tape = _make_tape_n(3)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        default_call = Path(tmpdir) / "default.html"
+        explicit_high_threshold = Path(tmpdir) / "explicit.html"
+        generate_report(tape, default_call)
+        generate_report(tape, explicit_high_threshold, compression_step_threshold=10_000)
+        assert default_call.read_text() == explicit_high_threshold.read_text()
+
+
+def test_cli_report_defaults_to_the_plain_path_for_a_small_tape(tmp_path):
+    """The CLI's `report` command never passes `compression_step_threshold`
+    explicitly -- it must inherit generate_report's own default and use the
+    plain path for ordinary small demo/quickstart tapes."""
+    from typer.testing import CliRunner
+
+    from tracefork.cli import app
+
+    runner = CliRunner()
+    tape = _make_tape_n(3)
+    tape_path = tmp_path / "run.tape.sqlite"
+    tape.save(str(tape_path))
+    out = tmp_path / "report.html"
+    result = runner.invoke(app, ["report", "--tape", str(tape_path), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    content = out.read_text()
+    assert "window.__TRACEFORK_DATA__ = " in content
+    assert "window.__TRACEFORK_DATA_GZIP_B64__ = " not in content

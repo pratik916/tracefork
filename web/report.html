@@ -2,6 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- Content-Security-Policy: no external script/style/
+     img/connect origin is allowed anywhere -- this is a single, dependency-
+     free HTML file, its app code AND its templated data payload are both
+     inline (report.py's `_safe_json`), so 'unsafe-inline' on script/style
+     is the one necessary exception, not a carve-out for anything beyond
+     what this file's own architecture already requires. server.py sends
+     the equivalent policy (plus frame-ancestors, which browsers ignore in
+     a <meta> tag -- so it's omitted here) as a response header when
+     serving this same template live -- see its `CONTENT_SECURITY_POLICY`
+     constant. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>tracefork — time-travel debugger</title>
 <!-- TF:tokens -->
@@ -18,7 +29,8 @@
     --badge-info-bg: #1a2a3a; --badge-warn-bg: #3a3010;
     --badge-redacted-bg: #3a2a10;
     /* type tokens — --font-ui for chrome, --font-mono for code/data */
-    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial,
+      sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 15px;
     /* spacing scale, radius, focus ring */
@@ -43,6 +55,14 @@
   }
   :focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
   body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: var(--text-md); }
+  /* Skip link: the first focusable element in the document, off-screen
+     until it receives keyboard focus -- lets a keyboard/screen-reader user
+     jump straight past the header + Timeline rail to the Exchange Detail
+     `<main>` landmark instead of tabbing through every rail control first. */
+  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; background: var(--surface);
+               color: var(--text); padding: 8px 14px; border: 1px solid var(--border);
+               border-radius: 0 0 4px 0; text-decoration: none; font-size: var(--text-sm); }
+  .skip-link:focus { left: 0; }
   header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   header h1 { font-size: var(--text-lg); color: var(--green); }
   header .run-meta { color: var(--muted); font-size: var(--text-xs); }
@@ -51,12 +71,22 @@
                   border-radius: 3px; line-height: 1.3; }
   .theme-toggle:hover { border-color: var(--blue); }
 
+  /* App bar cross-nav — shared structure with runs.html so the three report
+     surfaces are reachable from one another, not islands. */
+  .app-nav { display: flex; align-items: center; gap: 10px; }
+  .app-nav-link { color: var(--muted); font-size: var(--text-xs); text-decoration: none;
+                   padding: 2px 5px; border-radius: 3px; }
+  .app-nav-link:hover, .app-nav-link:focus-visible { color: var(--text); text-decoration: underline; }
+  .app-nav-link[aria-current="page"] { color: var(--text); font-weight: bold; }
+  .app-nav-link[hidden] { display: none; }
+
   /* Workbench shell: 3-zone grid — collapsible LEFT RAIL (Timeline), CENTER
      exchange detail, collapsible RIGHT RAIL (tabbed Blame | Forks | Cost). */
   .layout { display: grid; grid-template-columns: auto 1fr auto; height: calc(100vh - 45px); }
   .panel { overflow-y: auto; }
   .panel-header { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
-                  font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+                  font-size: var(--text-xs); font-weight: normal; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.05em; }
   .rail { display: flex; min-height: 0; }
   .rail-left { width: 280px; border-right: 1px solid var(--border); }
   .rail-right { width: 320px; border-left: 1px solid var(--border); }
@@ -76,6 +106,13 @@
   .rail-expand-label { writing-mode: vertical-rl; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
   .rail-tabs { flex: 0 0 auto; display: flex; align-items: center; background: var(--surface);
                border-bottom: 1px solid var(--border); }
+  /* `role="tablist"` must contain ONLY `role="tab"` children -- the rail's
+     own collapse `.rail-toggle` button sits alongside it in `.rail-tabs`,
+     never inside it. `display: contents` makes `.rail-tablist`'s own box
+     disappear so its 3 `.rail-tab` children stay direct flex items of
+     `.rail-tabs` (unchanged layout) while the DOM/ARIA structure is
+     correct. */
+  .rail-tablist { display: contents; }
   .rail-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
               font-family: inherit; font-size: var(--text-xs); padding: 8px 12px 6px; cursor: pointer;
               text-transform: uppercase; letter-spacing: 0.05em; }
@@ -130,10 +167,18 @@
   .blame-rank { width: 20px; color: var(--muted); font-size: var(--text-xs); }
   .blame-info { flex: 1; }
   .blame-step { font-size: var(--text-sm); }
-  .blame-ci { font-size: 10px; color: var(--muted); }
+  .blame-ci { font-size: var(--text-xs); color: var(--muted); }
   .blame-bar-wrap { width: 80px; }
-  .blame-bar { height: 6px; background: var(--green); border-radius: 3px; }
-  .blame-bar.decisive { background: var(--red); }
+  /* The Wilson CI range is the PRIMARY visual mark: a
+     track spanning the [0,1] flip-rate domain, with a filled segment for
+     [ci_lo, ci_hi] and a tick for the flip_rate point estimate inside it --
+     not just a flat bar sized to the point estimate alone. */
+  .blame-ci-bar { position: relative; width: 80px; height: 10px; background: var(--bg);
+                   border: 1px solid var(--border); border-radius: 3px; }
+  .blame-ci-range { position: absolute; top: 3px; height: 4px; min-width: 2px; background: var(--green); border-radius: 2px; }
+  .blame-ci-range.decisive { background: var(--red); }
+  .blame-ci-point { position: absolute; top: 0; width: 2px; height: 10px; margin-left: -1px; background: var(--text); }
+  .blame-ci-point.decisive { background: var(--red); }
   .blame-rate { font-size: var(--text-xs); text-align: right; min-width: 50px; }
   .blame-rate.decisive { color: var(--red); font-weight: bold; }
   .blame-header-row { padding: 6px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
@@ -178,6 +223,15 @@
   .diff-path { color: var(--blue); font-family: var(--font-mono); }
   .diff-recorded { color: var(--red); }
   .diff-live { color: var(--green); }
+
+  /* Forks panel: step-aligned parent-vs-branch diff table (reuses
+     .diff-table's base layout; row accents + a changed/same status pill
+     are specific to this counterfactual-diff use). */
+  .fork-diff-table tr.diff-row-changed td:first-child { border-left: 3px solid var(--red); }
+  .fork-diff-table tr.diff-row-same td:first-child { border-left: 3px solid var(--border); }
+  .diff-status { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+  .diff-status.changed { background: var(--badge-fail-bg); color: var(--red); }
+  .diff-status.same { background: var(--badge-pass-bg); color: var(--green); }
   .trust-flags { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .trust-warn { color: var(--yellow); }
 
@@ -215,6 +269,20 @@
   .cost-row .cost-usd { color: var(--green); text-align: right; min-width: 60px; }
   .cost-total { padding: 10px 14px; font-size: var(--text-sm); font-weight: bold; border-top: 1px solid var(--border);
                 display: flex; justify-content: space-between; }
+
+  /* Keyboard-shortcut overlay ("?") */
+  .shortcuts-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 200;
+                        display: flex; align-items: center; justify-content: center; }
+  .shortcuts-overlay[hidden] { display: none; }
+  .shortcuts-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+                      padding: var(--sp-4); width: 90%; max-width: 360px; max-height: 80vh; overflow-y: auto; }
+  .shortcuts-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+                       margin-bottom: var(--sp-3); }
+  .shortcuts-header h2 { font-size: var(--text-md); }
+  .shortcuts-row { display: flex; align-items: center; gap: var(--sp-3); padding: 4px 0; font-size: var(--text-xs); }
+  .shortcuts-key { font-family: var(--font-mono); background: var(--bg); border: 1px solid var(--border);
+                    border-radius: 3px; padding: 1px 6px; min-width: 68px; text-align: center; flex: none; }
+  .shortcuts-desc { color: var(--muted); }
 
   /* ── Responsive breakpoints ──────────────────────────────────────────────
      Two breakpoints, kept at the SAME px values across report.html/
@@ -262,8 +330,12 @@
 </script>
 </head>
 <body>
+<a class="skip-link" href="#detail-panel">Skip to main content</a>
 <header>
   <h1>tracefork</h1>
+  <nav class="app-nav" aria-label="tracefork pages">
+    <a class="app-nav-link" id="nav-runs-link" href="/runs">Runs</a>
+  </nav>
   <span class="run-meta" id="run-meta">loading…</span>
   <span class="tag" id="mode-tag"></span>
   <span class="tag" id="replay-tag" onclick="jumpToDivergence()" title="click to rewind to the diverging step"></span>
@@ -272,46 +344,55 @@
   <button type="button" id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="toggle color theme" title="toggle color theme">◐</button>
 </header>
 <!-- TF:shell -->
+<!-- Landmarks: both rails are `<aside>` (implicit role="complementary") --
+     they hold SECONDARY panels (Timeline / Blame|Forks|Cost), never the
+     page's primary content, so `role="navigation"` (a set of navigational
+     links) was always the wrong landmark for them. The Exchange Detail
+     center panel is the actual primary content, so it -- and only it -- is
+     `<main>` (the skip link's target, `tabindex="-1"` so keyboard focus can
+     land on it directly since a `<main>` isn't natively focusable). -->
 <div class="layout" id="workbench">
-  <nav class="rail rail-left" id="rail-left" role="navigation" aria-label="Timeline rail">
+  <aside class="rail rail-left" id="rail-left" aria-label="Timeline">
     <div class="rail-body">
       <div class="panel" id="timeline-panel">
-        <div class="panel-header">Timeline
+        <h2 class="panel-header">Timeline
           <button type="button" class="rail-toggle" id="rail-left-toggle" onclick="toggleRail('left')" aria-label="collapse timeline rail" aria-expanded="true" title="collapse timeline rail">«</button>
-        </div>
+        </h2>
         <div id="timeline-scrubber"></div>
-        <div id="timeline-content"><div class="loading">loading…</div></div>
+        <div id="timeline-content" role="listbox" aria-label="Recorded exchanges"><div class="loading">loading…</div></div>
       </div>
     </div>
     <button type="button" class="rail-expand" id="rail-left-expand" onclick="toggleRail('left')" aria-label="expand timeline rail" title="expand timeline rail"><span aria-hidden="true">»</span><span class="rail-expand-label">Timeline</span></button>
-  </nav>
-  <div class="panel" id="detail-panel">
-    <div class="panel-header">Exchange Detail</div>
+  </aside>
+  <main class="panel" id="detail-panel" tabindex="-1">
+    <h2 class="panel-header">Exchange Detail</h2>
     <div id="detail-content"><div class="detail-empty">← select an exchange</div></div>
-  </div>
-  <nav class="rail rail-right" id="rail-right" role="navigation" aria-label="Analysis rail">
+  </main>
+  <aside class="rail rail-right" id="rail-right" aria-label="Analysis">
     <div class="rail-body">
-      <div class="rail-tabs" role="tablist" aria-label="Analysis panels">
-        <button type="button" class="rail-tab active" id="rail-tab-blame" role="tab" data-tab="blame" aria-selected="true" aria-controls="blame-panel" onclick="selectRailTab('blame')">Blame</button>
-        <button type="button" class="rail-tab" id="rail-tab-forks" role="tab" data-tab="forks" aria-selected="false" aria-controls="forktree-panel" onclick="selectRailTab('forks')">Forks</button>
-        <button type="button" class="rail-tab" id="rail-tab-cost" role="tab" data-tab="cost" aria-selected="false" aria-controls="cost-panel" onclick="selectRailTab('cost')">Cost</button>
+      <div class="rail-tabs">
+        <div class="rail-tablist" id="rail-tablist" role="tablist" aria-label="Analysis panels">
+          <button type="button" class="rail-tab active" id="rail-tab-blame" role="tab" data-tab="blame" aria-selected="true" aria-controls="blame-panel" tabindex="0" onclick="selectRailTab('blame')">Blame</button>
+          <button type="button" class="rail-tab" id="rail-tab-forks" role="tab" data-tab="forks" aria-selected="false" aria-controls="forktree-panel" tabindex="-1" onclick="selectRailTab('forks')">Forks</button>
+          <button type="button" class="rail-tab" id="rail-tab-cost" role="tab" data-tab="cost" aria-selected="false" aria-controls="cost-panel" tabindex="-1" onclick="selectRailTab('cost')">Cost</button>
+        </div>
         <button type="button" class="rail-toggle" id="rail-right-toggle" onclick="toggleRail('right')" aria-label="collapse analysis rail" aria-expanded="true" title="collapse analysis rail">»</button>
       </div>
       <div class="panel rail-tabpanel" id="blame-panel" role="tabpanel" data-tabpanel="blame" aria-labelledby="rail-tab-blame">
-        <div class="panel-header">Blame</div>
+        <h2 class="panel-header">Blame</h2>
         <div id="blame-content"><div class="blame-empty">run tracefork blame to populate</div></div>
       </div>
       <div class="panel rail-tabpanel" id="forktree-panel" role="tabpanel" data-tabpanel="forks" aria-labelledby="rail-tab-forks" hidden>
-        <div class="panel-header">Fork Tree</div>
+        <h2 class="panel-header">Fork Tree</h2>
         <div id="forktree-content"><div class="loading">loading…</div></div>
       </div>
       <div class="panel rail-tabpanel" id="cost-panel" role="tabpanel" data-tabpanel="cost" aria-labelledby="rail-tab-cost" hidden>
-        <div class="panel-header">Cost Profile</div>
+        <h2 class="panel-header">Cost Profile</h2>
         <div id="cost-content"><div class="loading">loading…</div></div>
       </div>
     </div>
     <button type="button" class="rail-expand" id="rail-right-expand" onclick="toggleRail('right')" aria-label="expand analysis rail" title="expand analysis rail"><span aria-hidden="true">«</span><span class="rail-expand-label">Analysis</span></button>
-  </nav>
+  </aside>
 </div>
 
 <script>
@@ -322,11 +403,6 @@ let DATA = null;
 // Zero-dependency building blocks for the workbench UI. Purely additive: the
 // existing globals and inline onclick handlers keep working exactly as before.
 const TF = {
-  // TF.esc / TF.escAttr — the file's existing escape()/escapeAttr(); every
-  // interpolated untrusted value goes through one of these (function
-  // declarations hoist, so these refs resolve even though they're below).
-  esc: escape,
-  escAttr: escapeAttr,
   // TF.h(tag, attrs, ...children) — hyperscript DOM builder: attributes via
   // setAttribute ('class' → className, on* function → addEventListener),
   // children appended as text nodes (never innerHTML) unless already Nodes.
@@ -430,11 +506,34 @@ function selectRailTab(name, persist) {
     const active = tab.getAttribute('data-tab') === name;
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', String(active));
+    // Roving tabindex (ARIA APG tabs pattern): only the SELECTED tab is a
+    // Tab-key stop; the others are reachable by Left/Right/Home/End once
+    // focus is already inside the tablist (see _onTablistKeydown below).
+    tab.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll('#rail-right .rail-tabpanel').forEach(panel => {
     panel.hidden = panel.getAttribute('data-tabpanel') !== name;
   });
   if (persist !== false) TF.store.set('tracefork-rail-tab', name);
+}
+
+// Arrow-key roving-tabindex navigation for the Analysis tablist (ARIA APG
+// "tabs with automatic activation" pattern: moving focus also selects).
+// Left/Right wrap around; Home/End jump to the first/last tab. Any other
+// key is left alone (e.g. Tab moves focus OUT of the tablist entirely, the
+// native/expected behaviour for a single roving stop).
+function _onTablistKeydown(e) {
+  const tabs = Array.from(document.querySelectorAll('#rail-right .rail-tab'));
+  const from = tabs.findIndex(t => t.classList.contains('active'));
+  let to = -1;
+  if (e.key === 'ArrowRight') to = (from + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft') to = (from - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') to = 0;
+  else if (e.key === 'End') to = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  selectRailTab(tabs[to].getAttribute('data-tab'));
+  tabs[to].focus();
 }
 
 // Restore persisted shell state and sync the theme glyph. Runs at script parse
@@ -445,9 +544,45 @@ function selectRailTab(name, persist) {
   _setRailCollapsed('right', TF.store.get('tracefork-rail-right', false) === true);
   selectRailTab(TF.store.get('tracefork-rail-tab', 'blame'), false);
   _syncThemeToggle();
+  const tablist = document.getElementById('rail-tablist');
+  if (tablist) tablist.addEventListener('keydown', _onTablistKeydown);
+  const timeline = document.getElementById('timeline-content');
+  if (timeline) timeline.addEventListener('keydown', _onTimelineKeydown);
 })();
 
+// App-bar Runs link: `/runs` is a live-server route (see server.py's
+// `serve_runs_page`), not a file that exists next to a static report --
+// hide it rather than ship a dead link when this page was opened as a
+// static, `window.__TRACEFORK_DATA__`-backed export. Runs synchronously (no
+// async data-load dependency) so the app bar is correct even if `loadData`
+// later fails.
+(function initAppNav() {
+  const link = document.getElementById('nav-runs-link');
+  if (link && window.__TRACEFORK_SERVER_URL__ === undefined) link.hidden = true;
+})();
+
+// Decodes report.py's `_gzip_b64` payload: base64 -> raw gzip bytes ->
+// DecompressionStream('gzip') -> UTF-8 text -> JSON.parse. Standard Web
+// Platform APIs only (no new dependency, matching this file's "no CDN, no
+// library" discipline) -- widely supported in evergreen browsers; a report
+// large enough to take this path is, by construction, from a real recorded
+// run, not the offline test suite's tiny fixtures (see
+// DEFAULT_COMPRESSION_STEP_THRESHOLD's docstring in report.py).
+async function _decompressGzipB64(b64) {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const text = await new Response(stream).text();
+  return JSON.parse(text);
+}
+
 async function loadData() {
+  if (window.__TRACEFORK_DATA_GZIP_B64__) {
+    // static mode, large run: gzip+base64-compressed payload (report.py's
+    // `_inject_script` -- see its docstring for the measured size win).
+    document.getElementById('mode-tag').textContent = 'static';
+    document.getElementById('mode-tag').className = 'tag tag-static';
+    return _decompressGzipB64(window.__TRACEFORK_DATA_GZIP_B64__);
+  }
   if (window.__TRACEFORK_DATA__) {
     // static mode: data injected at report-generation time
     document.getElementById('mode-tag').textContent = 'static';
@@ -482,7 +617,7 @@ function renderTimeline(data) {
       : '';
     const shapleyHtml = shapleyQuadrantHtml((data.shapley || {})[i]);
     const roleClass = ex.role === 'user' ? 'role-user' : ex.role === 'assistant' ? 'role-assistant' : 'role-tool';
-    return `<div class="exchange-item" data-i="${i}" onclick="selectExchange(${i})">
+    return `<div class="exchange-item" data-i="${i}" role="option" aria-selected="false" tabindex="-1" onclick="selectExchange(${i})">
       ${divergeHtml}${badgeHtml}${shapleyHtml}
       <div class="step">exchange ${i}</div>
       <div class="role ${roleClass}">${escape(ex.role || 'unknown')}</div>
@@ -582,7 +717,7 @@ function renderBlame(data) {
   const headerHtml = `<div class="blame-header-row">
     <span style="width:20px">rank</span>
     <span style="flex:1">step</span>
-    <span style="width:80px">bar</span>
+    <span style="width:80px">95% CI</span>
     <span style="min-width:50px;text-align:right">flip</span>
   </div>`;
   const rowsHtml = entries.map(([step, info], rank) => {
@@ -591,18 +726,53 @@ function renderBlame(data) {
     const pct = Math.round(rate * 100);
     const trustHtml = renderTrustFlags(info);
     const evidenceHtml = evidenceBadgeHtml(info);
+    const statsHtml = blameStatsHtml(info);
     return `<div class="blame-row">
       <span class="blame-rank">${rank+1}</span>
       <div class="blame-info">
         <div class="blame-step">step-${step}${evidenceHtml}</div>
-        <div class="blame-ci">95% CI [${info.ci_lo.toFixed(2)}, ${info.ci_hi.toFixed(2)}]</div>
+        <div class="blame-ci">95% CI [${info.ci_lo.toFixed(2)}, ${info.ci_hi.toFixed(2)}]${statsHtml}</div>
         ${trustHtml}
       </div>
-      <div class="blame-bar-wrap"><div class="blame-bar${isDecisive ? ' decisive' : ''}" style="width:${pct}%"></div></div>
+      <div class="blame-bar-wrap">${blameCiBarHtml(info, isDecisive)}</div>
       <div class="blame-rate${isDecisive ? ' decisive' : ''}">${pct}%</div>
     </div>`;
   }).join('');
   document.getElementById('blame-content').innerHTML = headerHtml + rowsHtml;
+}
+
+// The Wilson confidence interval is the PRIMARY visual mark here (a range
+// spanning ci_lo..ci_hi over the [0,1] flip-rate domain), not just the
+// flip_rate point estimate -- the statistical rigor blame.py's Wilson-CI
+// engine computes was previously invisible (a flat 80px bar sized to the
+// point estimate alone; the interval was 10px muted text underneath). The
+// point estimate is still shown too, as a tick mark inside the range, so
+// both are readable from one mark instead of two disconnected ones.
+function blameCiBarHtml(info, isDecisive) {
+  const clamp01 = (x) => Math.min(1, Math.max(0, x));
+  const lo = clamp01(info.ci_lo) * 100;
+  const hi = clamp01(info.ci_hi) * 100;
+  const point = clamp01(info.flip_rate) * 100;
+  const decisiveClass = isDecisive ? ' decisive' : '';
+  const title = `flip rate ${(info.flip_rate * 100).toFixed(1)}% · 95% CI [${(info.ci_lo * 100).toFixed(1)}%, ${(info.ci_hi * 100).toFixed(1)}%]`;
+  return `<div class="blame-ci-bar" title="${escapeAttr(title)}">
+      <div class="blame-ci-range${decisiveClass}" style="left:${lo}%;width:${Math.max(hi - lo, 1)}%"></div>
+      <div class="blame-ci-point${decisiveClass}" style="left:${point}%"></div>
+    </div>`;
+}
+
+// trials/p_value/q_value are computed by the same Wilson-CI/FDR engine
+// (blame.py's FlipRateResult) but were sitting in the payload, shown
+// nowhere. Each is independently optional -- an older/partial blame dict,
+// or a causal_edges row for a non-blame method sharing this render path,
+// may omit any of them -- so this renders only what's actually present
+// rather than a fixed-shape line with blank/NaN gaps.
+function blameStatsHtml(info) {
+  const parts = [];
+  if (typeof info.trials === 'number') parts.push(`n=${info.trials}`);
+  if (typeof info.p_value === 'number') parts.push(`p=${info.p_value.toFixed(3)}`);
+  if (typeof info.q_value === 'number') parts.push(`q=${info.q_value.toFixed(3)}`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
 // Shepherd-style Slice vocabulary: 'selected' reuses
@@ -664,10 +834,19 @@ function selectExchange(i) {
   // list's selected-step highlight would never render. The tick's own
   // .active state is handled separately by updateScrubberPosition below.
   if (_selected >= 0) {
-    document.querySelector(`#timeline-content [data-i="${_selected}"]`)?.classList.remove('active');
+    const prevRow = document.querySelector(`#timeline-content [data-i="${_selected}"]`);
+    prevRow?.classList.remove('active');
+    // Roving tabindex (ARIA APG listbox pattern): only the selected option
+    // is a Tab-key stop; the rest are reachable via Up/Down/Home/End once
+    // focus is already inside the listbox (see _onTimelineKeydown below).
+    prevRow?.setAttribute('aria-selected', 'false');
+    if (prevRow) prevRow.tabIndex = -1;
   }
   _selected = i;
-  document.querySelector(`#timeline-content [data-i="${i}"]`)?.classList.add('active');
+  const row = document.querySelector(`#timeline-content [data-i="${i}"]`);
+  row?.classList.add('active');
+  row?.setAttribute('aria-selected', 'true');
+  if (row) row.tabIndex = 0;
   const ex = DATA.exchanges[i];
   const reqJson = syntaxHighlight(JSON.stringify(ex.request || {}, null, 2));
   const respJson = syntaxHighlight(JSON.stringify(ex.response_preview || {}, null, 2));
@@ -689,6 +868,25 @@ function selectExchange(i) {
     </div>` + renderDivergencePanel(i);
   updateScrubberPosition(i);
   renderForkUi(i);
+}
+
+// Up/Down/Home/End roving-tabindex navigation for the Timeline listbox
+// (`#timeline-content[role="listbox"]`, ARIA APG "selection follows focus"
+// single-select pattern): moving focus also selects, mirroring the
+// Analysis tablist's _onTablistKeydown above. Delegated on the static
+// container (attached once at boot) rather than per-row, since rows are
+// re-rendered wholesale on every renderTimeline call.
+function _onTimelineKeydown(e) {
+  if (!DATA || DATA.exchanges.length === 0) return;
+  let to = -1;
+  if (e.key === 'ArrowDown') to = Math.min(_selected + 1, DATA.exchanges.length - 1);
+  else if (e.key === 'ArrowUp') to = Math.max(_selected - 1, 0);
+  else if (e.key === 'Home') to = 0;
+  else if (e.key === 'End') to = DATA.exchanges.length - 1;
+  else return;
+  e.preventDefault();
+  selectExchange(to);
+  document.querySelector(`#timeline-content [data-i="${to}"]`)?.focus();
 }
 
 // ── click-to-fork inline UI ──────────────────────────────────────────────────
@@ -804,9 +1002,16 @@ function renderScrubber(data) {
     const pct = (tickPosition(ex, i, n) * 100).toFixed(2);
     return `<div class="scrubber-tick" data-i="${i}" style="left:${pct}%" onclick="selectExchange(${i})" title="exchange ${i}"></div>`;
   }).join('');
+  // Reduced-motion hint: playPause() itself refuses to start the interval
+  // either way (defense in depth for the keyboard Space binding, which
+  // calls playPause() directly) -- this is purely the visible affordance
+  // matching that.
+  const reducedMotionTitle = _prefersReducedMotion()
+    ? 'autoplay disabled (prefers-reduced-motion) — step with j/k or the slider'
+    : 'play (Space)';
   el.innerHTML = `
     <div class="scrubber-controls">
-      <button class="scrubber-play-btn" id="scrubber-play-btn" onclick="playPause()">▶ play</button>
+      <button class="scrubber-play-btn" id="scrubber-play-btn" onclick="playPause()" title="${escapeAttr(reducedMotionTitle)}">▶ play</button>
       <input type="range" id="scrubber-slider" class="scrubber-slider" min="0" max="${max}" value="0" step="1"
              oninput="selectExchange(Number(this.value))" ${n <= 1 ? 'disabled' : ''}>
     </div>
@@ -831,6 +1036,17 @@ function stepScrubber(delta) {
   selectExchange(next);
 }
 
+// True when the OS/browser has `prefers-reduced-motion: reduce` active --
+// try/catch-wrapped like TF.store (file:// / older browsers can lack
+// matchMedia entirely), never throws.
+function _prefersReducedMotion() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch (e) {
+    return false;
+  }
+}
+
 function playPause(forceStop) {
   const btn = document.getElementById('scrubber-play-btn');
   if (_scrubberTimer || forceStop) {
@@ -839,6 +1055,10 @@ function playPause(forceStop) {
     if (btn) btn.textContent = '▶ play';
     return;
   }
+  // Respect the user's reduced-motion preference: no auto-advancing
+  // interval, ever -- the button stays in its "▶ play" state (manual
+  // stepping via j/k/arrows/the slider still works either way).
+  if (_prefersReducedMotion()) return;
   if (btn) btn.textContent = '⏸ pause';
   _scrubberTimer = setInterval(() => stepScrubber(1), 800);
 }
@@ -883,13 +1103,18 @@ function syntaxHighlight(json) {
       });
 }
 
-function escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// String(s) coercion matches web/runs.html's and web/session_report.html's
+// escape() (unified form, tracefork-sis.30) -- without it, a non-string
+// value (a number or null/undefined, e.g. a step index or an absent field)
+// throws on .replace and blanks whatever panel called it, instead of
+// rendering its string form like every other sink here.
+function escape(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 // Same escaping as `escape()` plus `"` — required when the value lands inside
 // a double-quoted HTML attribute (e.g. `data-branch-id="..."`) rather than
 // text content, so a branch_id/digest containing a quote can't break out of
 // the attribute.
-function escapeAttr(s) { return escape(String(s)).replace(/"/g, '&quot;'); }
+function escapeAttr(s) { return escape(s).replace(/"/g, '&quot;'); }
 
 // ── Panel 4 — Fork Tree ────────────────────────────────────────────────────
 // Git-graph-style row layout: one row per branch, ranked by divergence_step,
@@ -961,6 +1186,79 @@ function renderForkTree(data) {
   });
 }
 
+// ── Forks panel: step-aligned counterfactual diff ─────────────────────────
+// `branch['exchanges']` (from `_tape_to_data(branch.delta_tape)`) holds
+// ONLY the exchanges from `divergence_step` onward (`fork.py`'s
+// `delta_tape` contract -- see its module docstring), so offset j in that
+// list aligns with `DATA.exchanges[divergence_step + j]` in the PARENT
+// run's own exchange list. Comparing (role, request, response_preview) at
+// each aligned step -- not just the 80-char `preview` string -- so a
+// counterfactual that only changes response fields the preview truncates
+// away still shows as "changed".
+function _exchangeSignature(ex) {
+  return JSON.stringify([ex.role, ex.request, ex.response_preview]);
+}
+
+function branchDiffRows(parentExchanges, divergenceStep, branchExchanges) {
+  const n = Math.max(branchExchanges.length, parentExchanges.length - divergenceStep);
+  const rows = [];
+  for (let j = 0; j < n; j++) {
+    const parentEx = parentExchanges[divergenceStep + j] || null;
+    const branchEx = branchExchanges[j] || null;
+    const changed =
+      !parentEx || !branchEx || _exchangeSignature(parentEx) !== _exchangeSignature(branchEx);
+    rows.push({ step: divergenceStep + j, parentEx, branchEx, changed });
+  }
+  return rows;
+}
+
+function _diffCellHtml(ex) {
+  if (!ex) return '<span class="trust-flags">(no exchange at this step)</span>';
+  const roleClass = ex.role === 'user' ? 'role-user' : ex.role === 'assistant' ? 'role-assistant' : 'role-tool';
+  return `<span class="role ${roleClass}">${escape(ex.role || 'unknown')}</span> — ${escape(ex.preview || '')}`;
+}
+
+function renderBranchDiffTableHtml(branchId, branch) {
+  const parentExchanges = (DATA && DATA.exchanges) || [];
+  const divergenceStep = branch.divergence_step || 0;
+  const branchExchanges = branch.exchanges || [];
+  const rows = branchDiffRows(parentExchanges, divergenceStep, branchExchanges);
+  if (rows.length === 0) {
+    return '<p class="trust-flags">no post-divergence exchanges to compare</p>';
+  }
+  const rowsHtml = rows
+    .map(
+      (r) => `<tr class="${r.changed ? 'diff-row-changed' : 'diff-row-same'}">
+      <td>${r.step}</td>
+      <td>${_diffCellHtml(r.parentEx)}</td>
+      <td>${_diffCellHtml(r.branchEx)}</td>
+      <td>${r.changed ? '<span class="diff-status changed">changed</span>' : '<span class="diff-status same">same</span>'}</td>
+    </tr>`
+    )
+    .join('');
+  return `<table class="diff-table fork-diff-table">
+      <thead><tr><th>step</th><th>parent (this run)</th><th>branch ${escape(branchId)}</th><th></th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+
+// `branch` is either DATA.branch_details[branchId] (static) or a
+// GET /api/branch/{id} response (live) -- both are the same
+// `_tape_to_data(branch.delta_tape)` shape plus
+// divergence_step/mutation_desc/branch_digest, so one renderer covers both.
+function renderBranchDetailHtml(branchId, branch) {
+  return `<div class="detail-section">
+      <h3>Branch ${escape(branchId)}</h3>
+      <p>diverged at step ${escape(String(branch.divergence_step))}</p>
+      <p>${escape(branch.mutation_desc || '')}</p>
+      <p class="trust-flags">digest ${escape(branch.branch_digest || '')}</p>
+    </div>
+    <div class="detail-section">
+      <h3>Step-aligned diff vs. this run</h3>
+      ${renderBranchDiffTableHtml(branchId, branch)}
+    </div>`;
+}
+
 function onForkNodeClick(branchId) {
   const detailEl = document.getElementById('detail-content');
   // Static reports generated with the run_id/store path bake in every
@@ -972,12 +1270,7 @@ function onForkNodeClick(branchId) {
       detailEl.innerHTML = `<div class="error">branch ${escape(branchId)}: fork point drift — ${escape(embedded.detail || '')}</div>`;
       return;
     }
-    detailEl.innerHTML = `<div class="detail-section">
-      <h3>Branch ${escape(branchId)}</h3>
-      <p>diverged at step ${escape(String(embedded.divergence_step))}</p>
-      <p>${escape(embedded.mutation_desc || '')}</p>
-      <p class="trust-flags">digest ${escape(embedded.branch_digest || '')}</p>
-    </div>`;
+    detailEl.innerHTML = renderBranchDetailHtml(branchId, embedded);
     return;
   }
   if (window.__TRACEFORK_SERVER_URL__ === undefined) {
@@ -994,12 +1287,7 @@ function onForkNodeClick(branchId) {
       return resp.json();
     })
     .then(branch => {
-      detailEl.innerHTML = `<div class="detail-section">
-        <h3>Branch ${escape(branchId)}</h3>
-        <p>diverged at step ${escape(String(branch.divergence_step))}</p>
-        <p>${escape(branch.mutation_desc || '')}</p>
-        <p class="trust-flags">digest ${escape(branch.branch_digest || '')}</p>
-      </div>`;
+      detailEl.innerHTML = renderBranchDetailHtml(branchId, branch);
     })
     .catch(e => {
       detailEl.innerHTML = `<div class="error">${escape(e.message)}</div>`;
@@ -1042,6 +1330,120 @@ function renderCostProfile(data) {
   el.innerHTML = html;
 }
 
+// ── keyboard-first stepping layer ──────────────────────────────────────────
+// Every action below already has a plain function (click handlers, above) --
+// this just gives each one a keyboard binding via the TF.keys manager that
+// shipped with the workbench shell but was never wired up. TF.keys' shared
+// listener already ignores INPUT/TEXTAREA/SELECT/contenteditable focus, so
+// typing in the fork-response textarea or the agent-name field never steps
+// the timeline. The bindings list below IS the shortcut-overlay content (see
+// `?`) -- one source of truth, never two lists to keep in sync.
+const KEY_BINDINGS = [
+  { keys: ['j', 'ArrowDown'], desc: 'step forward one exchange', handler: () => stepScrubber(1) },
+  { keys: ['k', 'ArrowUp'], desc: 'step back one exchange', handler: () => stepScrubber(-1) },
+  { keys: ['Home'], desc: 'jump to the first exchange', handler: () => DATA && selectExchange(0) },
+  { keys: ['End'], desc: 'jump to the last exchange', handler: () => DATA && selectExchange(DATA.exchanges.length - 1) },
+  {
+    keys: [' '],
+    desc: 'play / pause the scrubber',
+    // preventDefault: Space's native behaviour is "scroll the page" (or,
+    // when the play button itself has focus, ALSO a native click) --
+    // without this a keyboard press here would either scroll or
+    // double-toggle play/pause.
+    handler: (e) => { e.preventDefault(); playPause(); },
+  },
+  { keys: ['d'], desc: 'jump to the diverging step', handler: () => jumpToDivergence() },
+  { keys: ['1'], desc: 'Blame tab', handler: () => selectRailTab('blame') },
+  { keys: ['2'], desc: 'Forks tab', handler: () => selectRailTab('forks') },
+  { keys: ['3'], desc: 'Cost tab', handler: () => selectRailTab('cost') },
+  { keys: ['['], desc: 'toggle the Timeline rail', handler: () => toggleRail('left') },
+  { keys: [']'], desc: 'toggle the Analysis rail', handler: () => toggleRail('right') },
+  { keys: ['?'], desc: 'show / hide this shortcut list', handler: () => toggleShortcutsOverlay() },
+];
+
+let _shortcutsOverlayEl = null;
+let _focusBeforeShortcutsOverlay = null;
+
+// Built with TF.h (never innerHTML) since every label here is a literal,
+// developer-authored string -- no escaping concern, but this is exactly the
+// small, static-content case TF.h exists for.
+function _buildShortcutsOverlay() {
+  const keyLabel = (k) => (k === ' ' ? 'Space' : k);
+  const rows = KEY_BINDINGS.map((b) =>
+    TF.h(
+      'div',
+      { class: 'shortcuts-row' },
+      TF.h('kbd', { class: 'shortcuts-key' }, b.keys.map(keyLabel).join(' / ')),
+      TF.h('span', { class: 'shortcuts-desc' }, b.desc)
+    )
+  );
+  const panel = TF.h(
+    'div',
+    { class: 'shortcuts-panel' },
+    TF.h(
+      'div',
+      { class: 'shortcuts-header' },
+      TF.h('h2', {}, 'Keyboard shortcuts'),
+      TF.h(
+        'button',
+        {
+          type: 'button',
+          class: 'nav-btn',
+          'aria-label': 'close keyboard shortcuts',
+          onclick: () => toggleShortcutsOverlay(false),
+        },
+        '✕'
+      )
+    ),
+    ...rows
+  );
+  const overlay = TF.h(
+    'div',
+    {
+      id: 'shortcuts-overlay',
+      class: 'shortcuts-overlay',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': 'Keyboard shortcuts',
+      // Backdrop click closes -- only when the click lands on the backdrop
+      // itself, never a bubbled click from inside the panel.
+      onclick: (e) => { if (e.target.id === 'shortcuts-overlay') toggleShortcutsOverlay(false); },
+    },
+    panel
+  );
+  overlay.hidden = true; // set as a real IDL boolean, not the string TF.h's setAttribute path would write
+  return overlay;
+}
+
+// `show` omitted toggles; `true`/`false` forces open/closed. Moves focus
+// into the dialog's close button when opening (a real, if minimal, focus
+// trap start) and restores it to whatever had focus before on close.
+function toggleShortcutsOverlay(show) {
+  if (!_shortcutsOverlayEl) {
+    _shortcutsOverlayEl = _buildShortcutsOverlay();
+    document.body.appendChild(_shortcutsOverlayEl);
+  }
+  const next = show === undefined ? !_shortcutsOverlayEl.hidden : !show;
+  if (!next) {
+    _focusBeforeShortcutsOverlay = document.activeElement;
+  }
+  _shortcutsOverlayEl.hidden = next;
+  if (!next) {
+    _shortcutsOverlayEl.querySelector('button')?.focus();
+  } else if (_focusBeforeShortcutsOverlay && document.contains(_focusBeforeShortcutsOverlay)) {
+    _focusBeforeShortcutsOverlay.focus();
+  }
+}
+
+(function initKeyboardShortcuts() {
+  const map = {};
+  KEY_BINDINGS.forEach((b) => b.keys.forEach((k) => { map[k] = b.handler; }));
+  // Escape closes the overlay -- deliberately not in KEY_BINDINGS/the
+  // visible list, since "Escape closes a dialog" needs no explanation.
+  map.Escape = () => toggleShortcutsOverlay(false);
+  TF.keys.register(map);
+})();
+
 // ── boot ───────────────────────────────────────────────────────────────────
 (async () => {
   try {
@@ -1075,7 +1477,7 @@ function renderCostProfile(data) {
       selectExchange(initialStep);
     }
   } catch (e) {
-    document.getElementById('timeline-content').innerHTML = `<div class="error">${e.message}</div>`;
+    document.getElementById('timeline-content').innerHTML = `<div class="error">${escape(e.message)}</div>`;
   }
 })();
 </script>

@@ -47,6 +47,7 @@ from fastapi.testclient import TestClient
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tests.fixtures.fork_ui_agent import run_agent as fork_ui_run_agent
+from tracefork import server
 from tracefork.blame import BlameReport, CIMethod, FlipRateResult, ShapleyReport, ShapleyResult
 from tracefork.checkpoint import CheckpointWriter
 from tracefork.fork import ForkEngine
@@ -79,6 +80,39 @@ def _small_tape(tag: bytes = b"x") -> Tape:
     t = Tape(agent_name="w")
     t.append_exchange(b"req-" + tag, b"resp-" + tag)
     return t
+
+
+# ── Content-Security-Policy (v1.0.0 readiness item 42) ──────────────────────
+# These pages render recorded, potentially third-party agent I/O -- a CSP
+# contains any future escaping miss instead of letting it escalate to full
+# tape exfiltration (see item 41's session_report.html attribute-breakout
+# fix). Restrictive: no external script/style/img/connect origin anywhere.
+
+
+def test_get_slash_sends_a_restrictive_csp_header(tmp_path):
+    db = tmp_path / "store.db"
+    init_store(str(db))
+    client = TestClient(fastapi_app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    csp = resp.headers.get("content-security-policy")
+    assert csp is not None
+    assert csp == server.CONTENT_SECURITY_POLICY
+    for directive in ("script-src", "style-src", "img-src", "connect-src"):
+        assert directive in csp
+    # no external origin (http(s):// or a bare wildcard) anywhere in the policy
+    assert "http://" not in csp
+    assert "https://" not in csp
+    assert " *" not in csp and csp.strip() != "*"
+
+
+def test_get_runs_page_sends_the_same_csp_header(tmp_path):
+    db = tmp_path / "store.db"
+    init_store(str(db))
+    client = TestClient(fastapi_app)
+    resp = client.get("/runs")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-security-policy") == server.CONTENT_SECURITY_POLICY
 
 
 # ── GET /api/checkpoint/tail path confinement + opt-in ──────────────────────

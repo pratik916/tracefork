@@ -29,6 +29,16 @@ jobs:
         run: uv run ruff format --check .
       - name: Type check
         run: uv run mypy src/tracefork
+      - name: Node syntax-gate availability check
+        # tests/test_web_ui.py's `node --check` syntax gate over web/*.html's
+        # extracted <script> blocks (tracefork-sis.30) skips itself when
+        # `node` isn't on PATH, rather than failing -- it's CI-only when
+        # node is present, by design (see that file's module docstring).
+        # GitHub-hosted ubuntu-latest runners ship Node.js pre-installed
+        # (no setup-node action needed), so this just confirms it's really
+        # there and the gate below is genuinely exercised, not silently
+        # skipped.
+        run: node --version
       - name: Tests + coverage
         run: uv run pytest -q --cov --cov-report=term-missing --junit-xml=junit.xml
       - name: Executed-evidence CI sentinel
