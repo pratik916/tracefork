@@ -227,7 +227,7 @@ def generate_report(
     external-anchor entry from one already covered by this run's own blame
     rows.
     """
-    html = _template_path().read_text()
+    html = _template_path().read_text(encoding="utf-8")
     data = _tape_to_data(
         tape,
         blame,
@@ -244,4 +244,4 @@ def generate_report(
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")

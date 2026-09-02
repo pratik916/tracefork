@@ -5,12 +5,10 @@ fork-of-fork depths, `follow_lineage=False` scoping), the offline-checkable
 blob-hash property, and the `tracefork locate` CLI surface.
 
 The CLI tests exercise `tracefork.cli.app` directly via `typer.testing
-.CliRunner`. `cli.py` is a shared, orchestrator-owned file in this bead's
-workflow (this bead only hands off ready-to-paste command code, see the
-bead's `cli_command` result field) — until that command is wired in, the
-CLI tests below skip themselves (rather than failing on a `locate.py`-side
-non-issue) via `_LOCATE_CLI_WIRED`, and self-heal the moment `cli.py` gains
-the command.
+.CliRunner`. `_LOCATE_CLI_WIRED` records whether `cli.py`'s `locate`
+command is registered; the CLI tests below hard-assert it's `True` — a
+deliberate unwiring fails the test loudly instead of the test silently
+vanishing via a skip (tracefork-sis.54).
 """
 
 import hashlib
@@ -27,17 +25,11 @@ runner = CliRunner()
 _LOCATE_CLI_WIRED = any(
     (cmd.name or cmd.callback.__name__) == "locate" for cmd in app.registered_commands
 )
-_SKIP_REASON = (
-    "cli.py's `locate` command isn't wired yet (tracefork-bge.62 hands off "
-    "cli_command for the orchestrator to paste in) -- self-heals once it is."
-)
+_WIRING_REASON = "cli.py's `locate` command is not wired into app.registered_commands"
 
 
-def _skip_unless_wired():
-    import pytest
-
-    if not _LOCATE_CLI_WIRED:
-        pytest.skip(_SKIP_REASON)
+def _assert_wired():
+    assert _LOCATE_CLI_WIRED, _WIRING_REASON
 
 
 def _tape_with(*exchanges: tuple[bytes, bytes], tool_exchanges: tuple = ()) -> Tape:
@@ -284,7 +276,7 @@ def test_locate_hit_and_tape_hit_are_frozen_dataclasses():
 
 
 def test_cli_locate_finds_value_via_tape_path_prints_receipt(tmp_path):
-    _skip_unless_wired()
+    _assert_wired()
     tape = _tape_with((b"req-0", b"resp-0-cli-needle"))
     tape_path = tmp_path / "one.tape.sqlite"
     tape.save(str(tape_path))
@@ -296,7 +288,7 @@ def test_cli_locate_finds_value_via_tape_path_prints_receipt(tmp_path):
 
 
 def test_cli_locate_not_found_exits_1_and_prints_not_found(tmp_path):
-    _skip_unless_wired()
+    _assert_wired()
     tape = _tape_with((b"req-0", b"resp-0"))
     tape_path = tmp_path / "one.tape.sqlite"
     tape.save(str(tape_path))
@@ -307,7 +299,7 @@ def test_cli_locate_not_found_exits_1_and_prints_not_found(tmp_path):
 
 
 def test_cli_locate_run_id_mode_against_a_store(tmp_path):
-    _skip_unless_wired()
+    _assert_wired()
     db = tmp_path / "store.db"
     store = TapeStore(str(db))
     run_id = store.save_tape(_tape_with((b"req-0", b"resp-0-store-needle")), run_id="run-1")
@@ -319,7 +311,7 @@ def test_cli_locate_run_id_mode_against_a_store(tmp_path):
 
 
 def test_cli_locate_no_args_errors_with_usage_message():
-    _skip_unless_wired()
+    _assert_wired()
     result = runner.invoke(app, ["locate"])
     assert result.exit_code == 1, result.output
     assert "run_id" in result.output or "--tape" in result.output

@@ -105,10 +105,10 @@ def generate_session_report(
     ``window.__TRACEFORK_DATA__`` injection, including the same
     ``</script>``-breakout escaping via ``report._safe_json``).
     """
-    html = _session_template_path().read_text()
+    html = _session_template_path().read_text(encoding="utf-8")
     data = _session_to_data(store, session_id, agent_map=agent_map)
     inject = f"\n<script>\nwindow.__TRACEFORK_SESSION_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")

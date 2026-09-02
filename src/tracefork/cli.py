@@ -753,7 +753,8 @@ def conflicts(
                     "has_conflict": report.has_conflict,
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -810,7 +811,7 @@ def settlement_diff(
     typer.echo(f"  ops  {len(diff.ops)}")
 
     if output is not None:
-        output.write_text(text)
+        output.write_text(text, encoding="utf-8")
         typer.echo(f"  Settlement diff written to {output}\n")
     else:
         typer.echo("")
@@ -922,12 +923,12 @@ def report(
 
     blame_dict = None
     if blame_report is not None:
-        blame_data = _json.loads(blame_report.read_text())
+        blame_data = _json.loads(blame_report.read_text(encoding="utf-8"))
         blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
 
     shapley_dict = None
     if shapley_report is not None:
-        shapley_data = _json.loads(shapley_report.read_text())
+        shapley_data = _json.loads(shapley_report.read_text(encoding="utf-8"))
         shapley_dict = {r["step_index"]: r for r in shapley_data.get("results", [])}
 
     cost_profile_dict = cost_profile_to_dict(compute_cost_profile(tape))
@@ -1024,11 +1025,11 @@ def receipt(
 
     validate_data = None
     if validation_report.exists():
-        validate_data = _json.loads(validation_report.read_text())
+        validate_data = _json.loads(validation_report.read_text(encoding="utf-8"))
 
     bench_data = None
     if bench_report_path.exists():
-        bench_data = _json.loads(bench_report_path.read_text())
+        bench_data = _json.loads(bench_report_path.read_text(encoding="utf-8"))
 
     receipt_dict = build_trust_receipt(
         tape,
@@ -1036,13 +1037,13 @@ def receipt(
         validate_report=validate_data,
         bench_report=bench_data,
     )
-    output.write_text(_json.dumps(receipt_dict, indent=2))
+    output.write_text(_json.dumps(receipt_dict, indent=2), encoding="utf-8")
     typer.echo(f"  Receipt written to {output}")
     typer.echo(f"  tape_fingerprint  {receipt_dict['tape_fingerprint']}")
 
     if shield_output is not None:
         shield_dict = build_shield_json(receipt_dict)
-        shield_output.write_text(_json.dumps(shield_dict, indent=2))
+        shield_output.write_text(_json.dumps(shield_dict, indent=2), encoding="utf-8")
         typer.echo(f"  Shield badge written to {shield_output}")
 
 
@@ -1114,11 +1115,11 @@ def release_receipt(
 
     validate_data = None
     if validation_report.exists():
-        validate_data = _json.loads(validation_report.read_text())
+        validate_data = _json.loads(validation_report.read_text(encoding="utf-8"))
 
     bench_data = None
     if bench_report_path.exists():
-        bench_data = _json.loads(bench_report_path.read_text())
+        bench_data = _json.loads(bench_report_path.read_text(encoding="utf-8"))
 
     replay_corpus_result = run_fixture_corpus_check(replay_fixtures_dir)
     calibration_report = run_calibration()
@@ -1139,7 +1140,7 @@ def release_receipt(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{version}.json"
-    output_path.write_text(_json.dumps(receipt, indent=2))
+    output_path.write_text(_json.dumps(receipt, indent=2), encoding="utf-8")
     typer.echo(f"  Release receipt written to {output_path}")
     typer.echo(f"  receipt_digest  {receipt['receipt_digest']}")
 
@@ -1367,12 +1368,13 @@ def blame(
                     ],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {report_path}")
 
         narrative_path = Path(f"blame_{run_id}.md")
-        narrative_path.write_text(narrative.explain_blame_report(report))
+        narrative_path.write_text(narrative.explain_blame_report(report), encoding="utf-8")
         typer.echo(f"  Narrative saved to {narrative_path}")
 
         edge_ids = db.save_blame_report(run_id, report)
@@ -1442,7 +1444,7 @@ def validate(
     typer.echo(f"\n  overall top-1 precision: {overall_precision:.2f}")
     typer.echo(f"  negative control max flip: {max_ctrl:.2f} (threshold 0.30)")
 
-    output.write_text(_json.dumps(report_data, indent=2))
+    output.write_text(_json.dumps(report_data, indent=2), encoding="utf-8")
     typer.echo(f"\n  Report saved to {output}\n")
 
     control_threshold = 0.30
@@ -1460,7 +1462,7 @@ def validate(
         if not committed.exists():
             _err("  No committed report found — run without --check to create one.")
             raise typer.Exit(1)
-        old = _json.loads(committed.read_text())
+        old = _json.loads(committed.read_text(encoding="utf-8"))
         regressions = _validate_regressions(report_data, old, VALIDATE_CHECK_TOLERANCE)
         if regressions:
             typer.echo("  REGRESSION detected:")
@@ -1509,9 +1511,8 @@ def bench(
             typer.echo(f"               {c.note}")
 
     typer.echo(
-        f"\n  competing-fault discrimination: {report.accuracy:.2f} "
-        f"({report.n_resolved}/{report.n_cases}), "
-        f"95% CI [{report.ci_lo:.2f}, {report.ci_hi:.2f}]"
+        f"\n  competing-fault discrimination: {report.n_resolved}/{report.n_cases} "
+        f"planted cases resolve correctly ({report.accuracy:.2f})"
     )
     typer.echo(
         f"  context only, not reproduced here: published Who&When log-based "
@@ -1527,8 +1528,6 @@ def bench(
                 "accuracy": report.accuracy,
                 "n_resolved": report.n_resolved,
                 "n_cases": report.n_cases,
-                "ci_lo": report.ci_lo,
-                "ci_hi": report.ci_hi,
                 "who_and_when_anchor": report.who_and_when_anchor,
                 "cases": [
                     {
@@ -1546,7 +1545,8 @@ def bench(
                 ],
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     typer.echo(f"\n  Report saved to {output}\n")
 
@@ -1618,14 +1618,14 @@ def export(
 
     blame = None
     if blame_report is not None:
-        blame = blame_report_from_json(_json.loads(blame_report.read_text()))
+        blame = blame_report_from_json(_json.loads(blame_report.read_text(encoding="utf-8")))
 
     data = (
         build_otel_trace(tape, blame=blame)
         if otel
         else build_openinference_dataset(tape, blame=blame)
     )
-    output.write_text(_json.dumps(data, indent=2))
+    output.write_text(_json.dumps(data, indent=2), encoding="utf-8")
     kind = "OTel GenAI trace" if otel else "OpenInference dataset"
     typer.echo(f"  {kind} written to {output} ({len(tape.exchanges)} exchange(s))")
 
@@ -1660,7 +1660,7 @@ def ingest(
         _err("Pass exactly one of --otel or --openinference")
         raise typer.Exit(1)
 
-    data = _json.loads(input_path.read_text())
+    data = _json.loads(input_path.read_text(encoding="utf-8"))
     tape = ingest_otel_trace(data) if otel else ingest_openinference_dataset(data)
     tape.save(str(output))
 
@@ -1906,7 +1906,7 @@ def coverage(
     from tracefork.coverage import coverage_report
 
     tape = _load_tape_or_exit(tape_path)
-    source = agent_source.read_text() if agent_source is not None else None
+    source = agent_source.read_text(encoding="utf-8") if agent_source is not None else None
     result = coverage_report(tape, agent_source=source)
 
     typer.echo(f"\n  tracefork coverage — {tape_path.name}")
@@ -1951,7 +1951,8 @@ def coverage(
                     ],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -2039,7 +2040,8 @@ def corpus_blame(
                     "regressions": [asdict(f) for f in flags],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -2205,7 +2207,8 @@ def tournament(
                 ],
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     typer.echo(f"  Report saved to {report_path}")
 
@@ -2565,7 +2568,7 @@ def session_board(
 
     resolved_agent_map = None
     if agent_map is not None:
-        manifest = _json.loads(agent_map.read_text())
+        manifest = _json.loads(agent_map.read_text(encoding="utf-8"))
         resolved_agent_map = session_replay.resolve_agent_manifest(manifest)
 
     db = TapeStore(str(store))
@@ -2682,7 +2685,7 @@ def session_divergence(
     from tracefork.replay import DriftDoctor
     from tracefork.store import TapeStore
 
-    manifest = json.loads(agents_manifest.read_text())
+    manifest = json.loads(agents_manifest.read_text(encoding="utf-8"))
     agent_fns = session_replay.resolve_agent_manifest(manifest)
 
     db = TapeStore(str(store))

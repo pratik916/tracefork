@@ -113,7 +113,7 @@ def parse_coverage_summary(path: Path) -> dict[str, Any]:
     "covered_lines": int, "missing_lines": int}``, read verbatim from the
     report's ``totals`` block — never recomputed.
     """
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     totals = data["totals"]
     return {
         "percent_covered": totals["percent_covered"],

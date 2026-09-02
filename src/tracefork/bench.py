@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .blame import ShapleyReport, wilson_ci
+from .blame import ShapleyReport
 from .competing_faults import (
     SCENARIO_ALL,
     SCENARIO_GATE_PAYLOAD,
@@ -66,8 +66,6 @@ class BenchReport:
     n_resolved: int = 0
     n_cases: int = 0
     accuracy: float = 0.0
-    ci_lo: float = 0.0
-    ci_hi: float = 0.0
     who_and_when_anchor: float = WHO_AND_WHEN_LOG_BASED_TOP1_ANCHOR
 
     def unexpected_failures(self) -> list[CaseResult]:
@@ -179,7 +177,4 @@ def run_bench(*, k: int = 3, m_samples: int = 2) -> BenchReport:
     n_resolved = sum(1 for c in cases if c.resolved)
     n = len(cases)
     accuracy = n_resolved / n if n else 0.0
-    ci_lo, ci_hi = wilson_ci(n_resolved, n)
-    return BenchReport(
-        cases=cases, n_resolved=n_resolved, n_cases=n, accuracy=accuracy, ci_lo=ci_lo, ci_hi=ci_hi
-    )
+    return BenchReport(cases=cases, n_resolved=n_resolved, n_cases=n, accuracy=accuracy)

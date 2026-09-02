@@ -94,7 +94,7 @@ def scan_file_for_violations(path: Path, package_root: Path) -> list[Architectur
     `Path(tracefork.__file__).parent`. `path` outside `package_root` reports
     its filename unchanged rather than raising.
     """
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     try:
         rel = str(path.relative_to(package_root))

@@ -41,3 +41,46 @@ jobs:
         run: uv run --with twine twine check dist/*
       - name: Wheel install smoke test
         run: uv run python scripts/wheel_smoke.py --wheel dist/tracefork-*.whl
+
+  # tracefork-sis.40: each framework adapter's `bind`/injection logic is
+  # otherwise only ever exercised against a synthetic double (the main `test`
+  # job above installs none of these extras -- every adapter test module
+  # importorskips on its real package). This job installs each optional
+  # framework extra IN ISOLATION and runs that adapter's test module against
+  # the real import. Deliberately NOT a `needs:` of (or `needs:`-ed by) the
+  # main `test` job -- they run independently, so a red leg here never blocks
+  # it -- and `continue-on-error: true` per leg means a fast-moving pre-1.0
+  # upstream going red doesn't fail this job/workflow either, only surfaces
+  # as an annotated warning (see the item's own deferral rationale). A single
+  # Python version (the `requires-python` floor) keeps this from also being a
+  # second full interpreter matrix.
+  adapter-extras:
+    name: adapter (${{ matrix.extra }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: frameworks
+            test_path: tests/test_adapters_langchain.py
+          - extra: openai-agents
+            test_path: tests/test_adapters_openai_agents.py
+          - extra: crewai
+            test_path: tests/test_adapters_crewai.py
+          - extra: autogen
+            test_path: tests/test_adapters_autogen.py
+          - extra: adk
+            test_path: tests/test_adapters_adk.py
+          - extra: pydantic-ai
+            test_path: tests/test_adapters_base.py
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (dev + real framework extra)
+        run: uv sync --extra dev --extra "${{ matrix.extra }}"
+      - name: Adapter tests against the real framework
+        run: uv run pytest "${{ matrix.test_path }}" -q

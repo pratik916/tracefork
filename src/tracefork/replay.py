@@ -279,7 +279,7 @@ def run_fixture_corpus_check(fixtures_dir: Path) -> CorpusCheckResult:
     directory doesn't exist or wasn't set up).
     """
     manifest_path = fixtures_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     results: list[FixtureResult] = []
     for entry in manifest:

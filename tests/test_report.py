@@ -1,6 +1,10 @@
 """Report generation smoke-tests — offline, no API keys."""
 
 import json
+import os
+import re
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -12,6 +16,8 @@ from tracefork.constants import BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUND
 from tracefork.report import _tape_to_data, generate_report
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 TEXT_RESP = make_text_response("Hello world")
 
@@ -367,3 +373,77 @@ def test_report_escapes_script_breakout_in_branch_mutation_desc():
         assert "</script" not in injected
         data = _extract_data(content)
         assert data["branches"][0]["mutation_desc"] == "</script><img src=x onerror=alert(1)>"
+
+
+def test_report_survives_non_utf8_locale():
+    """Regression for tracefork-sis.31: `report.py`'s `_template_path().read_text()`
+    and `output_path.write_text()` must pass `encoding="utf-8"` explicitly.
+
+    `web/report.html` (this project's headline single-file deliverable) itself
+    contains non-ASCII bytes (a UTF-8 em-dash in its own `<title>`). Without an
+    explicit `encoding=`, both calls fall back to the interpreter's LOCALE
+    encoding (`locale.getpreferredencoding`) — fine on a UTF-8-locale POSIX box,
+    but on a genuinely non-UTF-8 locale (stock `LC_ALL=C`, the common
+    non-UTF-8-locale-platform case this project's `ubuntu-latest`-only CI would
+    never catch) `read_text()` raises `UnicodeDecodeError` outright and, even if
+    it didn't, `write_text()` would silently mojibake the report's own title/UI
+    text on the way back out.
+
+    The locale-driven default text encoding is fixed by the C locale at
+    INTERPRETER STARTUP (PEP 538/540) — monkeypatching `locale
+    .getpreferredencoding` inside an already-running process has no effect on
+    it — so this spawns two genuinely separate interpreters (one UTF-8-locale,
+    one forced non-UTF-8-locale) and asserts they produce byte-identical
+    report HTML, with the `<title>` tag's em-dash round-tripping correctly in
+    both.
+    """
+    gen_script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from tracefork.report import generate_report\n"
+        "from tracefork.tape import Tape\n"
+        "tape = Tape(agent_name='locale_test')\n"
+        "generate_report(tape, Path(sys.argv[1]))\n"
+    )
+
+    def _generate_report_html(tmpdir: Path, name: str, env_overrides: dict[str, str]) -> bytes:
+        script_path = tmpdir / "gen_report.py"
+        script_path.write_text(gen_script, encoding="utf-8")
+        out_path = tmpdir / name
+        env = dict(os.environ)
+        env.update(env_overrides)
+        subprocess.run(
+            [sys.executable, str(script_path), str(out_path)],
+            check=True,
+            cwd=str(_REPO_ROOT),
+            env=env,
+            capture_output=True,
+        )
+        return out_path.read_bytes()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        utf8_html = _generate_report_html(
+            tmp_path,
+            "report_utf8_locale.html",
+            {"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8", "PYTHONUTF8": "1"},
+        )
+        non_utf8_html = _generate_report_html(
+            tmp_path,
+            "report_non_utf8_locale.html",
+            {
+                "LC_ALL": "C",
+                "LANG": "C",
+                "PYTHONCOERCECLOCALE": "0",
+                "PYTHONUTF8": "0",
+            },
+        )
+
+    assert non_utf8_html == utf8_html, (
+        "report HTML generated under a forced non-UTF-8 locale must be "
+        "byte-identical to one generated under a UTF-8 locale"
+    )
+
+    title_match = re.search(rb"<title>(.*?)</title>", non_utf8_html)
+    assert title_match is not None
+    assert title_match.group(1).decode("utf-8") == "tracefork — time-travel debugger"

@@ -5,11 +5,12 @@ The byte capture stays at the httpx transport (``transport.py``); a framework's
 callbacks/tracing are an observer-only annotation layer feeding ``StepDAG`` (see
 ``base.py``). Importing this package registers the built-in LangChain/LangGraph
 (``"langchain"``), OpenAI Agents SDK (``"openai_agents"``), CrewAI
-(``"crewai"``), AutoGen (``"autogen"``), Google ADK (``"adk"``), and Shepherd
-(``"shepherd"``) adapters — every framework import they make is guarded, so
-this import never requires any of those packages to be installed. Shepherd is
-the one exception with nothing to guard: it is an unpublished codebase,
-not a published package (see ``adapters/shepherd.py``'s module docstring).
+(``"crewai"``), AutoGen (``"autogen"``), Google ADK (``"adk"``), Pydantic AI
+(``"pydantic_ai"``), and Shepherd (``"shepherd"``) adapters — every framework
+import they make is guarded, so this import never requires any of those
+packages to be installed. Shepherd is the one exception with nothing to
+guard: it is an unpublished codebase, not a published package (see
+``adapters/shepherd.py``'s module docstring).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from . import langchain as _langchain  # noqa: F401  (side effect: registers "la
 from . import (
     openai_agents as _openai_agents,  # noqa: F401  (side effect: registers "openai_agents")
 )
+from . import pydantic_ai as _pydantic_ai  # noqa: F401  (side effect: registers "pydantic_ai")
 from . import shepherd as _shepherd  # noqa: F401  (side effect: registers "shepherd")
 from .adk import (
     ADK_IMPORT_HINT,
@@ -80,6 +82,12 @@ from .openai_agents import (
     openai_agents_available,
     require_openai_agents,
 )
+from .pydantic_ai import (
+    PYDANTIC_AI_IMPORT_HINT,
+    PydanticAIAdapter,
+    pydantic_ai_available,
+    require_pydantic_ai,
+)
 from .shepherd import ShepherdAdapter, TraceforkShepherdCore
 
 __all__ = [
@@ -135,6 +143,11 @@ __all__ = [
     "adk_available",
     "make_plugin",
     "require_adk",
+    # pydantic ai
+    "PYDANTIC_AI_IMPORT_HINT",
+    "PydanticAIAdapter",
+    "pydantic_ai_available",
+    "require_pydantic_ai",
     # shepherd (openai-path only, synthetic-double-validated - see module docstring)
     "ShepherdAdapter",
     "TraceforkShepherdCore",

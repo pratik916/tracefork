@@ -36,9 +36,15 @@ def test_known_limitation_case_carries_an_explanatory_note():
     assert "LIMITATION" in limitation.note
 
 
-def test_bench_report_ci_brackets_the_point_estimate():
+def test_bench_report_is_a_plain_fixture_tally_not_a_wilson_ci():
+    """The 11 cases are hand-authored fixtures, not a sample from a population --
+    a binomial confidence interval implies a sampling process that doesn't exist
+    here. `BenchReport` must report a plain N/M tally (already `n_resolved`/
+    `n_cases`/`accuracy`) and must NOT carry Wilson-CI fields."""
     report = run_bench(k=3, m_samples=2)
-    assert 0.0 <= report.ci_lo <= report.accuracy <= report.ci_hi <= 1.0
+    assert report.accuracy == report.n_resolved / report.n_cases
+    assert not hasattr(report, "ci_lo")
+    assert not hasattr(report, "ci_hi")
 
 
 def test_bench_cites_the_who_and_when_anchor_without_claiming_it_was_run():

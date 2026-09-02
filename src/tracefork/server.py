@@ -7,6 +7,7 @@ Serves the report HTML at / and JSON endpoints at /api/run/{run_id},
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 
@@ -89,6 +90,10 @@ class ForkRequest(BaseModel):
     mutated_response_b64: str
     confirm: bool = False
     mutation_desc: str = ""
+    #: Per-fork spend cap in USD, checked against
+    #: `fork_allowlist.estimate_single_fork_usd` before executing — the same
+    #: 5.0 default `blame.py`/`tournament.py`'s `budget_usd` already uses.
+    max_usd: float = 5.0
 
 
 @app.post("/api/run/{run_id}/fork/estimate")
@@ -113,8 +118,15 @@ async def estimate_fork(run_id: str, body: ForkEstimateRequest) -> JSONResponse:
 async def do_fork(run_id: str, body: ForkRequest) -> JSONResponse:
     """Execute a REAL fork (`fork.ForkEngine.fork`) and persist the branch —
     requires `body.confirm is True` (an explicit cost-confirmation gate,
-    mirroring the report's UI-level "Confirm & Fork" step) and an
-    allowlisted `body.agent_name` (see `fork_allowlist.py`)."""
+    mirroring the report's UI-level "Confirm & Fork" step), an allowlisted
+    `body.agent_name` (see `fork_allowlist.py`), and an estimated cost
+    (`fork_allowlist.estimate_single_fork_usd`, the same single-fork
+    estimator `/fork/estimate` exposes) at or under `body.max_usd` — checked
+    BEFORE anything executes, so a rejected request persists no branch and
+    spends nothing. Runs the synchronous `ForkEngine.fork` call in a worker
+    thread (`asyncio.to_thread`) rather than directly on this coroutine, so
+    this single-worker server's one event loop — including its own SSE
+    stream — doesn't freeze for the fork's duration."""
     store = get_store()
     try:
         tape = store.load_tape(run_id)
@@ -127,13 +139,20 @@ async def do_fork(run_id: str, body: ForkRequest) -> JSONResponse:
     if not body.confirm:
         raise HTTPException(status_code=400, detail="confirm must be true to execute a real fork")
 
+    est_usd = estimate_single_fork_usd(tape, body.step)
+    if est_usd > body.max_usd:
+        raise HTTPException(
+            status_code=402,
+            detail=(f"estimated fork cost ${est_usd:.4f} exceeds max_usd cap ${body.max_usd:.4f}"),
+        )
+
     mutated_response = base64.b64decode(body.mutated_response_b64)
     spec = BranchSpec(
         divergence_step=body.step,
         mutated_response=mutated_response,
         mutation_desc=body.mutation_desc,
     )
-    branch = ForkEngine.fork(tape, spec, agent_fn)
+    branch = await asyncio.to_thread(ForkEngine.fork, tape, spec, agent_fn)
     branch_id = store.save_branch(
         parent_run_id=run_id,
         divergence_step=body.step,
@@ -154,7 +173,7 @@ async def do_fork(run_id: str, body: ForkRequest) -> JSONResponse:
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui() -> HTMLResponse:
-    html = _template_path().read_text()
+    html = _template_path().read_text(encoding="utf-8")
     # Empty server URL → the UI fetches same-origin (works on any --port).
     inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
     html = html.replace("</head>", inject + "</head>", 1)
@@ -168,7 +187,7 @@ async def serve_runs_page() -> HTMLResponse:
     to `/?run_id=<id>` (the query-param contract `report.html`'s `loadData`
     already reads). Same live-mode injection as `serve_ui`, so `runs.html`'s
     own boot logic can tell it's being served same-origin."""
-    html = _runs_template_path().read_text()
+    html = _runs_template_path().read_text(encoding="utf-8")
     inject = "\n<script>\nwindow.__TRACEFORK_SERVER_URL__ = '';\n</script>\n"
     html = html.replace("</head>", inject + "</head>", 1)
     return HTMLResponse(html)

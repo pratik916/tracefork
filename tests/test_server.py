@@ -3,7 +3,7 @@ already have a dedicated test file (see `test_fork_endpoint.py`,
 `test_branch_queries.py`, `test_live.py`, `test_otel_locate.py`,
 `test_runs_page.py`, `test_sessions.py`, `test_cost_profile.py` for the rest).
 
-Covers two things:
+Covers three things:
 
   1. `GET /api/checkpoint/tail?path=` path confinement + opt-in (security
      fix): the endpoint used to take an unvalidated filesystem path on an
@@ -19,19 +19,44 @@ Covers two things:
      from data the endpoint already loads (`causal_edges`, `branches`) —
      mirroring `cli.py`'s `report` command's run_id path, which already
      derives these for free.
+
+  3. `POST /api/run/{run_id}/fork`'s `max_usd` spend cap (tracefork-sis.39):
+     `do_fork` used to call `ForkEngine.fork` with no cost check at all,
+     synchronously on the request-handling coroutine, so a
+     click-to-fork both spent real money unconditionally and froze this
+     process's ONE event loop (`uvicorn --workers 1`) — including its own
+     SSE stream — for the fork's full duration. It now rejects (402) any
+     fork whose `fork_allowlist.estimate_single_fork_usd` estimate exceeds
+     the request's `max_usd` BEFORE executing anything, and runs the
+     synchronous fork via `asyncio.to_thread` so the event loop stays free
+     to serve other requests while it's in flight. See
+     `test_fork_endpoint.py` for the rest of this endpoint's coverage
+     (allowlist/confirm gating, branch persistence).
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import time
+
+import anthropic
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fakes import ScriptedFakeLLM, make_text_response
+from tests.fixtures.fork_ui_agent import run_agent as fork_ui_run_agent
 from tracefork.blame import BlameReport, CIMethod, FlipRateResult, ShapleyReport, ShapleyResult
 from tracefork.checkpoint import CheckpointWriter
+from tracefork.fork import ForkEngine
 from tracefork.server import app as fastapi_app
-from tracefork.server import init_checkpoint_dirs, init_store
+from tracefork.server import init_checkpoint_dirs, init_fork_allowlist, init_store
 from tracefork.store import TapeStore
 from tracefork.tape import Tape
+from tracefork.transport import TraceforkTransport
+
+_FORK_UI_AGENT_PATH = "tests.fixtures.fork_ui_agent:run_agent"
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +65,14 @@ def _reset_checkpoint_dirs():
     init_checkpoint_dirs([])
     yield
     init_checkpoint_dirs([])
+
+
+@pytest.fixture(autouse=True)
+def _reset_fork_allowlist():
+    """Every test starts from the documented default: nothing allowlisted."""
+    init_fork_allowlist({})
+    yield
+    init_fork_allowlist({})
 
 
 def _small_tape(tag: bytes = b"x") -> Tape:
@@ -233,3 +266,161 @@ def test_get_run_blame_and_shapley_empty_when_no_causal_edges(tmp_path):
     assert body["blame"] == {}
     assert body["shapley"] == {}
     assert body["branch_details"] == {}
+
+
+# ── POST /api/run/{run_id}/fork max_usd cap + off-loop execution ────────────
+#
+# See test_fork_endpoint.py for the allowlist/confirm/branch-persistence
+# coverage this doesn't repeat.
+
+
+def _seed_multi_step_tape(tmp_path):
+    """A synthetic (not recorded via a real agent) 3-exchange tape with
+    sizeable request/response bodies, so `estimate_single_fork_usd` prices a
+    fork at step 0 (2 remaining tail calls) as strictly greater than $0 —
+    the cap-exceeded test never needs `ForkEngine.fork` to actually run, so
+    this doesn't need to be an agent-consistent tape."""
+    tape = Tape(agent_name="fork_ui_agent")
+    for i in range(3):
+        tape.append_exchange(
+            f"req-{i}-".encode() + b"a" * 400,
+            f"resp-{i}-".encode() + b"b" * 400,
+        )
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(tape, run_id="run1")
+    store.close()
+    return db, run_id, tape
+
+
+def _seed_last_step_fork_tape(tmp_path):
+    """A real, one-exchange tape recorded via the allowlisted
+    `fork_ui_agent`. Forking its only (== last) exchange is `$0`-safe: an
+    empty tail means `ForkTransport` never dispatches to its inner httpx
+    transport (see `test_fork_endpoint.py`'s module docstring) — needed here
+    because these tests actually execute the fork rather than rejecting it
+    before it runs."""
+    fake = ScriptedFakeLLM([make_text_response("4")])
+    tape = Tape(agent_name="fork_ui_agent")
+    transport = TraceforkTransport("record", tape, fake)
+    client = anthropic.Anthropic(
+        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+    )
+    fork_ui_run_agent(client)
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(tape, run_id="run1")
+    store.close()
+    return db, run_id, tape
+
+
+def test_fork_rejects_when_estimate_exceeds_max_usd_and_persists_nothing(tmp_path):
+    db, run_id, tape = _seed_multi_step_tape(tmp_path)
+    init_store(str(db))
+    init_fork_allowlist({"fork_ui_agent": _FORK_UI_AGENT_PATH})
+    client = TestClient(fastapi_app)
+
+    resp = client.post(
+        f"/api/run/{run_id}/fork",
+        json={
+            "agent_name": "fork_ui_agent",
+            "step": 0,
+            "mutated_response_b64": base64.b64encode(b"{}").decode(),
+            "confirm": True,
+            "max_usd": 0.0,
+        },
+    )
+    assert resp.status_code == 402, resp.text
+    assert "max_usd" in resp.json()["detail"]
+
+    store = TapeStore(str(db))
+    assert store.list_branches(run_id) == []
+    store.close()
+
+
+def test_fork_succeeds_when_estimate_is_within_max_usd(tmp_path):
+    db, run_id, tape = _seed_last_step_fork_tape(tmp_path)
+    init_store(str(db))
+    init_fork_allowlist({"fork_ui_agent": _FORK_UI_AGENT_PATH})
+    client = TestClient(fastapi_app)
+    last_step = len(tape.exchanges) - 1
+
+    resp = client.post(
+        f"/api/run/{run_id}/fork",
+        json={
+            "agent_name": "fork_ui_agent",
+            "step": last_step,
+            "mutated_response_b64": base64.b64encode(make_text_response("4 (mutated)")).decode(),
+            "confirm": True,
+            "max_usd": 0.01,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    store = TapeStore(str(db))
+    assert len(store.list_branches(run_id)) == 1
+    store.close()
+
+
+async def test_fork_runs_off_the_event_loop_so_concurrent_requests_are_not_blocked(
+    tmp_path, monkeypatch
+):
+    """The synchronous `ForkEngine.fork` call must run off the event-loop
+    thread (`asyncio.to_thread` or equivalent). Proof: patch `ForkEngine.fork`
+    to sleep for 0.3s (synchronously, simulating a slow real fork) then fire a
+    concurrent, cheap `GET /api/runs` while the fork request is in flight — if
+    `do_fork` still awaited the sleep directly on the request coroutine, this
+    process's one event loop (`uvicorn --workers 1`) would be blocked and the
+    concurrent GET would take ~0.3s too; off-loop execution lets it return
+    almost immediately instead."""
+    db, run_id, tape = _seed_last_step_fork_tape(tmp_path)
+    init_store(str(db))
+    init_fork_allowlist({"fork_ui_agent": _FORK_UI_AGENT_PATH})
+    last_step = len(tape.exchanges) - 1
+
+    real_fork = ForkEngine.fork
+
+    def slow_fork(*args, **kwargs):
+        time.sleep(0.3)
+        return real_fork(*args, **kwargs)
+
+    monkeypatch.setattr("tracefork.server.ForkEngine.fork", staticmethod(slow_fork))
+
+    transport = httpx.ASGITransport(app=fastapi_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        fork_task = asyncio.create_task(
+            async_client.post(
+                f"/api/run/{run_id}/fork",
+                json={
+                    "agent_name": "fork_ui_agent",
+                    "step": last_step,
+                    "mutated_response_b64": base64.b64encode(
+                        make_text_response("4 (mutated)")
+                    ).decode(),
+                    "confirm": True,
+                    "max_usd": 5.0,
+                },
+            )
+        )
+        # A short sleep is the probe: it hands control back to the event
+        # loop, which is the only way `fork_task` (just scheduled, not yet
+        # run) gets to start executing at all. If `do_fork` still blocks the
+        # thread inside `time.sleep(0.3)` with no `await` in between, the
+        # WHOLE event loop — including this sleep's own wakeup timer — is
+        # frozen until that finishes, so this `await` takes ~0.3s instead of
+        # ~0.05s. Off-loop execution leaves the loop free to wake this timer
+        # on schedule while the fork runs on its own thread.
+        sleep_start = time.monotonic()
+        await asyncio.sleep(0.05)
+        sleep_elapsed = time.monotonic() - sleep_start
+
+        runs_resp = await async_client.get("/api/runs")
+        fork_resp = await fork_task
+
+    assert runs_resp.status_code == 200
+    assert fork_resp.status_code == 200, fork_resp.text
+    assert sleep_elapsed < 0.2, (
+        f"a 0.05s asyncio.sleep took {sleep_elapsed:.3f}s while a fork was in "
+        "flight — the event loop was blocked, so the fork ran synchronously "
+        "on it instead of off-loop"
+    )

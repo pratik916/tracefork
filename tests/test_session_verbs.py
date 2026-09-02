@@ -11,11 +11,10 @@ dependency) plus reuse of tracefork-bge.65's already-shipped
 directly, fully offline/$0, with no skip needed.
 
 The CLI-wiring smoke tests at the bottom assert the exact end-to-end
-behavior the bead spec names (exit codes, printed text) and are
-`skipif`-gated on whether `cli.py`'s `session_app` actually registers each
-command yet -- the same pattern already used by `test_session_cost.py`'s
-`_COST_WIRED` guard. They activate automatically once the orchestrator
-pastes this bead's `cli_command` code into `cli.py`.
+behavior the bead spec names (exit codes, printed text) and hard-assert
+that `cli.py`'s `session_app` actually registers each command -- a
+deliberate unwiring fails the corresponding test loudly instead of the
+test silently vanishing via a skip (tracefork-sis.54).
 """
 
 from __future__ import annotations
@@ -228,8 +227,9 @@ def _seed_two_tape_session(db_path):
     return session_id, root_id, child_id
 
 
-@pytest.mark.skipif(not _RECORD_WIRED, reason=_WIRING_REASON.format("record"))
 def test_cli_session_record_batch_creates_and_registers_spawn_edges(tmp_path):
+    assert _RECORD_WIRED, _WIRING_REASON.format("record")
+
     db = tmp_path / "store.db"
     store = TapeStore(str(db))
     store.save_tape(_record_clean_tape(), run_id="root")
@@ -256,8 +256,9 @@ def test_cli_session_record_batch_creates_and_registers_spawn_edges(tmp_path):
         store.close()
 
 
-@pytest.mark.skipif(not _REPLAY_WIRED, reason=_WIRING_REASON.format("replay"))
 def test_cli_session_replay_clean_two_tape_session_exits_zero(tmp_path):
+    assert _REPLAY_WIRED, _WIRING_REASON.format("replay")
+
     db = tmp_path / "store.db"
     session_id, _root_id, _child_id = _seed_two_tape_session(db)
 
@@ -277,8 +278,9 @@ def test_cli_session_replay_clean_two_tape_session_exits_zero(tmp_path):
     assert "every tape replayed bit-exact" in result.output
 
 
-@pytest.mark.skipif(not _REPLAY_WIRED, reason=_WIRING_REASON.format("replay"))
 def test_cli_session_replay_unknown_session_id_exits_nonzero(tmp_path):
+    assert _REPLAY_WIRED, _WIRING_REASON.format("replay")
+
     db = tmp_path / "store.db"
     TapeStore(str(db)).close()
 
@@ -297,8 +299,9 @@ def test_cli_session_replay_unknown_session_id_exits_nonzero(tmp_path):
     assert result.exit_code != 0
 
 
-@pytest.mark.skipif(not _FORK_WIRED, reason=_WIRING_REASON.format("fork"))
 def test_cli_session_fork_at_last_step_is_offline_and_exits_zero(tmp_path):
+    assert _FORK_WIRED, _WIRING_REASON.format("fork")
+
     db = tmp_path / "store.db"
     session_id, root_id, _child_id = _seed_two_tape_session(db)
 
@@ -326,8 +329,9 @@ def test_cli_session_fork_at_last_step_is_offline_and_exits_zero(tmp_path):
     assert "Fork created" in result.output
 
 
-@pytest.mark.skipif(not _FORK_WIRED, reason=_WIRING_REASON.format("fork"))
 def test_cli_session_fork_run_id_outside_session_exits_nonzero_before_any_fork(tmp_path):
+    assert _FORK_WIRED, _WIRING_REASON.format("fork")
+
     db = tmp_path / "store.db"
     session_id, _root_id, _child_id = _seed_two_tape_session(db)
     store = TapeStore(str(db))
@@ -364,8 +368,9 @@ def test_cli_session_fork_run_id_outside_session_exits_nonzero_before_any_fork(t
         store.close()
 
 
-@pytest.mark.skipif(not _BLAME_WIRED, reason=_WIRING_REASON.format("blame"))
 def test_cli_session_blame_budget_gate_blocks_overspend_before_any_network_call(tmp_path):
+    assert _BLAME_WIRED, _WIRING_REASON.format("blame")
+
     db = tmp_path / "store.db"
     session_id, root_id, _child_id = _seed_two_tape_session(db)
 
@@ -388,8 +393,9 @@ def test_cli_session_blame_budget_gate_blocks_overspend_before_any_network_call(
     assert "exceeds budget" in result.output
 
 
-@pytest.mark.skipif(not _BLAME_WIRED, reason=_WIRING_REASON.format("blame"))
 def test_cli_session_blame_run_id_outside_session_exits_nonzero(tmp_path):
+    assert _BLAME_WIRED, _WIRING_REASON.format("blame")
+
     db = tmp_path / "store.db"
     session_id, _root_id, _child_id = _seed_two_tape_session(db)
     store = TapeStore(str(db))
@@ -413,8 +419,9 @@ def test_cli_session_blame_run_id_outside_session_exits_nonzero(tmp_path):
     assert "not reachable" in result.output
 
 
-@pytest.mark.skipif(not _SERVE_WIRED, reason=_WIRING_REASON.format("serve"))
 def test_cli_session_serve_wires_host_and_port_and_prints_deep_link(tmp_path, monkeypatch):
+    assert _SERVE_WIRED, _WIRING_REASON.format("serve")
+
     import uvicorn as uvicorn_module
 
     db = tmp_path / "store.db"
@@ -437,10 +444,11 @@ def test_cli_session_serve_wires_host_and_port_and_prints_deep_link(tmp_path, mo
     assert f"/api/session/{session_id}" in result.output
 
 
-@pytest.mark.skipif(not _SERVE_WIRED, reason=_WIRING_REASON.format("serve"))
 def test_cli_session_serve_unknown_session_id_exits_nonzero_and_never_calls_uvicorn(
     tmp_path, monkeypatch
 ):
+    assert _SERVE_WIRED, _WIRING_REASON.format("serve")
+
     import uvicorn as uvicorn_module
 
     db = tmp_path / "store.db"

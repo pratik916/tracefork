@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
 
 @pytest.fixture(scope="module")
@@ -95,3 +97,48 @@ def test_sdist_still_contains_source_and_readme(built_dist: Path):
     assert any(n.endswith("src/tracefork/__init__.py") for n in names)
     assert any(n.endswith("README.md") for n in names)
     assert any(n.endswith("pyproject.toml") for n in names)
+
+
+def test_sdist_has_explicit_include_allowlist_not_just_excludes():
+    """tracefork-sis.44: the file-selection must be an explicit, reviewable
+    INCLUDE allowlist -- not only an exclude denylist layered on hatchling's
+    default "sweep the whole git-tracked tree" behavior. A non-empty
+    `include` is what makes a future untracked stray file excluded BY
+    CONSTRUCTION (it matches no listed pattern), rather than relying on
+    someone remembering to extend .gitignore/exclude for it.
+    """
+    with PYPROJECT_PATH.open("rb") as f:
+        sdist_config = tomllib.load(f)["tool"]["hatch"]["build"]["targets"]["sdist"]
+    assert sdist_config.get("include"), (
+        "[tool.hatch.build.targets.sdist] must declare a non-empty `include` allowlist"
+    )
+    # The prior denylist-only excludes (tracefork-sis.13) must still hold too --
+    # belt AND suspenders, not either/or (see the pyproject.toml comment).
+    assert sdist_config.get("exclude"), "the tracefork-sis.13 excludes must not be dropped"
+
+
+def test_sdist_file_list_is_identical_across_two_consecutive_builds(
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    """The acceptance criterion this item exists to satisfy: two INDEPENDENT
+    `uv build`s (not the shared `built_dist` fixture above) with no source
+    changes between them must list identical files -- an explicit allowlist
+    makes this a guarantee, not an accident of whatever happened to be
+    gitignore-clean at build time.
+    """
+    out_a = tmp_path_factory.mktemp("dist_repro_a")
+    out_b = tmp_path_factory.mktemp("dist_repro_b")
+    for out_dir in (out_a, out_b):
+        subprocess.run(
+            ["uv", "build", "--out-dir", str(out_dir), "--clear"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    with tarfile.open(_sdist_path(out_a), mode="r:gz") as tf:
+        names_a = sorted(tf.getnames())
+    with tarfile.open(_sdist_path(out_b), mode="r:gz") as tf:
+        names_b = sorted(tf.getnames())
+    assert names_a == names_b
+    assert len(names_a) > 0

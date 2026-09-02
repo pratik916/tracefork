@@ -155,11 +155,12 @@ def test_plan_session_fork_never_mutates_tapes_or_touches_tape_bytes(tmp_path):
 _COST_WIRED = "cost" in {c.name for c in session_app.registered_commands}
 
 
-@pytest.mark.skipif(
-    not _COST_WIRED,
-    reason="`session cost` not yet wired into cli.py session_app (see cli_command in bead result)",
-)
 def test_cli_session_cost_smoke_and_error_exit_codes(tmp_path):
+    # Hard assertion, not a skip: `session cost` is verified wired today, so
+    # deliberately unwiring it must fail this test loudly rather than make it
+    # vanish silently (tracefork-sis.54).
+    assert _COST_WIRED, "`session cost` not wired into cli.py session_app"
+
     db = tmp_path / "store.db"
     store = TapeStore(str(db))
     session_id = _diamond_session(store)

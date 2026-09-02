@@ -24,7 +24,7 @@ from tracefork.adapters.base import (
     register_framework_adapter,
     registered_framework_adapters,
 )
-from tracefork.nondet import ReplayNondet
+from tracefork.nondet import DivergenceError, ReplayNondet
 from tracefork.tape import Tape
 from tracefork.transport import TraceforkTransport
 
@@ -230,3 +230,229 @@ def test_base_adapter_records_steps_into_its_dag():
     adapter.record_step(Step("a", kind="chain"))
     adapter.record_step(Step("b", parent_id="a", kind="llm"))
     assert [s.step_id for s in adapter.dag.steps] == ["a", "b"]
+
+
+# ── Pydantic AI adapter (offline, no framework installed) ───────────────────
+#
+# tracefork-sis.61: the new adapters/pydantic_ai.py is exercised here rather
+# than a dedicated tests/test_adapters_pydantic_ai.py -- this lane owns only
+# tests/test_adapters_base.py, and importing tracefork.adapters.pydantic_ai
+# needs no real `pydantic_ai` package (same guarded-import contract this
+# file's own charter already requires of everything it tests), so it fits
+# this module's "must work with no framework present at all" scope.
+
+from tracefork.adapters.pydantic_ai import (  # noqa: E402
+    PydanticAIAdapter,
+    pydantic_ai_available,
+    require_pydantic_ai,
+)
+
+
+class _FakeAsyncClient:
+    """Mimics ``openai.AsyncOpenAI``/``anthropic.AsyncAnthropic``: ``.copy(http_client=)``."""
+
+    def __init__(self, http_client=None):
+        self.http_client = http_client
+
+    def copy(self, *, http_client=None):
+        return _FakeAsyncClient(http_client=http_client)
+
+
+class _FakeProvider:
+    """Stand-in for pydantic_ai's ``OpenAIProvider``/``AnthropicProvider``."""
+
+    def __init__(self):
+        self.client = _FakeAsyncClient()
+
+
+class _FakeModel:
+    """Stand-in for pydantic_ai's ``OpenAIModel``/``AnthropicModel`` -- holds its
+    client one level down, under ``.provider.client`` (one of ``bind``'s
+    candidate holder paths), proving the search doesn't hard-code a single
+    "true" attribute path -- the real package documents none."""
+
+    def __init__(self):
+        self.provider = _FakeProvider()
+
+
+class _FakeAgent:
+    """Stand-in for pydantic_ai's ``Agent`` -- holds a ``Model`` under ``.model``."""
+
+    def __init__(self):
+        self.model = _FakeModel()
+
+
+def test_pydantic_ai_registers_itself():
+    assert "pydantic_ai" in registered_framework_adapters()
+    assert isinstance(get_framework_adapter("pydantic_ai"), PydanticAIAdapter)
+
+
+def test_pydantic_ai_bind_injects_nested_agent_model_provider_client():
+    tape = Tape()
+    agent = _FakeAgent()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(agent, tape, mode="replay", patch_uuid=False)
+    try:
+        assert result.injected_fields == ("model.provider.client",)
+        assert agent.model.provider.client.http_client is result.http_async_client
+        assert result.notes == ""
+    finally:
+        adapter.teardown()
+
+
+def test_pydantic_ai_bind_injects_client_attribute_directly_on_target():
+    # A caller may hand `bind` an already-resolved Model/Provider-shaped
+    # object exposing `.client` directly (one of `bind`'s other candidate
+    # holder paths: the target itself).
+    tape = Tape()
+    provider = _FakeProvider()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(provider, tape, mode="replay", patch_uuid=False)
+    try:
+        assert result.injected_fields == ("client",)
+        assert provider.client.http_client is result.http_async_client
+    finally:
+        adapter.teardown()
+
+
+def test_pydantic_ai_bind_unknown_target_reports_notes():
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(object(), Tape(), mode="replay", patch_uuid=False)
+    try:
+        assert result.injected_fields == ()
+        assert "nothing was injected" in result.notes
+    finally:
+        adapter.teardown()
+
+
+async def test_pydantic_ai_bind_replay_serves_recorded_bytes_bit_exact():
+    """The marquee: a run bound in replay mode serves tape bytes for $0, and a
+    request that diverges from the tape is caught (proof, not assertion)."""
+    tape = Tape()
+    tape.append_exchange(b'{"model":"gpt-4o","messages":[]}', b'{"ok":true}')
+    agent = _FakeAgent()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(agent, tape, mode="replay", patch_uuid=False)
+    try:
+        client = agent.model.provider.client.http_client
+        assert client is result.http_async_client
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            content=b'{"model":"gpt-4o","messages":[]}',
+        )
+        assert resp.status_code == 200
+        assert resp.content == b'{"ok":true}'
+    finally:
+        adapter.teardown()
+
+
+async def test_pydantic_ai_bind_replay_divergence_on_mismatched_request():
+    tape = Tape()
+    tape.append_exchange(b"RECORDED", b"RESP")
+    agent = _FakeAgent()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(agent, tape, mode="replay", patch_uuid=False)
+    try:
+        with pytest.raises(DivergenceError):
+            await result.http_async_client.post("https://api.openai.com/v1/x", content=b"DIFFERENT")
+    finally:
+        adapter.teardown()
+
+
+def test_pydantic_ai_bind_replay_installs_uuid_patch_and_teardown_restores():
+    tape = Tape()
+    tape.draws = [("uuid", "0" * 32), ("uuid", "1" * 32)]
+    agent = _FakeAgent()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(agent, tape, mode="replay")  # patch_uuid defaults True
+    try:
+        assert isinstance(result.nondet, ReplayNondet)
+        assert uuid.uuid4().hex == "0" * 32
+        assert uuid.uuid4().hex == "1" * 32
+    finally:
+        adapter.teardown()
+    assert isinstance(uuid.uuid4(), uuid.UUID)  # real randomness restored
+
+
+def test_pydantic_ai_bind_provided_nondet_is_used():
+    tape = Tape()
+    supplied = ReplayNondet([("uuid", "f" * 32)])
+    agent = _FakeAgent()
+    adapter = PydanticAIAdapter()
+    result = adapter.bind(agent, tape, mode="replay", nondet=supplied)
+    try:
+        assert result.nondet is supplied
+        assert uuid.uuid4().hex == "f" * 32
+    finally:
+        adapter.teardown()
+
+
+def test_pydantic_ai_bind_record_mode_requires_inner_when_target_unresolvable():
+    # object() has no known client attribute, so bind's best-effort record-mode
+    # transport lookup finds nothing and build_http_clients' own "record mode
+    # requires an inner transport" guard fires -- proving record mode isn't
+    # silently downgraded to replay's no-inner contract.
+    adapter = PydanticAIAdapter()
+    with pytest.raises(ValueError, match="record mode requires an inner transport"):
+        adapter.bind(object(), Tape(), mode="record")
+
+
+# ── on_step: framework-neutral event -> Step ─────────────────────────────────
+
+
+def test_pydantic_ai_on_step_builds_dag_from_neutral_events():
+    adapter = PydanticAIAdapter()
+    adapter.on_step({"id": "root", "kind": "agent_run", "name": "run"})
+    adapter.on_step(
+        {
+            "id": "req1",
+            "parent_id": "root",
+            "kind": "llm",
+            "name": "model_request",
+            "model": "gpt-4o",
+        }
+    )
+    adapter.on_step({"id": "tool1", "parent_id": "root", "kind": "tool", "name": "call_tools"})
+
+    dag = adapter.dag
+    assert [s.step_id for s in dag.steps] == ["root", "req1", "tool1"]
+    llm_step = dag.by_id("req1")
+    assert llm_step.is_llm()
+    assert llm_step.model == "gpt-4o"
+    assert llm_step.parent_id == "root"
+    assert [s.step_id for s in dag.llm_steps()] == ["req1"]
+
+
+def test_pydantic_ai_on_step_accepts_alt_key_names():
+    adapter = PydanticAIAdapter()
+    step = adapter.on_step({"run_id": "s1", "parent_run_id": "p1", "run_type": "llm"})
+    assert step.step_id == "s1"
+    assert step.parent_id == "p1"
+    assert step.kind == "llm"
+
+
+def test_pydantic_ai_on_step_synthesizes_id_when_missing():
+    adapter = PydanticAIAdapter()
+    step = adapter.on_step({"kind": "end"})
+    assert step.step_id  # non-empty synthesized id
+    assert step in adapter.dag.steps
+
+
+# ── availability guard ────────────────────────────────────────────────────────
+
+
+def test_require_pydantic_ai_matches_availability():
+    if pydantic_ai_available():  # pragma: no cover - only when pydantic-ai is installed
+        require_pydantic_ai()
+    else:
+        with pytest.raises(ImportError, match="pydantic-ai") as excinfo:
+            require_pydantic_ai()
+        assert excinfo.value.__cause__ is not None
+
+
+# ── real-framework smoke (skipped cleanly when the framework is absent) ─────────
+
+
+def test_pydantic_ai_real_package_importorskip():
+    pytest.importorskip("pydantic_ai")  # pragma: no cover - needs pydantic-ai extra
+    assert pydantic_ai_available()  # pragma: no cover
