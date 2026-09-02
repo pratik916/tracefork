@@ -93,6 +93,58 @@ def test_tournament_picks_the_clearly_better_variant_with_excluding_ci():
     assert report.winner().name == "always-success"
 
 
+def test_run_emits_progress_once_per_completed_trial(tmp_path):
+    """tracefork-sis.51: a real (offline, $0) tournament sweep must call
+    `progress` exactly once per completed trial -- FLIP/success, failure, or
+    undefined all count -- with `total` equal to `est.n_forks` throughout, so
+    a caller can distinguish real progress from a silent hang."""
+    tape = _record_tape()
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+    variants = [
+        Variant(name="always-fail", response=FAIL_RESP),
+        Variant(name="always-success", response=SUCCESS_RESP),
+    ]
+    calls: list[tuple[int, int]] = []
+
+    report = TournamentEngine.run(
+        tape,
+        step_index=1,
+        variants=variants,
+        agent_fn=_final_answer_agent,
+        oracle=oracle,
+        k=4,
+        budget_usd=100.0,
+        progress=lambda completed, total: calls.append((completed, total)),
+    )
+
+    # 2 variants * k=4 = 8 trials.
+    assert report.total_forks == 8
+    assert calls == [(i, 8) for i in range(1, 9)]
+
+
+def test_run_progress_defaults_to_none_and_is_byte_identical_when_omitted():
+    """Omitting `progress` (the default) must not change behavior -- the same
+    additive-parameter discipline every other opt-in kwarg in this codebase
+    follows."""
+    tape = _record_tape()
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+    variants = [
+        Variant(name="always-fail", response=FAIL_RESP),
+        Variant(name="always-success", response=SUCCESS_RESP),
+    ]
+
+    report = TournamentEngine.run(
+        tape,
+        step_index=1,
+        variants=variants,
+        agent_fn=_final_answer_agent,
+        oracle=oracle,
+        k=4,
+        budget_usd=100.0,
+    )
+    assert report.total_forks == 8
+
+
 def test_budget_governor_estimate_raises_before_any_trial_runs():
     """A BudgetGovernor-style estimate raises BudgetExceededError before any
     fork trial when N*k exceeds budget_usd — checked via a flat

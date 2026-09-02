@@ -22,6 +22,7 @@ __pycache__/
 /bench_report.json
 /examples/demo_report.html
 /junit.xml
+/export.json
 
 # Build, coverage, and tool caches (regenerated on demand)
 /dist/

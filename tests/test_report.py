@@ -447,3 +447,84 @@ def test_report_survives_non_utf8_locale():
     title_match = re.search(rb"<title>(.*?)</title>", non_utf8_html)
     assert title_match is not None
     assert title_match.group(1).decode("utf-8") == "tracefork — time-travel debugger"
+
+
+# ── branch_details cap (tracefork-sis.56) ───────────────────────────────────
+
+
+def test_tape_to_data_branch_details_under_cap_is_embedded_whole():
+    """A small branch_details dict, well under the default cap, must round
+    -trip unchanged with no truncation marker -- the byte-identical-when-
+    -unaffected discipline every other optional field in this module follows."""
+    tape = _make_tape()
+    branch_details = {"b1": {"agent_name": "synthetic", "exchanges": []}}
+    data = _tape_to_data(tape, branch_details=branch_details)
+    assert data["branch_details"] == branch_details
+    assert data["branch_details_truncated"] is None
+
+
+def test_tape_to_data_defaults_branch_details_truncated_to_none_when_absent():
+    tape = _make_tape()
+    data = _tape_to_data(tape)
+    assert data["branch_details"] == {}
+    assert data["branch_details_truncated"] is None
+
+
+def test_generate_report_caps_branch_details_and_reports_truncation():
+    """tracefork-sis.56: reproduces the measured defect (a run with 100
+    branches producing a payload dominated by branch_details, no cap, no
+    opt-out) at a scale a test can run fast -- exceeding the cap must
+    truncate the embedded payload, not silently balloon it, and the output
+    must carry a structured truncation notice a consumer can act on."""
+    tape = _make_tape()
+    big_note = "x" * 20_000
+    branch_details = {
+        f"branch-{i}": {"agent_name": "synthetic", "exchanges": [], "note": big_note}
+        for i in range(100)
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branch_details=branch_details)
+        payload_bytes = out.stat().st_size
+        data = _extract_data(out.read_text())
+
+    kept = len(data["branch_details"])
+    assert 0 < kept < 100, "must be a real, non-trivial, strict subset -- not all-or-nothing"
+    truncated = data["branch_details_truncated"]
+    assert truncated is not None
+    assert truncated["total_branches"] == 100
+    assert truncated["included"] == kept
+    assert truncated["omitted"] == 100 - kept
+    # 100 uncapped 20KB branches would be ~2MB; the cap must actually bound
+    # the file, not just add a cosmetic marker beside an unbounded blob.
+    assert payload_bytes < 700_000, f"payload was {payload_bytes} bytes -- cap did not bound it"
+
+
+def test_tape_to_data_branch_details_cap_bytes_is_a_tunable_parameter():
+    """A caller can pass a smaller/larger `branch_details_cap_bytes` -- proves
+    the cap is a real, tunable parameter (the cli.py flag's target), not a
+    hardcoded constant baked into this function."""
+    tape = _make_tape()
+    branch_details = {f"b{i}": {"note": "x" * 1000} for i in range(10)}
+
+    tight = _tape_to_data(tape, branch_details=branch_details, branch_details_cap_bytes=500)
+    assert len(tight["branch_details"]) < 10
+    assert tight["branch_details_truncated"] is not None
+
+    loose = _tape_to_data(tape, branch_details=branch_details, branch_details_cap_bytes=1_000_000)
+    assert loose["branch_details"] == branch_details
+    assert loose["branch_details_truncated"] is None
+
+
+def test_generate_report_branch_details_cap_bytes_param_threads_through():
+    """`generate_report` itself (not just `_tape_to_data`) must accept and
+    apply `branch_details_cap_bytes`."""
+    tape = _make_tape()
+    branch_details = {f"b{i}": {"note": "x" * 1000} for i in range(10)}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "report.html"
+        generate_report(tape, out, branch_details=branch_details, branch_details_cap_bytes=500)
+        data = _extract_data(out.read_text())
+    assert len(data["branch_details"]) < 10
+    assert data["branch_details_truncated"] is not None

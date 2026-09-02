@@ -44,6 +44,7 @@ avoid the winner's-curse optimism bias. Both are genuine future upgrades to
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -235,6 +236,7 @@ class TournamentEngine:
         cost_per_fork_usd: float | None = None,
         model: str | None = None,
         boundary_guard: bool = False,
+        progress: Callable[[int, int], None] | None = None,
     ) -> TournamentReport:
         """Fork each of `variants` `k` times at `step_index` and rank them by
         success rate.
@@ -242,6 +244,15 @@ class TournamentEngine:
         Gates on `TournamentEngine.estimate` BEFORE any trial runs, raising
         `BudgetExceededError` (reused from `blame.py`) if the estimate
         exceeds `budget_usd` — exactly like `BlameEngine.rank`.
+
+        `progress` (default `None`, byte-identical to before when left off) is
+        called exactly once per COMPLETED trial (every outcome — success,
+        failure, or undefined) as `progress(completed, total)`, where `total`
+        is this call's own `est.n_forks` (`len(variants) * k`, exact) — the
+        same per-completed-trial contract `BlameEngine.rank`/`shapley_rank`
+        establish, for the same reason: a silent, sequential, potentially
+        real-money `n_variants x k` loop otherwise gives no way to tell
+        progress from a hang.
         """
         n = len(tape.exchanges)
         if step_index < 0 or step_index >= n:
@@ -285,6 +296,8 @@ class TournamentEngine:
                     tally.undefined += 1
                     if diverged:
                         tally.divergences += 1
+                if progress is not None:
+                    progress(total_forks, est.n_forks)
 
             valid = tally.valid
             score = tally.successes / valid if valid > 0 else 0.0

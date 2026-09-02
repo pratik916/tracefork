@@ -860,6 +860,7 @@ class BlameEngine:
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
         matcher: RequestMatcher | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> BlameReport:
         """Fork each exchange `k` times with a perturbed response and measure how
         often the graded outcome flips relative to the parent run.
@@ -899,6 +900,15 @@ class BlameEngine:
         actual stored fingerprints instead of raw bytes it never stored,
         which would otherwise make every trial diverge (UNDEFINED, not a
         genuine NO_FLIP) and silently read as `flip_rate=0.0`.
+
+        `progress` (default `None`, byte-identical to before when left off) is
+        called exactly once per COMPLETED trial (any outcome — FLIP, NO_FLIP,
+        or UNDEFINED all count) as `progress(completed, total)`, where `total`
+        is `BudgetGovernor.estimate(tape, k=k).n_forks` — the exact real trial
+        count this call will run (`n_candidates * k`), so `completed` reaches
+        `total` exactly at the end. A silent, sequential, potentially
+        real-money `n x k` loop otherwise gives the caller no way to tell
+        progress from a hang.
         """
         est = BudgetGovernor.estimate(tape, k=k)
         if est.est_usd > budget_usd:
@@ -940,6 +950,8 @@ class BlameEngine:
                     tally.undefined += 1
                     if diverged:
                         tally.divergences += 1
+                if progress is not None:
+                    progress(total_forks, est.n_forks)
 
             valid = tally.valid
             flip_rate = tally.flips / valid if valid > 0 else 0.0
@@ -1069,6 +1081,7 @@ class BlameEngine:
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
         matcher: RequestMatcher | None = None,
+        on_trial: Callable[[], None] | None = None,
     ) -> _StepTally:
         """Run ``k`` coalition-fork trials for ``steps`` (a joint intervention
         set) and tally FLIP/NO_FLIP/UNDEFINED exactly like ``_run_trial``,
@@ -1084,43 +1097,53 @@ class BlameEngine:
         are forwarded to `ForkEngine.fork_coalition()` exactly like ``_run_trial``
         forwards them to `ForkEngine.fork()`; a violation is caught below and
         counted UNDEFINED.
+
+        ``on_trial`` (default `None`), if given, is called exactly once per
+        COMPLETED trial (every outcome, including an exception/UNDEFINED path)
+        — a zero-argument tick, since the running-count/total bookkeeping
+        belongs to the caller (`shapley_rank`), which spans many
+        `_run_coalition_trials` calls under one shared total.
         """
         tally = _StepTally()
         ordered = tuple(sorted(steps))
         top_step = ordered[-1]
         for _trial in range(k):
-            per_step = {s: perturb_factory(s) for s in ordered}
-            interventions = tuple(StepIntervention(s, per_step[s][0]) for s in ordered)
-            tail_transport = cast("httpx.BaseTransport | None", per_step[top_step][1])
-            spec = CoalitionSpec(interventions=interventions)
             try:
-                branch = ForkEngine.fork_coalition(
-                    tape,
-                    spec,
-                    agent_fn,
-                    post_fork_transport=tail_transport,
-                    api_key=api_key,
-                    boundary_guard=boundary_guard,
-                    confinement=confinement,
-                    matcher=matcher,
-                )
-            except Exception as exc:
-                tally.undefined += 1
-                if find_divergence(exc) is not None:
-                    tally.divergences += 1
-                continue
+                per_step = {s: perturb_factory(s) for s in ordered}
+                interventions = tuple(StepIntervention(s, per_step[s][0]) for s in ordered)
+                tail_transport = cast("httpx.BaseTransport | None", per_step[top_step][1])
+                spec = CoalitionSpec(interventions=interventions)
+                try:
+                    branch = ForkEngine.fork_coalition(
+                        tape,
+                        spec,
+                        agent_fn,
+                        post_fork_transport=tail_transport,
+                        api_key=api_key,
+                        boundary_guard=boundary_guard,
+                        confinement=confinement,
+                        matcher=matcher,
+                    )
+                except Exception as exc:
+                    tally.undefined += 1
+                    if find_divergence(exc) is not None:
+                        tally.divergences += 1
+                    continue
 
-            if branch.delta_tape.exchanges:
-                graded = oracle.grade(_outcome_text(branch.delta_tape.exchanges[-1][1]))
-            else:
-                graded = None
-            if graded is None or parent_outcome is None:
-                tally.undefined += 1
-                continue
-            if graded != parent_outcome:
-                tally.flips += 1
-            else:
-                tally.no_flips += 1
+                if branch.delta_tape.exchanges:
+                    graded = oracle.grade(_outcome_text(branch.delta_tape.exchanges[-1][1]))
+                else:
+                    graded = None
+                if graded is None or parent_outcome is None:
+                    tally.undefined += 1
+                    continue
+                if graded != parent_outcome:
+                    tally.flips += 1
+                else:
+                    tally.no_flips += 1
+            finally:
+                if on_trial is not None:
+                    on_trial()
         return tally
 
     @staticmethod
@@ -1142,6 +1165,7 @@ class BlameEngine:
         async_batches: list[list[int]] | None = None,
         confinement: ConfinementSpec | None = None,
         matcher: RequestMatcher | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> ShapleyReport:
         """Temporal (order-restricted) Shapley blame — additive to `rank()`.
 
@@ -1234,6 +1258,16 @@ class BlameEngine:
         always just the SET of steps forced so far; only the SEQUENCE of sets
         visited along the walk (and thus which step gets credited each
         marginal jump) is affected by ordering. No `fork.py` code changes.
+
+        `progress` (default `None`) is called once per COMPLETED trial across
+        BOTH phases this method runs — the internal sufficiency `rank()` pass
+        and every coalition-walk trial — as `progress(completed, total)`,
+        where `total` is this call's own `BudgetGovernor.estimate(...,
+        coalition_samples=m_samples, async_batches=async_batches).n_forks`
+        (exact for the common `async_batches=None` case; a documented loose
+        upper bound otherwise, same as `confinement_risk`'s `projected_trials`
+        — see `estimate`'s own docstring). A single shared counter against one
+        shared total, not two separately-scaled progress bars.
         """
         n = len(tape.exchanges)
         if n == 0:
@@ -1256,6 +1290,18 @@ class BlameEngine:
             confinement=confinement,
         )
 
+        # A single running counter shared by BOTH phases below (the
+        # sufficiency `rank()` pass and every coalition-walk trial), reported
+        # against this call's OWN grand-total estimate (`est.n_forks`) rather
+        # than each phase's smaller local total.
+        completed = 0
+
+        def _tick() -> None:
+            nonlocal completed
+            completed += 1
+            if progress is not None:
+                progress(completed, est.n_forks)
+
         # Sufficiency reuses the existing, independently-tested single-step path.
         # budget_usd=inf: the combined cost was already cleared above, so this
         # inner call must not re-raise on its own (smaller) slice of the budget.
@@ -1270,6 +1316,7 @@ class BlameEngine:
             boundary_guard=boundary_guard,
             confinement=confinement,
             matcher=matcher,
+            progress=(lambda _c, _t: _tick()) if progress is not None else None,
         )
         sufficiency_by_step = {r.step_index: r for r in single_step.results}
         parent_outcome = single_step.parent_outcome
@@ -1301,6 +1348,7 @@ class BlameEngine:
                 boundary_guard,
                 confinement,
                 matcher,
+                on_trial=_tick if progress is not None else None,
             )
             coalition_forks += k
             return tally.flips / tally.valid if tally.valid > 0 else math.nan

@@ -25,6 +25,7 @@ import sqlite3
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import zstandard as zstd
@@ -305,6 +306,12 @@ class Tape:
 
     @classmethod
     def load(cls, path: str) -> Tape:
+        # `sqlite3.connect` auto-creates an empty file at connect time for a
+        # path whose parent directory exists but whose file doesn't -- check
+        # existence FIRST so a typo'd path raises cleanly instead of leaving
+        # a junk empty `.sqlite` file behind as a side effect.
+        if not Path(path).exists():
+            raise FileNotFoundError(f"no tape file at {path!r}")
         con = open_sqlite(path)
         try:
             raw_blobs = dict(con.execute("SELECT hash, data FROM blobs").fetchall())

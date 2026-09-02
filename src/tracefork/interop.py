@@ -56,17 +56,23 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
+
 from .blame import BlameReport, CIMethod, FlipRateResult, benjamini_hochberg
 from .constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY
+from .errors import TraceforkError
 from .providers import get_adapter
 from .providers.base import NormalizedResponse
 from .store import TapeStore
 from .tape import Tape, sha256_hex
 
 # ── gen_ai.* attribute names (OTel GenAI semantic conventions) ─────────────
-# https://opentelemetry.io/docs/specs/semconv/gen-ai/ — version pinned as
-# GENAI_SEMCONV_VERSION in constants.py.
-ATTR_SYSTEM = "gen_ai.system"
+# https://github.com/open-telemetry/semantic-conventions-genai — version
+# pinned as GENAI_SEMCONV_VERSION in constants.py. `gen_ai.system` (the
+# original attribute name) was replaced by `gen_ai.provider.name` upstream;
+# this module targets ONLY the current name -- see GENAI_SEMCONV_VERSION's
+# own docstring in constants.py for the release that stabilized it.
+ATTR_PROVIDER_NAME = "gen_ai.provider.name"
 ATTR_OPERATION_NAME = "gen_ai.operation.name"
 ATTR_REQUEST_MODEL = "gen_ai.request.model"
 ATTR_RESPONSE_MODEL = "gen_ai.response.model"
@@ -74,9 +80,19 @@ ATTR_RESPONSE_ID = "gen_ai.response.id"
 ATTR_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons"
 ATTR_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
 ATTR_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+# Tool-call span attributes (`gen_ai.execute_tool.internal` span type).
+ATTR_TOOL_NAME = "gen_ai.tool.name"
+# Correlates every span belonging to one conversation/session; set only when
+# a caller passes `build_otel_trace(..., session_id=...)` (see below).
+ATTR_CONVERSATION_ID = "gen_ai.conversation.id"
 
 # tracefork-specific (vendor-namespaced, never collides with a semconv name).
 ATTR_STEP_INDEX = "tracefork.step_index"
+# `tape.tool_exchanges` has its own index space, separate from
+# `tape.exchanges`'s ATTR_STEP_INDEX -- reusing one name across two
+# differently-ordered lists would let a consumer wrongly correlate a tool
+# span with an unrelated LLM-exchange step.
+ATTR_TOOL_STEP_INDEX = "tracefork.tool_step_index"
 ATTR_BLAME_FLIP_RATE = "tracefork.blame.flip_rate"
 ATTR_BLAME_CI_LO = "tracefork.blame.ci_lo"
 ATTR_BLAME_CI_HI = "tracefork.blame.ci_hi"
@@ -103,14 +119,19 @@ def normalized_to_genai_attributes(
     *,
     provider: str,
     request_model: str | None = None,
+    operation_name: str = "chat",
 ) -> dict[str, Any]:
     """Map a provider-neutral `NormalizedResponse` to a `gen_ai.*` attribute dict.
 
     This is the adopted-naming seam item 1 of this module asks for: every
     consumer that wants `gen_ai.*`-shaped data goes through here rather than
-    reading one provider's JSON directly.
+    reading one provider's JSON directly. `operation_name` defaults to
+    `"chat"` (an LLM inference call, the only kind this function has ever
+    described); `build_otel_trace`'s tool-exchange spans pass
+    `"execute_tool"` instead, so operation.name is no longer hardcoded
+    regardless of what actually happened.
     """
-    attrs: dict[str, Any] = {ATTR_SYSTEM: provider, ATTR_OPERATION_NAME: "chat"}
+    attrs: dict[str, Any] = {ATTR_PROVIDER_NAME: provider, ATTR_OPERATION_NAME: operation_name}
     model = request_model or normalized.model
     if model:
         attrs[ATTR_REQUEST_MODEL] = model
@@ -136,6 +157,25 @@ def _blame_attributes(result: FlipRateResult, report: BlameReport) -> dict[str, 
         ATTR_BLAME_Q_VALUE: result.q_value,
         ATTR_BLAME_RESPONSIBLE: result.responsible,
     }
+
+
+def _decode_tool_name(request_frame: bytes) -> str:
+    """Best-effort `gen_ai.tool.name` off a `tape.tool_exchanges` request
+    frame's real MCP `tools/call` JSON-RPC wire shape (mirrors
+    `settlement.py`'s own `_decode_tool_frame` tool-name extraction) — a
+    malformed/non-`tools/call` frame is never a crash, only an honest
+    `"unknown"` fallback (never dropped, never fabricated)."""
+    try:
+        request = json.loads(request_frame)
+    except (ValueError, UnicodeDecodeError):
+        return "unknown"
+    if not isinstance(request, dict) or request.get("method") != "tools/call":
+        return "unknown"
+    params = request.get("params")
+    if not isinstance(params, dict):
+        return "unknown"
+    tool_name = params.get("name")
+    return tool_name if isinstance(tool_name, str) and tool_name else "unknown"
 
 
 def _normalize_exchange(
@@ -267,11 +307,22 @@ def build_otel_trace(
     *,
     provider: str = "anthropic",
     blame: BlameReport | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Build an OTLP/JSON-shaped trace (`resourceSpans[].scopeSpans[].spans[]`)
-    from `tape`'s exchanges: one `gen_ai.*` CLIENT span per exchange, children
-    of a single root span for the run, plus tracefork's own vendor-namespaced
-    `tracefork.blame.*` attributes on any step present in `blame.results`.
+    from `tape`'s exchanges AND tool_exchanges: one `gen_ai.*` CLIENT span per
+    LLM exchange (`gen_ai.operation.name = "chat"`) plus one
+    `gen_ai.execute_tool.internal`-shaped span per tool exchange
+    (`operation.name = "execute_tool"`, `gen_ai.tool.name` decoded off the
+    real MCP wire frame) — children of a single root span for the run — plus
+    tracefork's own vendor-namespaced `tracefork.blame.*` attributes on any
+    LLM step present in `blame.results`.
+
+    `session_id` (default `None`, byte-identical omission when left off) sets
+    `gen_ai.conversation.id` on every span (root, LLM, and tool) when given —
+    the OTel GenAI attribute correlating spans within one conversation/
+    session; pass `store.py`'s orchestration `session_id` when the tape
+    belongs to one.
 
     A plain JSON-serializable dict — no `opentelemetry-sdk` install required
     to produce or consume it (see the module docstring).
@@ -280,6 +331,16 @@ def build_otel_trace(
     trace_id = _hex_id(tape.digest() or "tracefork-empty-tape", 16)
     root_span_id = _hex_id(f"{trace_id}:root", 8)
     blame_by_step = {r.step_index: r for r in (blame.results if blame else [])}
+    n_exchanges = len(tape.exchanges)
+    n_tool_exchanges = len(tape.tool_exchanges)
+
+    root_attrs: dict[str, Any] = {
+        "tracefork.agent_name": tape.agent_name,
+        "tracefork.tape_digest": tape.digest(),
+        "tracefork.exchange_count": n_exchanges,
+    }
+    if session_id:
+        root_attrs[ATTR_CONVERSATION_ID] = session_id
 
     spans: list[dict[str, Any]] = [
         {
@@ -289,14 +350,8 @@ def build_otel_trace(
             "name": f"tracefork.tape {tape.agent_name or '(agent)'}",
             "kind": 1,  # SPAN_KIND_INTERNAL
             "startTimeUnixNano": "0",
-            "endTimeUnixNano": str(max(1, len(tape.exchanges))),
-            "attributes": _kv_list(
-                {
-                    "tracefork.agent_name": tape.agent_name,
-                    "tracefork.tape_digest": tape.digest(),
-                    "tracefork.exchange_count": len(tape.exchanges),
-                }
-            ),
+            "endTimeUnixNano": str(max(1, n_exchanges + n_tool_exchanges)),
+            "attributes": _kv_list(root_attrs),
             "status": {"code": 1},  # STATUS_CODE_OK
         }
     ]
@@ -308,6 +363,8 @@ def build_otel_trace(
             normalized, provider=provider, request_model=request_model
         )
         attrs[ATTR_STEP_INDEX] = i
+        if session_id:
+            attrs[ATTR_CONVERSATION_ID] = session_id
         result = blame_by_step.get(i)
         if result is not None and blame is not None:
             attrs.update(_blame_attributes(result, blame))
@@ -322,6 +379,31 @@ def build_otel_trace(
                 "startTimeUnixNano": str(i),
                 "endTimeUnixNano": str(i + 1),
                 "attributes": _kv_list(attrs),
+                "status": {"code": 1},
+            }
+        )
+
+    for j, (tool_req, _tool_resp) in enumerate(tape.tool_exchanges):
+        tool_name = _decode_tool_name(tool_req)
+        tool_attrs: dict[str, Any] = {
+            ATTR_OPERATION_NAME: "execute_tool",
+            ATTR_TOOL_NAME: tool_name,
+            ATTR_TOOL_STEP_INDEX: j,
+        }
+        if session_id:
+            tool_attrs[ATTR_CONVERSATION_ID] = session_id
+        span_id = _hex_id(f"{trace_id}:tool:{j}", 8)
+        start = n_exchanges + j
+        spans.append(
+            {
+                "traceId": trace_id,
+                "spanId": span_id,
+                "parentSpanId": root_span_id,
+                "name": f"execute_tool {tool_name}",
+                "kind": 1,  # SPAN_KIND_INTERNAL — matches gen_ai.execute_tool.internal
+                "startTimeUnixNano": str(start),
+                "endTimeUnixNano": str(start + 1),
+                "attributes": _kv_list(tool_attrs),
                 "status": {"code": 1},
             }
         )
@@ -346,6 +428,65 @@ def build_otel_trace(
             }
         ]
     }
+
+
+# ── push: OTel trace -> a live OTLP/HTTP collector (tracefork-sis.60) ──────
+
+
+class OtlpExportError(TraceforkError):
+    """`push_otlp_trace` couldn't deliver the trace: a non-2xx response from
+    the collector, or a transport-level failure (connection refused, DNS,
+    timeout) — both surfaced as one exception type so `cli.py`'s `export`
+    command can catch just this one and print an actionable stderr line
+    instead of a raw traceback into `httpx`'s internals."""
+
+
+def push_otlp_trace(
+    trace: Mapping[str, Any],
+    endpoint: str,
+    *,
+    timeout: float = 10.0,
+    transport: httpx.BaseTransport | None = None,
+) -> httpx.Response:
+    """POST `trace` (as produced by `build_otel_trace`) to a live OTLP
+    collector's HTTP+JSON trace-export endpoint.
+
+    No `opentelemetry-sdk`/exporter package needed: `build_otel_trace`'s
+    output is already shaped exactly as the OTLP/HTTP+JSON wire protocol's
+    `ExportTraceServiceRequest` JSON encoding (camelCase field names,
+    hex-encoded trace/span ids, a top-level `resourceSpans` array — see
+    https://opentelemetry.io/docs/specs/otlp/#otlphttp), so this is a plain
+    `httpx` POST of that same dict to `{endpoint}/v1/traces` (the spec's
+    documented default trace path) with `Content-Type: application/json` —
+    the exact request any real collector (the OTel Collector, Jaeger,
+    vendor backends) already accepts. `endpoint`'s trailing slash, if any,
+    is stripped before appending the path.
+
+    `transport` (default `None`, real network) lets a caller — this
+    module's own tests — inject an `httpx.MockTransport`/`ASGITransport`
+    for a fully offline round trip against a local fake collector, the same
+    injectable-transport idiom `transport.py`/`proxy.py` already establish
+    throughout this codebase.
+
+    Raises `OtlpExportError` (never a raw `httpx` exception) on either a
+    non-2xx response or a transport-level failure — see that class's
+    docstring. Returns the raw `httpx.Response` on success (status 2xx) so a
+    caller can inspect a `partialSuccess` body if it wants to.
+    """
+    url = f"{endpoint.rstrip('/')}/v1/traces"
+    try:
+        with httpx.Client(transport=transport, timeout=timeout) as client:
+            response = client.post(
+                url, json=dict(trace), headers={"Content-Type": "application/json"}
+            )
+    except httpx.HTTPError as exc:
+        raise OtlpExportError(f"could not reach OTLP collector at {url!r}: {exc}") from exc
+    if not (200 <= response.status_code < 300):
+        raise OtlpExportError(
+            f"OTLP collector at {url!r} rejected the export: "
+            f"HTTP {response.status_code} {response.text[:200]!r}"
+        )
+    return response
 
 
 # ── OTel exemplar back-link (tracefork-bge.53) ─────────────────────────────

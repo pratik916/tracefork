@@ -111,6 +111,7 @@ graph reachable from a session's root), and :meth:`TapeStore.spawn_children`/
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -1421,6 +1422,39 @@ class TapeStore:
             }
             for r in rows
         ]
+
+    def vacuum(self) -> tuple[int, int]:
+        """Reclaim the disk space :meth:`prune`'s ``DELETE FROM tapes/branches``
+        leaves behind but never returns to the OS.
+
+        SQLite marks a deleted row's pages free *inside* the file for reuse by
+        future writes, but never shrinks the file itself without an explicit
+        ``VACUUM`` -- this is the "distinct, higher-risk step" the module
+        docstring and :meth:`prune` defer. Never touches (let alone deletes)
+        ``tapes_archived``/``branches_archived`` — this only compacts free
+        pages a prior ``prune()`` call's live-table deletes already created;
+        the soft-archived rows survive with their full byte content intact.
+
+        Also runs a WAL checkpoint before and after ``VACUUM``: in WAL mode a
+        checkpoint is required both to make the on-disk main file reflect
+        already-committed writes before measuring, and because ``VACUUM``'s
+        own rebuild is itself written through the WAL and isn't visible in
+        the file's on-disk size until checkpointed.
+
+        Returns ``(size_before_bytes, size_after_bytes)`` of the main
+        database file, measured immediately before and after -- ``(0, 0)``
+        for a non-file-backed database (e.g. ``:memory:``) where on-disk size
+        is meaningless. Must run with no ``BEGIN IMMEDIATE`` from this store
+        in flight (``VACUUM``'s own SQLite requirement); serialized through
+        the same ``_write_lock`` every other write path already uses.
+        """
+        with self._write_lock:
+            self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            size_before = os.path.getsize(self._path) if os.path.exists(self._path) else 0
+            self._con.execute("VACUUM")
+            self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            size_after = os.path.getsize(self._path) if os.path.exists(self._path) else 0
+        return size_before, size_after
 
     def close(self) -> None:
         self._con.close()

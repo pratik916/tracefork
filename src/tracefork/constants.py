@@ -87,11 +87,17 @@ OPUS_OUTPUT_PER_TOKEN = 25.00 / 1_000_000
 # ── OTel GenAI / OpenInference interop (see interop.py) ─────────────────────
 #
 # Pinned OpenTelemetry semantic-conventions release the `gen_ai.*` attribute
-# names in `interop.py` target — https://opentelemetry.io/docs/specs/semconv/gen-ai/.
-# Bump deliberately (it is not auto-detected) if a future attribute rename
-# lands upstream; nothing here is byte-hashed, so bumping never touches
+# names in `interop.py` target — the GenAI conventions now live in their own
+# repo (https://github.com/open-telemetry/semantic-conventions-genai) but
+# still track the main spec's release numbering
+# (https://github.com/open-telemetry/semantic-conventions/releases). v1.44.0
+# is the release that stabilized `gen_ai.provider.name` (replacing the
+# deprecated `gen_ai.system`) and `gen_ai.execute_tool.internal` tool-call
+# spans — see `interop.py`'s `ATTR_PROVIDER_NAME`/tool-span builder. Bump
+# deliberately (it is not auto-detected) if a future attribute rename lands
+# upstream; nothing here is byte-hashed, so bumping never touches
 # `Tape.digest()`.
-GENAI_SEMCONV_VERSION = "1.29.0"
+GENAI_SEMCONV_VERSION = "1.44.0"
 
 # Boundary marker for a `Tape` whose step structure was reconstructed from an
 # ingested OTel/OpenInference trace (`interop.ingest_otel_trace` /

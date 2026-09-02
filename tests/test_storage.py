@@ -261,6 +261,18 @@ def test_legacy_sqlite_without_response_meta_loads_default_status_and_content_ty
     assert restored.response_content_type == ["application/json"]
 
 
+def test_load_nonexistent_path_raises_without_creating_a_file(tmp_path):
+    """tracefork-sis.32: `sqlite3.connect` auto-creates an empty file at
+    connect time for a mistyped path whose parent directory exists -- `Tape.load`
+    must check existence FIRST so a typo'd path never side-effect-creates a
+    junk empty `.sqlite` file before raising."""
+    path = tmp_path / "does-not-exist.tape.sqlite"
+    assert not path.exists()
+    with pytest.raises(FileNotFoundError):
+        Tape.load(str(path))
+    assert not path.exists()
+
+
 def test_exchange_status_and_content_type_default_for_hand_built_tape():
     """A `Tape` constructed with `exchanges=` directly (e.g. `tournament.py`'s
     single/pair-exchange cost-estimation probe tapes) never populates
@@ -1042,6 +1054,58 @@ def test_prune_with_no_filters_is_a_safe_noop(tmp_path):
         assert report.tapes_archived == []
         assert report.branches_archived == []
         assert len(store.list_runs()) == 1
+    finally:
+        store.close()
+
+
+def test_vacuum_reclaims_disk_space_pruned_rows_left_behind(tmp_path):
+    """tracefork-sis.59: `prune()`'s `DELETE FROM tapes/branches` frees pages
+    *inside* the sqlite file but never shrinks the file itself -- `vacuum()`
+    is the deliberately-separate, higher-risk step that actually reclaims
+    that space, without touching (let alone hard-deleting) the archived rows
+    prune() copied out first."""
+    import os
+
+    db_path = tmp_path / "store.db"
+    store = TapeStore(str(db_path))
+    try:
+        run_ids = []
+        for i in range(8):
+            t = Tape(agent_name="w")
+            t.append_exchange(os.urandom(80_000), os.urandom(80_000))
+            rid = store.save_tape(t, run_id=f"big-run-{i}", created_at="2020-01-01T00:00:00+00:00")
+            run_ids.append(rid)
+
+        report = store.prune(run_ids=run_ids)
+        assert sorted(report.tapes_archived) == sorted(run_ids)
+
+        # Checkpoint (WAL) so the on-disk main file actually reflects the
+        # post-prune state before measuring -- otherwise recently-committed
+        # bytes may still be sitting in the -wal file, not the main one.
+        store._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_before_vacuum = os.path.getsize(db_path)
+
+        size_before_report, size_after_report = store.vacuum()
+
+        size_after_vacuum = os.path.getsize(db_path)
+
+        assert size_after_vacuum < size_before_vacuum
+        assert size_after_report < size_before_report
+
+        # Archived rows survive untouched -- vacuum reclaims freed PAGES, it
+        # never deletes the soft-archived data prune() already moved aside.
+        archived = {
+            r[0] for r in store._con.execute("SELECT run_id FROM tapes_archived").fetchall()
+        }
+        assert set(run_ids) <= archived
+        for rid in run_ids:
+            row = store._con.execute(
+                "SELECT tape_bytes FROM tapes_archived WHERE run_id=?", (rid,)
+            ).fetchone()
+            assert row is not None and len(row[0]) > 0
+
+        # Live tables are uncorrupted: still queryable, no rows lost.
+        assert store.list_runs() == []
     finally:
         store.close()
 

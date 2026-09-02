@@ -13,11 +13,14 @@ board/cost/divergence/record/replay/fork/blame/cross-blame/chaos/serve).
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
+import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+import zstandard
 
 from tracefork.config import TraceforkConfig
 
@@ -75,22 +78,41 @@ def _resolve_agent(spec: str) -> Callable:
         raise typer.Exit(1) from exc
 
 
+# Every way a truncated/bit-corrupted tape (disk corruption, a crash
+# mid-write outside the checkpoint path, a hand-edited file, or a mistyped
+# path) can raise on `Tape.load`/`Tape.from_bytes` -- caught by both
+# `_load_tape_or_exit` and `_load_run_or_exit` below so either surfaces one
+# clean stderr line + exit 1 instead of a raw traceback into `zstandard`/
+# `json`/`struct`/`sqlite3`'s internals (tracefork-sis.32).
+_CORRUPT_TAPE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    sqlite3.OperationalError,
+    FileNotFoundError,
+    zstandard.ZstdError,
+    json.JSONDecodeError,
+    struct.error,
+)
+
+
 def _load_tape_or_exit(path: Path) -> Tape:
     """Load a single `.tape.sqlite` file, or print an actionable stderr
     message and exit 1 instead of letting `sqlite3.OperationalError` (no such
-    file) or a corrupt-database error surface as a raw traceback."""
+    file), `FileNotFoundError` (a mistyped path -- see `Tape.load`), or a
+    truncated/bit-corrupted tape (`zstandard.ZstdError`, `json.JSONDecodeError`,
+    `struct.error` -- disk corruption, a crash mid-write, a hand-edited file)
+    surface as a raw traceback."""
     from tracefork.tape import Tape
 
     try:
         return Tape.load(str(path))
-    except sqlite3.OperationalError as exc:
-        _err(f"no tape at {str(path)!r} ({exc})")
+    except _CORRUPT_TAPE_EXCEPTIONS as exc:
+        _err(f"corrupt or truncated tape at {str(path)!r} ({exc})")
         raise typer.Exit(1) from exc
 
 
 def _load_run_or_exit(db: TapeStore, run_id: str, store_path: str) -> Tape:
     """Load a tape by `run_id` from an open `TapeStore`, or print an
-    actionable stderr message and exit 1 instead of a raw `KeyError`."""
+    actionable stderr message and exit 1 instead of a raw `KeyError` or a
+    truncated/bit-corrupted tape row surfacing as a raw traceback."""
     try:
         return db.load_tape(run_id)
     except KeyError as exc:
@@ -99,6 +121,23 @@ def _load_run_or_exit(db: TapeStore, run_id: str, store_path: str) -> Tape:
             f"'tracefork query --store {store_path} --cmd \"tree\"' to list runs"
         )
         raise typer.Exit(1) from exc
+    except _CORRUPT_TAPE_EXCEPTIONS as exc:
+        _err(f"corrupt or truncated tape for run {run_id!r} in {store_path!r} ({exc})")
+        raise typer.Exit(1) from exc
+
+
+def _trial_progress_printer(label: str) -> Callable[[int, int], None]:
+    """A `progress=` callback for `BlameEngine.rank`/`shapley_rank` or
+    `TournamentEngine.run` (tracefork-sis.51): prints one stderr line per
+    COMPLETED trial, so a long, silent, sequential, potentially real-money
+    `n x k` sweep never looks indistinguishable from a hang. Routed through
+    `_err` like every other diagnostic line, so it never lands on stdout and
+    contaminates a piped JSON payload."""
+
+    def _cb(completed: int, total: int) -> None:
+        _err(f"  [{label}] trial {completed}/{total} complete")
+
+    return _cb
 
 
 def _confinement_violation_from(exc: BaseException) -> ConfinementViolationError | None:
@@ -854,6 +893,14 @@ def report(
         "shapley_value) to embed a per-step necessity/sufficiency quadrant "
         "badge in the report's Timeline panel",
     ),
+    branch_details_cap_bytes: int | None = typer.Option(
+        None,
+        "--branch-details-cap-bytes",
+        help="Cap on how much of each branch's full delta-tape detail gets "
+        "embedded in the report before truncating with a notice (a run with "
+        "many forks otherwise balloons the payload); default 262144 (256 "
+        "KiB) -- see report.py's DEFAULT_BRANCH_DETAILS_CAP_BYTES",
+    ),
 ) -> None:
     """Generate a self-contained HTML report from a tape.
 
@@ -873,7 +920,13 @@ def report(
     import json as _json
 
     from tracefork.cost_profile import compute_cost_profile, cost_profile_to_dict
-    from tracefork.report import _tape_to_data, generate_report
+    from tracefork.report import DEFAULT_BRANCH_DETAILS_CAP_BYTES, _tape_to_data, generate_report
+
+    effective_branch_details_cap_bytes = (
+        branch_details_cap_bytes
+        if branch_details_cap_bytes is not None
+        else DEFAULT_BRANCH_DETAILS_CAP_BYTES
+    )
 
     branches: list[dict] | None = None
     causal_edges: list[dict] | None = None
@@ -945,6 +998,7 @@ def report(
         cost_profile=cost_profile_dict,
         causal_closure=causal_closure,
         run_id=report_run_id,
+        branch_details_cap_bytes=effective_branch_details_cap_bytes,
     )
     typer.echo(f"Report written to {output}")
     _print_trust_lines(tape)
@@ -1300,6 +1354,7 @@ def blame(
             null_flip_rate=null_flip_rate,
             fdr_q=fdr_q,
             matcher=matcher,
+            progress=_trial_progress_printer("blame"),
         )
 
         ci_pct = round(confidence * 100)
@@ -1579,6 +1634,12 @@ def export(
     output: Path = typer.Option(  # noqa: B008
         Path("export.json"), "--output", "-o", help="Output JSON file"
     ),
+    otlp_endpoint: str = typer.Option(
+        None,
+        "--otlp-endpoint",
+        help="Also push the exported trace to a live OTLP collector's base URL "
+        "(POSTed to <endpoint>/v1/traces as OTLP/HTTP+JSON) -- --otel only",
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
@@ -1589,17 +1650,28 @@ def export(
     export (gen_ai.*/llm.* attributes as plain JSON) — no opentelemetry-sdk
     install needed to produce or consume it. See `tracefork ingest` for the
     reverse direction and its blame-only, not-bit-exact-replay caveat.
+
+    --otlp-endpoint additionally pushes the same export to a live OTLP
+    collector over plain HTTP+JSON (see `interop.push_otlp_trace`'s
+    docstring for why no exporter package is needed) -- the local --output
+    file is still written either way.
     """
     import json as _json
 
     from tracefork.interop import (
+        OtlpExportError,
         blame_report_from_json,
         build_openinference_dataset,
         build_otel_trace,
+        push_otlp_trace,
     )
 
     if otel == openinference:
         _err("Pass exactly one of --otel or --openinference")
+        raise typer.Exit(1)
+
+    if otlp_endpoint and not otel:
+        _err("--otlp-endpoint requires --otel (OTLP has no OpenInference equivalent)")
         raise typer.Exit(1)
 
     if tape_path:
@@ -1628,6 +1700,14 @@ def export(
     output.write_text(_json.dumps(data, indent=2), encoding="utf-8")
     kind = "OTel GenAI trace" if otel else "OpenInference dataset"
     typer.echo(f"  {kind} written to {output} ({len(tape.exchanges)} exchange(s))")
+
+    if otlp_endpoint:
+        try:
+            push_otlp_trace(data, otlp_endpoint)
+        except OtlpExportError as exc:
+            _err(f"  {exc}")
+            raise typer.Exit(1) from exc
+        typer.echo(f"  Pushed to {otlp_endpoint.rstrip('/')}/v1/traces")
 
 
 @app.command()
@@ -1754,6 +1834,12 @@ def prune(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Compute the candidate set; mutate nothing"
     ),
+    vacuum: bool = typer.Option(
+        False,
+        "--vacuum",
+        help="Reclaim disk space prune's archive-then-delete left behind "
+        "(a real VACUUM; mutually exclusive with --dry-run)",
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
@@ -1762,20 +1848,32 @@ def prune(
 
     Mirrors git gc / borg prune's mark-and-sweep-with-soft-archive
     discipline: matching rows move to tapes_archived/branches_archived and
-    stay queryable there forever; reclaiming that space is a distinct,
-    out-of-scope, higher-risk step. A tape matches if it's older than
+    stay queryable there forever. A tape matches if it's older than
     --older-than-days OR named by a repeatable --run-id; passing neither
     matches nothing. --dry-run previews the candidate set with zero writes.
+
+    --vacuum reclaims the disk space this soft-archiving otherwise leaves
+    behind: SQLite frees a deleted row's pages *inside* the file for reuse
+    but never shrinks the file itself without a real VACUUM. It runs
+    regardless of whether THIS call found new candidates, so a store with
+    content archived by an earlier prune still gets reclaimed. Never deletes
+    the archived rows themselves -- only compacts the free pages their
+    original live-table deletion already created.
 
     NOTE: report links for a pruned run_id go stale — server.py's
     list_runs/get_run/get_branch correctly 404 it via the existing KeyError
     path, same as any unknown run_id.
 
-    Always exits 0: pruning is a maintenance operation, not a pass/fail gate.
+    Always exits 0 (1 only for the --dry-run/--vacuum conflict): pruning is a
+    maintenance operation, not a pass/fail gate.
     """
     import datetime as _dt
 
     from tracefork.store import TapeStore
+
+    if dry_run and vacuum:
+        _err("Pass at most one of --dry-run or --vacuum (vacuum always mutates the file)")
+        raise typer.Exit(1)
 
     older_than_iso = None
     if older_than_days is not None:
@@ -1785,6 +1883,7 @@ def prune(
     db = TapeStore(str(store))
     try:
         report = db.prune(older_than_iso=older_than_iso, run_ids=list(run_id), dry_run=dry_run)
+        vacuum_sizes = db.vacuum() if vacuum else None
     finally:
         db.close()
 
@@ -1800,6 +1899,12 @@ def prune(
         typer.echo(
             f"\n  {verb} {len(report.tapes_archived)} tape(s), "
             f"{len(report.branches_archived)} branch(es)"
+        )
+    if vacuum_sizes is not None:
+        before, after = vacuum_sizes
+        reclaimed = max(before - after, 0)
+        typer.echo(
+            f"\n  vacuum: reclaimed {reclaimed:,} bytes ({before:,} -> {after:,} bytes on disk)"
         )
     typer.echo("")
 
@@ -2151,6 +2256,7 @@ def tournament(
             ci_method=method,
             confidence=confidence,
             fdr_q=fdr_q,
+            progress=_trial_progress_printer("tournament"),
         )
     except BudgetExceededError as exc:
         typer.echo(f"  {exc}")

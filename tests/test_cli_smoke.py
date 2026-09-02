@@ -72,6 +72,33 @@ def test_cli_replay_missing_args_is_the_documented_nonzero_exit():
     assert "Provide a tape path and --agent" in result.output
 
 
+def test_cli_replay_corrupt_tape_bit_flipped_blob_is_clean_nonzero_exit(tmp_path):
+    """tracefork-sis.32: a bit-corrupted compressed blob makes `Tape.load` raise
+    `zstandard.ZstdError` with no try/except anywhere on the CLI path -- must
+    surface as one clean stderr line + exit 1, never a raw traceback."""
+    import sqlite3
+
+    tape_path = tmp_path / "run.tape.sqlite"
+    _record_clean_tape().save(str(tape_path))
+
+    con = sqlite3.connect(str(tape_path))
+    row = con.execute("SELECT hash, data FROM blobs LIMIT 1").fetchone()
+    blob_hash, data = row
+    corrupted = bytearray(data)
+    corrupted[0] ^= 0xFF  # flip a bit in the zstd frame header -> ZstdError on decompress
+    con.execute("UPDATE blobs SET data=? WHERE hash=?", (bytes(corrupted), blob_hash))
+    con.commit()
+    con.close()
+
+    result = runner.invoke(
+        app, ["replay", str(tape_path), "--agent", "tracefork.validate:synthetic_agent"]
+    )
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "corrupt" in result.output.lower()
+    assert str(tape_path) in result.output
+
+
 def test_cli_replay_receipt_includes_boundary_and_redaction_lines(tmp_path):
     """The receipt must surface `Tape.boundary`/`content_redacted` (tracefork-bge.20)
     — a forensic-only or content-redacted tape must not look identical to a
@@ -864,6 +891,65 @@ def test_cli_prune_by_run_id_archives_it_and_still_exits_zero(tmp_path):
         assert store.list_runs() == []
     finally:
         store.close()
+
+
+def test_cli_prune_vacuum_reclaims_disk_from_previously_archived_rows(tmp_path):
+    """tracefork-sis.59: `--vacuum` must shrink store.db on disk for a store
+    that already has archived content, even when this particular call finds
+    zero NEW candidates -- it reclaims space `prune()`'s own DELETE left
+    behind on every prior call, not just this one's."""
+    import os
+    import sqlite3
+
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_ids = []
+    try:
+        for i in range(8):
+            t = Tape(agent_name="w")
+            t.append_exchange(os.urandom(80_000), os.urandom(80_000))
+            rid = store.save_tape(t, run_id=f"big-run-{i}", created_at="2020-01-01T00:00:00+00:00")
+            run_ids.append(rid)
+    finally:
+        store.close()
+
+    archive_args = ["prune", "--store", str(db)]
+    for rid in run_ids:
+        archive_args += ["--run-id", rid]
+    result = runner.invoke(app, archive_args)
+    assert result.exit_code == 0, result.output
+    assert "Archived" in result.output
+
+    # Checkpoint via a fresh raw connection so the on-disk main file reflects
+    # the post-archive state before measuring (WAL may not have flushed yet).
+    con = sqlite3.connect(str(db))
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+    size_before = os.path.getsize(db)
+
+    result = runner.invoke(app, ["prune", "--vacuum", "--store", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "reclaim" in result.output.lower()
+
+    size_after = os.path.getsize(db)
+    assert size_after < size_before
+
+    # Live tables uncorrupted, archived rows still intact.
+    store = TapeStore(str(db))
+    try:
+        assert store.list_runs() == []
+        archived = {
+            r[0] for r in store._con.execute("SELECT run_id FROM tapes_archived").fetchall()
+        }
+        assert set(run_ids) <= archived
+    finally:
+        store.close()
+
+
+def test_cli_prune_dry_run_and_vacuum_are_mutually_exclusive(tmp_path):
+    db, _ = _seeded_store(tmp_path)
+    result = runner.invoke(app, ["prune", "--dry-run", "--vacuum", "--store", str(db)])
+    assert result.exit_code == 1
 
 
 # ── proxy ────────────────────────────────────────────────────────────────

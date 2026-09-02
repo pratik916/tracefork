@@ -13,6 +13,60 @@ from .providers import get_adapter
 
 _INJECT_MARKER = "</head>"
 
+# `branch_details` (branch_id -> full delta-tape report data) is, by far, the
+# largest contributor to a report's payload once a run has more than a
+# handful of forks -- measured: a run with 100 branches produced a 1.67 MB
+# report of which 1.35 MB (81%) was branch_details alone, with no cap and no
+# opt-out (tracefork-sis.56). 256 KiB is a documented, tunable default: large
+# enough to embed a healthy number of real branches whole, small enough that
+# a pathological fork count can no longer balloon the report unboundedly.
+# `generate_report`/`cli.py`'s `report --branch-details-cap-bytes` both let a
+# caller widen or narrow it.
+DEFAULT_BRANCH_DETAILS_CAP_BYTES = 256 * 1024
+
+
+def _cap_branch_details(
+    branch_details: dict[str, dict], cap_bytes: int
+) -> tuple[dict[str, dict], dict | None]:
+    """Keep `branch_details` entries (in dict/insertion order) until their
+    cumulative COMPACT JSON size would exceed `cap_bytes`, dropping the rest.
+
+    Returns `(kept, None)` unchanged when the full dict already fits (the
+    common case for a run with few branches — no truncation, no marker).
+    Otherwise returns `(kept, marker)` where `marker` is a small,
+    JSON-safe truncation notice (`included`/`omitted`/`total_branches`/
+    `cap_bytes`) a consumer can render or act on, instead of the excess
+    branches silently vanishing with no trace.
+
+    Per-entry size is measured via `json.dumps` with NO indentation — a
+    conservative proxy for that entry's contribution to the final,
+    `indent=2`-pretty-printed payload `_safe_json` emits (which is always
+    somewhat LARGER due to indentation/newlines), so the true embedded size
+    stays close to, and never wildly under, `cap_bytes` — a hint sized to be
+    conservative, not a byte-exact guarantee.
+    """
+    total = len(branch_details)
+    if total == 0:
+        return branch_details, None
+    if len(json.dumps(branch_details)) <= cap_bytes:
+        return branch_details, None
+
+    kept: dict[str, dict] = {}
+    running = 2  # the enclosing `{}` of the eventual dict
+    for branch_id, detail in branch_details.items():
+        entry_size = len(json.dumps({branch_id: detail})) - 2  # minus its own `{}`
+        if kept and running + entry_size > cap_bytes:
+            break
+        running += entry_size
+        kept[branch_id] = detail
+
+    return kept, {
+        "included": len(kept),
+        "omitted": total - len(kept),
+        "total_branches": total,
+        "cap_bytes": cap_bytes,
+    }
+
 
 def _template_path() -> Path:
     """Locate ``web/report.html`` in both an installed wheel and a source checkout.
@@ -56,8 +110,15 @@ def _tape_to_data(
     cost_profile: dict | None = None,
     causal_closure: list[dict] | None = None,
     run_id: str | None = None,
+    branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
 ) -> dict:
-    """Convert a Tape to the JSON shape expected by the web UI."""
+    """Convert a Tape to the JSON shape expected by the web UI.
+
+    `branch_details_cap_bytes` (default `DEFAULT_BRANCH_DETAILS_CAP_BYTES`)
+    caps how much of `branch_details` actually gets embedded — see
+    `_cap_branch_details`. A `branch_details` dict that already fits under
+    the cap round-trips unchanged.
+    """
     adapter = get_adapter("anthropic")
     exchanges = []
     for req_bytes, resp_bytes in tape.exchanges:
@@ -109,6 +170,10 @@ def _tape_to_data(
             }
         )
 
+    capped_branch_details, branch_details_truncated = _cap_branch_details(
+        branch_details or {}, branch_details_cap_bytes
+    )
+
     return {
         "agent_name": tape.agent_name,
         "exchanges": exchanges,
@@ -143,8 +208,16 @@ def _tape_to_data(
         # exact shape `server.py`'s `/api/branch/{id}` already returns, baked
         # into the static report so a fork-tree click needs no live server.
         # `{}` (falsy) when none were passed, same neutral empty-state
-        # pattern as `branches`/`causal_edges`.
-        "branch_details": branch_details or {},
+        # pattern as `branches`/`causal_edges`. Capped at
+        # `branch_details_cap_bytes` (see `_cap_branch_details`,
+        # tracefork-sis.56) — a run with many branches no longer silently
+        # balloons the report; `branch_details_truncated` (below) says so.
+        "branch_details": capped_branch_details,
+        # `None` (falsy) when `branch_details` already fit under the cap
+        # whole; otherwise a small notice (`included`/`omitted`/
+        # `total_branches`/`cap_bytes`) a consumer can render instead of the
+        # excess branches silently vanishing with no trace.
+        "branch_details_truncated": branch_details_truncated,
         # Per-step Shapley necessity/sufficiency quadrant (ShapleyResult/
         # causal_edges shape, step_index-keyed) — the Timeline panel's
         # inline quadrant badge (see `web/report.html`'s
@@ -197,6 +270,7 @@ def generate_report(
     cost_profile: dict | None = None,
     causal_closure: list[dict] | None = None,
     run_id: str | None = None,
+    branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
@@ -226,6 +300,12 @@ def generate_report(
     `run_id` (optional) is this run's own id, so the UI can distinguish an
     external-anchor entry from one already covered by this run's own blame
     rows.
+    `branch_details_cap_bytes` (default `DEFAULT_BRANCH_DETAILS_CAP_BYTES`,
+    tracefork-sis.56) caps how much of `branch_details` is actually
+    embedded — see `_cap_branch_details`'s docstring. A run with many
+    branches no longer silently balloons the report; exceeding it embeds a
+    `branch_details_truncated` notice alongside the (still fully valid,
+    just partial) `branch_details` dict.
     """
     html = _template_path().read_text(encoding="utf-8")
     data = _tape_to_data(
@@ -239,6 +319,7 @@ def generate_report(
         cost_profile,
         causal_closure,
         run_id,
+        branch_details_cap_bytes,
     )
     inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
