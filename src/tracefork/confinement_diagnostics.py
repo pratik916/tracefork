@@ -25,6 +25,8 @@ from typing import Any
 
 from .boundary_guard import ConfinementViolationError
 
+__all__ = ["ConfinementDiagnostic", "diagnose_confinement", "confinement_diagnostic_to_dict"]
+
 
 @dataclass(frozen=True)
 class ConfinementDiagnostic:

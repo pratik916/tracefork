@@ -1,0 +1,1636 @@
+{
+  "schemaVersion": "tracefork/release-receipt/v1",
+  "version": "1.0.0",
+  "test": {
+    "available": true,
+    "tests": 1532,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 7,
+    "time": 41.094
+  },
+  "coverage": {
+    "available": false
+  },
+  "validate": {
+    "available": true,
+    "top1_precision_by_class": {
+      "corrupted_tool_output": 1.0,
+      "misleading_retrieval": 1.0,
+      "wrong_system_prompt": 1.0,
+      "dropped_message": 1.0,
+      "poisoned_argument": 1.0
+    },
+    "overall_top1_precision": 1.0,
+    "negative_control_max_flip": 0.0,
+    "n_runs_per_class": 5,
+    "k": 3,
+    "reproduce_cmd": "tracefork validate --k 3 --n-runs 5"
+  },
+  "bench": {
+    "available": true,
+    "k": 3,
+    "m_samples": 2,
+    "accuracy": 0.9090909090909091,
+    "n_resolved": 10,
+    "n_cases": 11,
+    "who_and_when_anchor": 0.142,
+    "cases": [
+      {
+        "name": "root",
+        "step_index": 0,
+        "role": "root",
+        "expected_necessity": true,
+        "expected_sufficiency": true,
+        "actual_necessity": true,
+        "actual_sufficiency": true,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "downstream_echo",
+        "step_index": 1,
+        "role": "echo",
+        "expected_necessity": false,
+        "expected_sufficiency": true,
+        "actual_necessity": false,
+        "actual_sufficiency": true,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "neutral_decoy_root_echo_run",
+        "step_index": 2,
+        "role": "neutral",
+        "expected_necessity": false,
+        "expected_sufficiency": false,
+        "actual_necessity": false,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "gate_half_of_conjunction",
+        "step_index": 3,
+        "role": "gate",
+        "expected_necessity": true,
+        "expected_sufficiency": false,
+        "actual_necessity": false,
+        "actual_sufficiency": false,
+        "resolved": false,
+        "note": "KNOWN LIMITATION: single-ordering temporal Shapley credits only the later-joining half of a symmetric AND-conjunction (see shapley_rank's docstring); step3 is genuinely necessary (removing it, with step4's fault still present, restores success) but the engine's own marginal at step3's coalition position is measured BEFORE step4 completes the AND, so necessity reads False here. See README -> Validation scope."
+      },
+      {
+        "name": "payload_completes_conjunction",
+        "step_index": 4,
+        "role": "payload",
+        "expected_necessity": true,
+        "expected_sufficiency": false,
+        "actual_necessity": true,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "neutral_decoy_gate_payload_run",
+        "step_index": 2,
+        "role": "neutral",
+        "expected_necessity": false,
+        "expected_sufficiency": false,
+        "actual_necessity": false,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "overdetermined_gate",
+        "step_index": 3,
+        "role": "gate",
+        "expected_necessity": false,
+        "expected_sufficiency": false,
+        "actual_necessity": false,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": "Correctly NOT necessary here: step0's independent fault already determines failure, so removing step3's fault alone would not restore success -- an over-determined run, correctly attributed."
+      },
+      {
+        "name": "overdetermined_payload",
+        "step_index": 4,
+        "role": "payload",
+        "expected_necessity": false,
+        "expected_sufficiency": false,
+        "actual_necessity": false,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "root_under_competing_load",
+        "step_index": 0,
+        "role": "root",
+        "expected_necessity": true,
+        "expected_sufficiency": true,
+        "actual_necessity": true,
+        "actual_sufficiency": true,
+        "resolved": true,
+        "note": ""
+      },
+      {
+        "name": "concurrent_gate_completes_conjunction",
+        "step_index": 3,
+        "role": "gate",
+        "expected_necessity": true,
+        "expected_sufficiency": false,
+        "actual_necessity": true,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": "tracefork-bge.10: recorded through a REAL asyncio.gather (see competing_faults.py's build_concurrent_gate_payload_tape), so tape.async_batches lets shapley_rank sample BOTH join orders of the GATE/PAYLOAD pair -- unlike gate_half_of_conjunction above, the earlier-joining half is no longer structurally under-credited."
+      },
+      {
+        "name": "concurrent_payload_completes_conjunction",
+        "step_index": 4,
+        "role": "payload",
+        "expected_necessity": true,
+        "expected_sufficiency": false,
+        "actual_necessity": true,
+        "actual_sufficiency": false,
+        "resolved": true,
+        "note": ""
+      }
+    ]
+  },
+  "replay_corpus": {
+    "available": true,
+    "all_passed": true,
+    "fixtures": [
+      {
+        "name": "single_turn",
+        "tape_path": "experiments/replay_fixtures/single_turn.tape.sqlite",
+        "agent": "tracefork.fixtures:single_turn_agent",
+        "passed": true,
+        "reason": "",
+        "digest": "5020d10d6829cfd079f71dc0aa88c36e973302a8861eed9284f2eb70792139d1"
+      },
+      {
+        "name": "two_turn",
+        "tape_path": "experiments/replay_fixtures/two_turn.tape.sqlite",
+        "agent": "tracefork.fixtures:two_turn_agent",
+        "passed": true,
+        "reason": "",
+        "digest": "7ac5b4eb3a6a6c4acf613379851c24badec9e13dec5d9a419ab5457b32e71552"
+      }
+    ]
+  },
+  "calibration": {
+    "available": true,
+    "seed": 0,
+    "all_within_tolerance": false,
+    "results": [
+      {
+        "method": "wilson",
+        "true_p": 0.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.05,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.05,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.05,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.05,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.1,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9125,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.1,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9915,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.1,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9915,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.1,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9125,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.3,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9695,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.3,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9695,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.3,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.996,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.3,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9695,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.5,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.936,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.5,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.936,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.5,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.5,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.936,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.7,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9585,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.7,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9585,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.7,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.995,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.7,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9585,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.9,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.925,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.9,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9905,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.9,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9905,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.9,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.925,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.95,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.979,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.95,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.979,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.95,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.979,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.95,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.979,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 1.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 1.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 1.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 1.0,
+        "n_trials": 5,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.05,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.904,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.05,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9845,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.05,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9845,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.05,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9845,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.1,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.922,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.1,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9815,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.1,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9815,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.1,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.922,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.3,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9215,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.3,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9215,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.3,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.99,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.3,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9485,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.5,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.98,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.5,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.98,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.5,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.98,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.5,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.98,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.7,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9115,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.7,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9115,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.7,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.986,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.7,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9385,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.9,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9265,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.9,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.987,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.9,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.987,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.9,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9265,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.95,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.916,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.95,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9865,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.95,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9865,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.95,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9865,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 1.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 1.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 1.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 1.0,
+        "n_trials": 10,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.05,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9125,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.05,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.983,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.05,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.983,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.05,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.983,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.1,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.1,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.1,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.99,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.1,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.3,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.97,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.3,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.94,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.3,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.97,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.3,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.97,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.5,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9575,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.5,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9575,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.5,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9575,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.5,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9575,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.7,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.976,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.7,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9465,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.7,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.976,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.7,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.976,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.9,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9625,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.9,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9625,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.9,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.99,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.9,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9625,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.95,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9295,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.95,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.981,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.95,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.981,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.95,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.981,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 1.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 1.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 1.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 1.0,
+        "n_trials": 20,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.05,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9625,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.05,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.8895,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.05,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.989,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.05,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9625,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.1,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.978,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.1,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.949,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.1,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.978,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.1,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.978,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.3,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.952,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.3,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.952,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.3,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9685,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.3,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.952,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.5,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9375,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.5,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9375,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.5,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9665,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.5,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9375,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.7,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.7,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.7,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.971,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.7,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9565,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.9,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.9,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9395,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.9,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.9,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.9725,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 0.95,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.958,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 0.95,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.896,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": false
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 0.95,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.988,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 0.95,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 0.958,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "wilson",
+        "true_p": 1.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "jeffreys",
+        "true_p": 1.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "clopper_pearson",
+        "true_p": 1.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      },
+      {
+        "method": "agresti_coull",
+        "true_p": 1.0,
+        "n_trials": 50,
+        "n_repeats": 2000,
+        "confidence": 0.95,
+        "coverage": 1.0,
+        "tolerance": 0.01949358868961794,
+        "within_tolerance": true
+      }
+    ]
+  },
+  "generated_at": "2026-09-02T02:52:52.675731+00:00",
+  "receipt_digest": "5a38d35e64296a155b5a2125a2d570f78f9156cea35d9440507e7de7baf77031",
+  "signature": {
+    "available": false
+  }
+}

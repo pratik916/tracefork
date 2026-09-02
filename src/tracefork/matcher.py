@@ -9,6 +9,15 @@ URL, Bedrock's ``x-amz-date`` signing header, rotating bearer / ``x-api-key``
 auth, per-call idempotency keys. A ``RequestMatcher`` is the VCR ``match_on``-style
 seam that lets those be normalized *before* hashing.
 
+The identity default also leaves the request headers entirely out of the
+fingerprint — not just volatile ones, all of them (see the README's
+Determinism boundary note) — so it can equally false-*negative*: a
+body-identical request sent under a different ``anthropic-beta``/
+``anthropic-version`` header looks like the same request. ``match_headers``
+below is the opposite knob from the false-positive case above: an explicit
+allowlist of header names that *do* join the identity. See
+``anthropic_header_matcher()``.
+
 **The default is and must stay identity.** ``IdentityMatcher`` hashes the raw
 request body exactly as the pre-seam transport did, so existing tapes,
 ``validate --check`` and every current test produce byte-identical hashes and
@@ -38,6 +47,23 @@ from .tape import sha256_hex
 
 if TYPE_CHECKING:
     from .providers.base import ProviderAdapter
+
+__all__ = [
+    "RequestMatcher",
+    "IdentityMatcher",
+    "AdapterMatcher",
+    "CanonicalizingMatcher",
+    "IDENTITY_MATCHER",
+    "gemini_matcher",
+    "bedrock_matcher",
+    "redacting_matcher",
+    "anthropic_header_matcher",
+    "MATCHER_REGISTRY",
+    "register_matcher",
+    "get_matcher",
+    "registered_matchers",
+    "load_matcher_entry_points",
+]
 
 
 @runtime_checkable
@@ -253,6 +279,37 @@ def redacting_matcher() -> CanonicalizingMatcher:
     )
 
 
+def anthropic_header_matcher() -> CanonicalizingMatcher:
+    """Opt-in Anthropic matcher that folds ``anthropic-version``/``anthropic-beta``
+    into the fingerprint instead of leaving all headers out of scope.
+
+    The default path for Anthropic is ``IdentityMatcher`` (see the module
+    docstring: Anthropic's raw request bytes are already the identity), which
+    fingerprints the body only — no header, including ``anthropic-version`` and
+    ``anthropic-beta``, participates in the bit-exactness check (see the
+    README's Determinism boundary note). That is the right default: most header
+    variance between record and replay (SDK/platform headers such as
+    ``user-agent``/``x-stainless-*``, populated by the SDK's ``platform_headers()``)
+    is incidental noise, not a real difference in what was asked. But it also
+    means a body-identical request sent under a different beta feature flag or
+    API version replays as the *same* exchange even though the provider could
+    legitimately have behaved differently.
+
+    This variant is for callers who want that distinguished: ``anthropic-version``
+    and ``anthropic-beta`` join the identity (a change to either is a genuinely
+    different request), while ``authorization``/``x-api-key`` bearer rotation
+    still collapses, exactly like ``redacting_matcher()``. Every other header
+    (``user-agent``, ``x-stainless-*``, etc.) stays out of scope, same as the
+    default. Record and replay must use the same matcher instance/config (see
+    the module docstring's invariant).
+    """
+    return CanonicalizingMatcher(
+        volatile_headers=frozenset({"authorization", "x-api-key"}),
+        match_headers=frozenset({"anthropic-version", "anthropic-beta"}),
+        name="anthropic-headers",
+    )
+
+
 # ── registry (named lookup for the presets above, plus third-party matchers) ─
 #
 # Every built-in here is a frozen, stateless instance (`IdentityMatcher`/
@@ -265,6 +322,7 @@ MATCHER_REGISTRY.register("identity", IDENTITY_MATCHER)
 MATCHER_REGISTRY.register("gemini", gemini_matcher())
 MATCHER_REGISTRY.register("bedrock", bedrock_matcher())
 MATCHER_REGISTRY.register("redacting", redacting_matcher())
+MATCHER_REGISTRY.register("anthropic-headers", anthropic_header_matcher())
 
 
 def register_matcher(name: str, matcher: RequestMatcher) -> None:

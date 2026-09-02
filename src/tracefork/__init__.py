@@ -71,6 +71,7 @@ from .boundary_guard import (
 from .certificate import CertificateStrength, ReplayCertificate
 from .checkpoint import CheckpointWriter, recover_checkpoint
 from .config import RedactionPolicy, TraceforkConfig
+from .errors import TraceforkError
 from .fork import Branch, BranchSpec, ForkEngine
 from .interop import (
     blame_report_from_json,
@@ -201,6 +202,7 @@ __all__ = [
     # ── core product API ─────────────────────────────────────────────────
     "RecordBasis",
     "current_basis",
+    "TraceforkError",
     "BlameEngine",
     "BlameReport",
     "BudgetExceededError",

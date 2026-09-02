@@ -16,6 +16,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from tracefork import ci_calibration
 from tracefork.blame import CIMethod
 from tracefork.ci_calibration import run_calibration
 from tracefork.release_receipt import (
@@ -42,6 +43,19 @@ _COVERAGE_SUMMARY = {
 }
 _VALIDATE_REPORT = {"overall_top1_precision": 1.0}
 _BENCH_REPORT = {"accuracy": 0.91}
+
+# The two CLI tests below invoke `tracefork release-receipt` end-to-end, which
+# internally calls `ci_calibration.run_calibration()` with NO explicit
+# `n_repeats=` (see cli.py) — so it resolves `ci_calibration.DEFAULT_N_REPEATS`
+# (2000 by default) across the full default grid (9 true_ps x 4 n_trials x 4
+# methods = 144 cells), ~170s of wall time for these two tests alone at the
+# real default. `ci_calibration.py` reads `DEFAULT_N_REPEATS` at call time
+# (never bakes it into a bound default-argument value) specifically so a
+# caller that doesn't control `run_calibration`'s arguments can shrink it —
+# monkeypatching the module attribute below still exercises the exact same
+# code path (the full 144-cell grid, every method/true_p/n_trials
+# combination) with a replicate count small enough to be fast.
+_CLI_CALIBRATION_N_REPEATS = 25
 
 
 def _small_calibration_report():
@@ -254,9 +268,11 @@ def test_verify_release_receipt_signature_false_when_unsigned():
 
 
 def test_cli_release_receipt_writes_json_with_absent_markers_when_no_disk_reports(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     from tracefork.cli import app
+
+    monkeypatch.setattr(ci_calibration, "DEFAULT_N_REPEATS", _CLI_CALIBRATION_N_REPEATS)
 
     output_dir = tmp_path / "release_receipts"
 
@@ -299,6 +315,7 @@ def test_cli_release_receipt_signs_when_env_var_set(tmp_path, monkeypatch):
     from tracefork.cli import app
 
     monkeypatch.setenv("TRACEFORK_RELEASE_SIGNING_KEY", "test-signing-key")
+    monkeypatch.setattr(ci_calibration, "DEFAULT_N_REPEATS", _CLI_CALIBRATION_N_REPEATS)
     output_dir = tmp_path / "release_receipts"
 
     result = runner.invoke(

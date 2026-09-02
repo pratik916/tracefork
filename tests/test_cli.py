@@ -64,6 +64,118 @@ def test_blame_rejects_unsafe_run_id(tmp_path):
     assert result.exit_code != 0
 
 
+def test_blame_emits_progress_lines_per_completed_trial(tmp_path, monkeypatch):
+    """tracefork-sis.51: a real blame sweep must emit one progress line per
+    completed trial instead of going silent for the whole (potentially
+    real-money) run. Fully offline/$0: the fixture tape has exactly ONE
+    exchange, so forking its only (and therefore last) step has an empty
+    tail -- see `tournament.py`'s module docstring for the same $0 trick."""
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    tape = Tape.load(str(FIXTURES_DIR / "single_turn.tape.sqlite"))
+    run_id = store.save_tape(tape, run_id="single-turn-run")
+    store.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "blame",
+            run_id,
+            "--agent",
+            "tracefork.fixtures:single_turn_agent",
+            "--store",
+            str(db),
+            "--k",
+            "3",
+            "--success-re",
+            "4",
+            "--failure-re",
+            "nope-never-matches-xyz",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    progress_lines = [ln for ln in result.output.splitlines() if "[blame] trial" in ln]
+    assert len(progress_lines) == 3
+    assert progress_lines[-1].strip().endswith("3/3 complete")
+
+
+def test_tournament_emits_progress_lines_per_completed_trial(tmp_path, monkeypatch):
+    """Same per-completed-trial progress contract, for `tournament`'s $0
+    last-step comparison (its own module-documented no-tail-call case)."""
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    tape = Tape.load(str(FIXTURES_DIR / "single_turn.tape.sqlite"))
+    run_id = store.save_tape(tape, run_id="single-turn-run")
+    store.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "tournament",
+            run_id,
+            "--agent",
+            "tracefork.fixtures:single_turn_agent",
+            "--candidate",
+            "a:four",
+            "--candidate",
+            "b:5",
+            "--store",
+            str(db),
+            "--k",
+            "2",
+            "--success-re",
+            "4",
+            "--failure-re",
+            "nope-never-matches-xyz",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    progress_lines = [ln for ln in result.output.splitlines() if "[tournament] trial" in ln]
+    # 2 candidates * k=2 = 4 trials.
+    assert len(progress_lines) == 4
+    assert progress_lines[-1].strip().endswith("4/4 complete")
+
+
+def test_shapley_rank_emits_progress_per_completed_trial_across_both_phases():
+    """tracefork-sis.51: `BlameEngine.shapley_rank` has no dedicated top-level
+    CLI command (only `bench.py`, outside this lane, calls it), so this is a
+    direct engine-level test of its `progress=` callback -- one call per
+    COMPLETED trial across BOTH the internal sufficiency `rank()` pass and
+    every coalition-walk trial, against ONE shared total. Fully offline/$0
+    via the same single-exchange-tape trick the CLI-level tests above use."""
+    from tracefork.blame import BlameEngine, StringMatchOracle
+    from tracefork.fixtures import single_turn_agent
+    from tracefork.wire import make_text_response
+
+    tape = Tape.load(str(FIXTURES_DIR / "single_turn.tape.sqlite"))
+    mutated = make_text_response("[tracefork] perturbed")
+
+    def perturb_factory(step_idx):
+        return mutated, None
+
+    oracle = StringMatchOracle(success_re="4", failure_re="nope-never-matches-xyz")
+    calls: list[tuple[int, int]] = []
+
+    report = BlameEngine.shapley_rank(
+        tape,
+        single_turn_agent,
+        oracle,
+        perturb_factory=perturb_factory,
+        k=2,
+        m_samples=2,
+        budget_usd=5.0,
+        api_key="",
+        progress=lambda c, t: calls.append((c, t)),
+    )
+
+    # n=1 exchange, k=2, m_samples=2 -> total = n*k*(1+m_samples) = 6.
+    assert report.total_forks == 6
+    assert len(calls) == 6
+    assert calls == [(i, 6) for i in range(1, 7)]
+
+
 def test_validate_runs_and_enforces_control(tmp_path):
     """`validate` runs fully offline; the negative control is enforced, not cosmetic."""
     out = tmp_path / "vr.json"
@@ -151,8 +263,122 @@ def test_export_otel_writes_gen_ai_attributes(tmp_path):
     data = json.loads(out.read_text())
     spans = data["resourceSpans"][0]["scopeSpans"][0]["spans"]
     keys = {kv["key"] for span in spans for kv in span["attributes"]}
-    assert "gen_ai.system" in keys
+    # gen_ai.provider.name is the current OTel GenAI semconv attribute name
+    # (gen_ai.system was deprecated/replaced -- tracefork-sis.50); the CLI's
+    # export must never emit the deprecated one.
+    assert "gen_ai.provider.name" in keys
+    assert "gen_ai.system" not in keys
     assert "gen_ai.request.model" in keys
+
+
+def test_export_otlp_endpoint_pushes_to_a_local_fake_collector(tmp_path):
+    """tracefork-sis.60: `--otlp-endpoint` pushes the exported trace to a
+    live OTLP collector -- proven against a real local HTTP server ("a local
+    fake collector" per the item's own acceptance criteria), fully offline
+    (127.0.0.1 only, no external network)."""
+    import http.server
+    import threading
+
+    received: dict = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 -- stdlib-mandated method name
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            received["path"] = self.path
+            received["content_type"] = self.headers.get("Content-Type")
+            received["body"] = json.loads(body)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format_str: str, *args: object) -> None:  # noqa: A002
+            pass  # silence the default stderr access log
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        db = tmp_path / "store.db"
+        store = TapeStore(str(db))
+        run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+        store.close()
+        out = tmp_path / "trace.json"
+
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                run_id,
+                "--store",
+                str(db),
+                "--otel",
+                "-o",
+                str(out),
+                "--otlp-endpoint",
+                f"http://127.0.0.1:{port}",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Pushed" in result.output
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert received["path"] == "/v1/traces"
+    assert received["content_type"] == "application/json"
+    exported_spans = received["body"]["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert len(exported_spans) == 3  # 1 root + 2 exchanges
+    # The local JSON file and the pushed body are the exact same export.
+    assert received["body"] == json.loads(out.read_text())
+
+
+def test_export_otlp_endpoint_requires_otel_not_openinference(tmp_path):
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            run_id,
+            "--store",
+            str(db),
+            "--openinference",
+            "--otlp-endpoint",
+            "http://127.0.0.1:1",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--otel" in result.output
+
+
+def test_export_otlp_endpoint_unreachable_collector_is_clean_nonzero_exit(tmp_path):
+    """A connection failure must exit 1 with a clean stderr line -- never a
+    raw httpx traceback."""
+    db = tmp_path / "store.db"
+    store = TapeStore(str(db))
+    run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
+    store.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            run_id,
+            "--store",
+            str(db),
+            "--otel",
+            "--otlp-endpoint",
+            "http://127.0.0.1:1",  # nothing listens on port 1 -> refused immediately
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
 
 
 def test_export_openinference_writes_llm_attributes(tmp_path):
@@ -234,6 +460,74 @@ def test_report_writes_html_file(tmp_path):
     data = _extract_report_data(out.read_text())
     assert data["replay"] == {}
     assert data["blame"] == {}
+
+
+def _seed_store_with_many_branches(db: Path, n: int) -> str:
+    """`n` branches, each carrying a genuinely large well-formed response (a
+    real Anthropic text-message body, not a raw string `_tape_to_data` would
+    otherwise fall back to a tiny `{"_raw": "sse"}` placeholder for) so each
+    branch's embedded delta-tape detail is actually big -- reproducing the
+    measured "branch_details dominates the payload" scenario."""
+    from tracefork.wire import make_text_response
+
+    store = TapeStore(str(db))
+    tape = _record_clean_tape()
+    run_id = store.save_tape(tape, run_id="testrun")
+    big_resp = make_text_response("x" * 20_000)
+    for i in range(n):
+        delta = Tape(boundary=tape.boundary, agent_name=tape.agent_name)
+        delta.append_exchange(f'{{"turn":{i}}}'.encode(), big_resp)
+        store.save_branch(
+            parent_run_id=run_id, divergence_step=0, delta_tape=delta, mutation_desc=f"branch {i}"
+        )
+    store.close()
+    return run_id
+
+
+def test_report_branch_details_cap_bytes_flag_truncates_many_branches(tmp_path):
+    """tracefork-sis.56: `--branch-details-cap-bytes` caps the embedded
+    per-branch delta-tape detail end to end (real CLI, store, and
+    generate_report) so a run with many forks doesn't silently balloon the
+    report."""
+    db = tmp_path / "store.db"
+    run_id = _seed_store_with_many_branches(db, 30)
+    out = tmp_path / "report.html"
+
+    result = runner.invoke(
+        app,
+        [
+            "report",
+            run_id,
+            "--store",
+            str(db),
+            "-o",
+            str(out),
+            "--branch-details-cap-bytes",
+            "50000",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    assert 0 < len(data["branch_details"]) < 30
+    truncated = data["branch_details_truncated"]
+    assert truncated is not None
+    assert truncated["total_branches"] == 30
+    assert truncated["cap_bytes"] == 50000
+
+
+def test_report_branch_details_default_cap_applies_without_the_flag(tmp_path):
+    """Omitting --branch-details-cap-bytes must still apply report.py's own
+    documented default (262144 bytes) -- not embed everything unboundedly."""
+    db = tmp_path / "store.db"
+    run_id = _seed_store_with_many_branches(db, 30)
+    out = tmp_path / "report.html"
+
+    result = runner.invoke(app, ["report", run_id, "--store", str(db), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    data = _extract_report_data(out.read_text())
+    assert 0 < len(data["branch_details"]) < 30
+    assert data["branch_details_truncated"] is not None
+    assert data["branch_details_truncated"]["cap_bytes"] == 262144
 
 
 def test_report_with_agent_embeds_bit_exact_replay_receipt(tmp_path):

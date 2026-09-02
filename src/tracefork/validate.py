@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 import anthropic
 import httpx
@@ -31,14 +32,32 @@ from .tape import Tape
 from .transport import TraceforkTransport
 from .wire import make_text_response, make_tool_use_response
 
+__all__ = [
+    "SUCCESS_RESP",
+    "FAIL_RESP",
+    "TOOL_RESP",
+    "synthetic_agent",
+    "ValidationReport",
+    "ValidationRunner",
+    "run_all_fault_classes",
+]
+
+
 SUCCESS_RESP = make_text_response("SUCCESS — confirmed")
 FAIL_RESP = make_text_response("FAIL — cancelled")
 TOOL_RESP = make_tool_use_response("check_availability", {"seats": 3, "destination": "Tokyo"})
 
 
-def _serialize_response(msg) -> str:
+def _serialize_response(msg: Any) -> str:
     """Flatten an Anthropic message's content to a deterministic string, so the
-    agent can echo it (markers and all) into its next request."""
+    agent can echo it (markers and all) into its next request.
+
+    Typed `Any` (not `anthropic.types.Message`) on purpose: the real SDK type
+    is a large discriminated content-block union whose members don't all
+    share `.text`/`.name`/`.input`, and this helper's `getattr(..., None)`
+    probe is exactly the dynamic, block-shape-agnostic walk that makes a
+    precise union type fight the code instead of describing it.
+    """
     parts: list[str] = []
     for block in msg.content:
         t = getattr(block, "type", None)
@@ -115,7 +134,9 @@ class ValidationRunner:
             # a genuinely outcome-flipping step first (test_blame.py injects the flip at the
             # *final* step to show it isn't hardwired to step 0), not that it discriminates
             # among multiple competing causes on a long tape. See README → Validation scope.
-            def perturb_factory(step_idx: int, _mutated=mutated_resp, _fault=fault_step):
+            def perturb_factory(
+                step_idx: int, _mutated: bytes = mutated_resp, _fault: int = fault_step
+            ) -> tuple[bytes, FaultAwareFakeLLM | ScriptedFakeLLM]:
                 if step_idx == _fault:
                     # Inject the fault; the tail flips when it sees the marker.
                     return _mutated, FaultAwareFakeLLM(
@@ -139,7 +160,7 @@ class ValidationRunner:
                 top1_correct += 1
 
             # Negative control: no real perturbation anywhere → expect no flips.
-            def null_perturb_factory(step_idx: int):
+            def null_perturb_factory(step_idx: int) -> tuple[bytes, ScriptedFakeLLM]:
                 return SUCCESS_RESP, ScriptedFakeLLM([SUCCESS_RESP] * 10)
 
             ctrl = BlameEngine.rank(
@@ -163,7 +184,7 @@ class ValidationRunner:
         )
 
 
-def run_all_fault_classes(k: int = 3, n_runs: int = 5) -> dict:
+def run_all_fault_classes(k: int = 3, n_runs: int = 5) -> dict[str, Any]:
     """Run validation for all five fault classes; return a report dict."""
     results = {}
     for fc in FaultClass:

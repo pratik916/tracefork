@@ -34,6 +34,14 @@ from dataclasses import dataclass
 
 from .store import TapeStore
 
+__all__ = [
+    "CorpusEdgeSummary",
+    "CorpusBlameIndex",
+    "RegressionFlag",
+    "build_corpus_blame_index",
+    "detect_regressions",
+]
+
 
 @dataclass(frozen=True)
 class CorpusEdgeSummary:

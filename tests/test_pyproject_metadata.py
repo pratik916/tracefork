@@ -64,6 +64,19 @@ def test_no_deprecated_license_classifier_alongside_spdx_expression():
     )
 
 
+def test_os_classifier_names_the_runner_actually_tested_not_a_blanket_claim():
+    """tracefork-sis.64: CI has only ever run on ubuntu-latest, yet the code is
+    genuinely platform-sensitive (SQLite/WAL, patched `builtins.open`/
+    `socket.connect`, real multiprocessing workers) -- `Operating System ::
+    OS Independent` overclaims untested macOS/Windows portability. The
+    classifier must name the runner CI actually exercises instead.
+    """
+    classifiers = _load_project_table()["classifiers"]
+    assert "Operating System :: OS Independent" not in classifiers
+    os_classifiers = [c for c in classifiers if c.startswith("Operating System ::")]
+    assert os_classifiers == ["Operating System :: POSIX :: Linux"]
+
+
 def test_project_urls_present_for_release():
     urls = _load_project_table()["urls"]
     for key in ("Homepage", "Repository", "Issues", "Changelog"):

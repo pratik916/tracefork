@@ -1,5 +1,29 @@
 """Centralised constants — model IDs, pricing, determinism boundary, tape format."""
 
+__all__ = [
+    "BOUNDARY_V1",
+    "TAPE_MAGIC",
+    "TAPE_FORMAT_VERSION",
+    "DIGEST_CHAIN_VERSION",
+    "SONNET",
+    "HAIKU",
+    "OPUS",
+    "PRICING_VERSION",
+    "SONNET_INPUT_PER_TOKEN",
+    "SONNET_OUTPUT_PER_TOKEN",
+    "HAIKU_INPUT_PER_TOKEN",
+    "HAIKU_OUTPUT_PER_TOKEN",
+    "OPUS_INPUT_PER_TOKEN",
+    "OPUS_OUTPUT_PER_TOKEN",
+    "GENAI_SEMCONV_VERSION",
+    "OTEL_INGESTED_BOUNDARY",
+    "PROXY_BOUNDARY",
+    "CONFINEMENT_TIER_NONE",
+    "CONFINEMENT_TIER_GUARDED",
+    "CONFINEMENT_TIER_DECLARED",
+    "VALIDATE_CHECK_TOLERANCE",
+]
+
 BOUNDARY_V1 = "single-process-asyncio-v1"
 
 # ── Tape on-the-wire (to_bytes/from_bytes) format ───────────────────────────
@@ -26,8 +50,17 @@ BOUNDARY_V1 = "single-process-asyncio-v1"
 # the URL path rather than the body (Gemini/Bedrock). Like `provenance`, it is
 # envelope/metadata only — NOT fed into `digest()` — so every existing tape's
 # content digest is unchanged, and v1-v5 tapes upcast to `[""] * len(exchanges)`.
+# v7 adds `response_status`/`response_content_type`: the real HTTP status code
+# and content-type captured at each exchange's real capture seam
+# (`transport.py`), parallel-indexed to `exchanges` — so a recorded non-2xx
+# response (e.g. a 429 rate-limit) replays with the SAME status/content-type
+# it was recorded with, instead of every replay response being hard-coded to
+# (200, "application/json"). Like `request_urls`, it is envelope/metadata
+# only — NOT fed into `digest()` — so every existing tape's content digest is
+# unchanged, and v1-v6 tapes upcast to `[200] * len(exchanges)` /
+# `["application/json"] * len(exchanges)`.
 TAPE_MAGIC = b"TFTAPE\x00"
-TAPE_FORMAT_VERSION = 6
+TAPE_FORMAT_VERSION = 7
 
 # ── digest() hash-chain framing ─────────────────────────────────────────────
 #
@@ -67,7 +100,7 @@ OPUS = "claude-opus-4-8"
 # (`tracefork/data/pricing.json`) MUST reproduce them exactly, so `BudgetGovernor`
 # behaviour is unchanged. The flat per-model `PRICING_TABLE` was replaced by the
 # provider-generic `(provider, model) -> rates` registry in `pricing.py`.
-PRICING_VERSION = "2026-08c"
+PRICING_VERSION = "2026-08d"
 SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
 SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
 HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
@@ -78,11 +111,17 @@ OPUS_OUTPUT_PER_TOKEN = 25.00 / 1_000_000
 # ── OTel GenAI / OpenInference interop (see interop.py) ─────────────────────
 #
 # Pinned OpenTelemetry semantic-conventions release the `gen_ai.*` attribute
-# names in `interop.py` target — https://opentelemetry.io/docs/specs/semconv/gen-ai/.
-# Bump deliberately (it is not auto-detected) if a future attribute rename
-# lands upstream; nothing here is byte-hashed, so bumping never touches
+# names in `interop.py` target — the GenAI conventions now live in their own
+# repo (https://github.com/open-telemetry/semantic-conventions-genai) but
+# still track the main spec's release numbering
+# (https://github.com/open-telemetry/semantic-conventions/releases). v1.44.0
+# is the release that stabilized `gen_ai.provider.name` (replacing the
+# deprecated `gen_ai.system`) and `gen_ai.execute_tool.internal` tool-call
+# spans — see `interop.py`'s `ATTR_PROVIDER_NAME`/tool-span builder. Bump
+# deliberately (it is not auto-detected) if a future attribute rename lands
+# upstream; nothing here is byte-hashed, so bumping never touches
 # `Tape.digest()`.
-GENAI_SEMCONV_VERSION = "1.29.0"
+GENAI_SEMCONV_VERSION = "1.44.0"
 
 # Boundary marker for a `Tape` whose step structure was reconstructed from an
 # ingested OTel/OpenInference trace (`interop.ingest_otel_trace` /

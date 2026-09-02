@@ -16,14 +16,19 @@ from tracefork.constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY, S
 from tracefork.fork import BranchSpec, ForkEngine
 from tracefork.interop import (
     ATTR_BLAME_FLIP_RATE,
+    ATTR_CONVERSATION_ID,
+    ATTR_OPERATION_NAME,
+    ATTR_PROVIDER_NAME,
     ATTR_REQUEST_MODEL,
     ATTR_STEP_INDEX,
-    ATTR_SYSTEM,
+    ATTR_TOOL_NAME,
+    ATTR_TOOL_STEP_INDEX,
     ATTR_USAGE_INPUT_TOKENS,
     OI_INPUT_VALUE,
     OI_MODEL_NAME,
     OI_OUTPUT_VALUE,
     OI_SPAN_KIND,
+    OtlpExportError,
     _flatten_attrs,
     blame_report_from_json,
     build_openinference_dataset,
@@ -31,11 +36,13 @@ from tracefork.interop import (
     ingest_openinference_dataset,
     ingest_otel_trace,
     normalized_to_genai_attributes,
+    push_otlp_trace,
 )
 from tracefork.nondet import find_divergence
 from tracefork.providers.base import ContentPart, NormalizedResponse
 from tracefork.replay import ReplayVerifier
 from tracefork.tape import Tape
+from tracefork.tools import make_result_frame, make_tool_call_frame
 from tracefork.transport import TraceforkTransport
 
 RESP_A = make_text_response("Response A")
@@ -79,7 +86,8 @@ def test_normalized_to_genai_attributes_maps_core_fields():
         message_id="msg_abc",
     )
     attrs = normalized_to_genai_attributes(normalized, provider="anthropic")
-    assert attrs[ATTR_SYSTEM] == "anthropic"
+    assert attrs[ATTR_PROVIDER_NAME] == "anthropic"
+    assert attrs[ATTR_OPERATION_NAME] == "chat"
     assert attrs[ATTR_REQUEST_MODEL] == SONNET
     assert attrs["gen_ai.response.model"] == SONNET
     assert attrs["gen_ai.response.id"] == "msg_abc"
@@ -109,7 +117,8 @@ def test_build_otel_trace_shape_and_gen_ai_attributes():
     assert s0["parentSpanId"] == root["spanId"]
     assert s1["parentSpanId"] == root["spanId"]
 
-    assert _attr(s0, ATTR_SYSTEM) == "anthropic"
+    assert _attr(s0, ATTR_PROVIDER_NAME) == "anthropic"
+    assert _attr(s0, ATTR_OPERATION_NAME) == "chat"
     assert _attr(s0, ATTR_REQUEST_MODEL) == SONNET
     assert _attr(s0, ATTR_STEP_INDEX) == 0
     assert _attr(s1, ATTR_STEP_INDEX) == 1
@@ -117,6 +126,87 @@ def test_build_otel_trace_shape_and_gen_ai_attributes():
     resource_attrs = _flatten_attrs(export["resourceSpans"][0]["resource"]["attributes"])
     assert resource_attrs["gen_ai.semconv.version"] == GENAI_SEMCONV_VERSION
     assert resource_attrs["service.name"] == "tracefork"
+
+
+def test_build_otel_trace_never_emits_the_deprecated_gen_ai_system_attribute():
+    """tracefork-sis.50: `gen_ai.system` was replaced by `gen_ai.provider.name`
+    in the OTel GenAI semantic conventions -- exported spans must use the
+    current name only, never the deprecated one."""
+    tape = _build_two_turn_tape()
+    export = build_otel_trace(tape)
+    for span in _spans(export):
+        assert "gen_ai.system" not in _flatten_attrs(span["attributes"])
+
+
+def test_build_otel_trace_emits_tool_exchanges_as_their_own_execute_tool_spans():
+    """tracefork-sis.50: `tape.tool_exchanges` must no longer be silently
+    dropped -- each gets its own span with `gen_ai.operation.name =
+    execute_tool` (not the hardcoded "chat" every span got before) and
+    `gen_ai.tool.name` decoded off the real `tools/call` JSON-RPC wire shape
+    (`tools.py`'s own frame constructors, never a hand-rolled JSON string)."""
+    tape = _build_two_turn_tape()
+    tape.append_tool_exchange(
+        make_tool_call_frame(1, "read_file", {"path": "/etc/hosts"}),
+        make_result_frame(1, {"content": "127.0.0.1 localhost"}),
+    )
+    tape.append_tool_exchange(
+        make_tool_call_frame(2, "write_file", {"path": "/tmp/out.txt"}),
+        make_result_frame(2, {"ok": True}),
+    )
+
+    export = build_otel_trace(tape)
+    spans = _spans(export)
+    # 1 root + 2 LLM exchanges + 2 tool exchanges.
+    assert len(spans) == 5
+    root = spans[0]
+    tool_spans = spans[3:]
+
+    assert _attr(tool_spans[0], ATTR_OPERATION_NAME) == "execute_tool"
+    assert _attr(tool_spans[0], ATTR_TOOL_NAME) == "read_file"
+    assert _attr(tool_spans[0], ATTR_TOOL_STEP_INDEX) == 0
+    assert _attr(tool_spans[1], ATTR_OPERATION_NAME) == "execute_tool"
+    assert _attr(tool_spans[1], ATTR_TOOL_NAME) == "write_file"
+    assert _attr(tool_spans[1], ATTR_TOOL_STEP_INDEX) == 1
+    for tool_span in tool_spans:
+        assert tool_span["parentSpanId"] == root["spanId"]
+        assert "execute_tool" in tool_span["name"]
+
+    # Every span id stays unique -- tool spans must not collide with LLM ones.
+    span_ids = [s["spanId"] for s in spans]
+    assert len(span_ids) == len(set(span_ids))
+
+
+def test_build_otel_trace_tool_exchange_with_unparseable_frame_falls_back_gracefully():
+    """A `tool_exchanges` entry that isn't a well-formed `tools/call` request
+    must still get a span (never dropped, never a crash) -- with an honest
+    'unknown' tool name rather than a fabricated one."""
+    tape = _build_two_turn_tape()
+    tape.append_tool_exchange(b"not json", b"also not json")
+
+    export = build_otel_trace(tape)
+    spans = _spans(export)
+    assert len(spans) == 4
+    assert _attr(spans[3], ATTR_OPERATION_NAME) == "execute_tool"
+    assert _attr(spans[3], ATTR_TOOL_NAME) == "unknown"
+
+
+def test_build_otel_trace_sets_conversation_id_when_session_present():
+    """tracefork-sis.50: `gen_ai.conversation.id` must be set on every span
+    (root, LLM-exchange, and tool-exchange) when a `session_id` is passed --
+    and must be absent entirely when omitted (additive, opt-in default)."""
+    tape = _build_two_turn_tape()
+    tape.append_tool_exchange(
+        make_tool_call_frame(1, "read_file", {"path": "/etc/hosts"}),
+        make_result_frame(1, {"content": "127.0.0.1 localhost"}),
+    )
+
+    without_session = build_otel_trace(tape)
+    for span in _spans(without_session):
+        assert ATTR_CONVERSATION_ID not in _flatten_attrs(span["attributes"])
+
+    with_session = build_otel_trace(tape, session_id="sess-abc123")
+    for span in _spans(with_session):
+        assert _attr(span, ATTR_CONVERSATION_ID) == "sess-abc123"
 
 
 def test_build_otel_trace_is_deterministic():
@@ -151,6 +241,77 @@ def test_build_otel_trace_attaches_blame_attributes():
     assert _attr(s0, "tracefork.blame.ci_method") == "wilson"
     with pytest.raises(KeyError):
         _attr(s1, ATTR_BLAME_FLIP_RATE)  # step 1 wasn't in the blame report
+
+
+# ── push: OTel trace -> a live OTLP/HTTP collector ──────────────────────────
+
+
+def test_push_otlp_trace_posts_the_exact_trace_body_to_v1_traces():
+    """tracefork-sis.60: `push_otlp_trace` POSTs the trace dict verbatim (no
+    re-encoding) to `{endpoint}/v1/traces` with `Content-Type:
+    application/json` -- proven against a local fake collector
+    (`httpx.MockTransport`), fully offline."""
+    tape = _build_two_turn_tape()
+    trace = build_otel_trace(tape)
+    received: dict = {}
+
+    def fake_collector(request: httpx.Request) -> httpx.Response:
+        received["url"] = str(request.url)
+        received["content_type"] = request.headers.get("content-type")
+        received["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"partialSuccess": {}})
+
+    response = push_otlp_trace(
+        trace, "http://collector.example:4318", transport=httpx.MockTransport(fake_collector)
+    )
+
+    assert response.status_code == 200
+    assert received["url"] == "http://collector.example:4318/v1/traces"
+    assert received["content_type"] == "application/json"
+    assert received["body"] == trace
+    assert len(received["body"]["resourceSpans"][0]["scopeSpans"][0]["spans"]) == 3
+
+
+def test_push_otlp_trace_strips_a_trailing_slash_from_endpoint():
+    received: dict = {}
+
+    def fake_collector(request: httpx.Request) -> httpx.Response:
+        received["url"] = str(request.url)
+        return httpx.Response(200, json={})
+
+    push_otlp_trace(
+        {"resourceSpans": []},
+        "http://collector.example:4318/",
+        transport=httpx.MockTransport(fake_collector),
+    )
+    assert received["url"] == "http://collector.example:4318/v1/traces"
+
+
+def test_push_otlp_trace_raises_otlp_export_error_on_non_2xx_response():
+    def fake_collector(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="collector on fire")
+
+    with pytest.raises(OtlpExportError, match="500"):
+        push_otlp_trace(
+            {"resourceSpans": []},
+            "http://collector.example:4318",
+            transport=httpx.MockTransport(fake_collector),
+        )
+
+
+def test_push_otlp_trace_wraps_a_transport_level_failure_as_otlp_export_error():
+    """A connection failure must never surface as a raw `httpx` exception --
+    only `OtlpExportError`, so `cli.py` can catch exactly one type."""
+
+    def fake_collector(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(OtlpExportError, match="could not reach"):
+        push_otlp_trace(
+            {"resourceSpans": []},
+            "http://collector.example:4318",
+            transport=httpx.MockTransport(fake_collector),
+        )
 
 
 # ── export: OpenInference dataset ───────────────────────────────────────────

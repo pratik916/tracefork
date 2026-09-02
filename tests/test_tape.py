@@ -1,9 +1,12 @@
 import os
+import pathlib
 import tempfile
 
 import pytest
 
 from tracefork.tape import Tape, sha256_hex
+
+_FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 
 
 def _make_tape() -> Tape:
@@ -246,3 +249,93 @@ def test_replay_verifier_raises_provenance_mismatch_after_save_load_roundtrip():
             verifier.verify()
     finally:
         os.unlink(path)
+
+
+# ── golden v2/v3 tape-format fixtures ───────────────────────────────────────
+#
+# tests/fixtures/legacy_tape_v{2,3}.blob are committed binary fixtures for the
+# historical v2 (content-addressed zstd container, pre-tool-log) and v3 (adds
+# the JSON-RPC tool-exchange log, pre-concurrency-batch-log) on-disk envelope
+# formats. They were hand-built with struct/json/hashlib/zstandard directly
+# (see the generator this test module's sibling comment references),
+# independent of tape.py's current `_encode_v6` -- unlike `legacy_tape_v1.blob`
+# (tested in test_storage.py), which pins the v1 JSON+base64 format, these pin
+# the v2/v3 binary-container decode branches (`_decode_v2_binary`/
+# `_decode_v3_binary`), which until now were only exercised indirectly via
+# hand-synthesized bytes from the *current* encoder.
+
+
+def test_golden_v2_fixture_decodes_via_upcaster_chain():
+    data = (_FIXTURES_DIR / "legacy_tape_v2.blob").read_bytes()
+    tape = Tape.from_bytes(data)
+    assert tape.boundary == "single-process-asyncio-v1"
+    assert tape.agent_name == "golden-agent-v2"
+    assert tape.draws == [("clock", "2026-01-01T00:00:00+00:00"), ("uuid", "abc123")]
+    assert tape.exchanges == [
+        (b"request-1", b"response-1"),
+        (b"request-2", b"response-2"),
+        (b"request-1", b"response-1"),
+    ]
+    # v2 predates the tool log / concurrency-batch log / provenance /
+    # request-URL witness log -- all upcast to their documented empty default.
+    assert tape.tool_exchanges == []
+    assert tape.async_batches == []
+    assert tape.provenance == {}
+    assert tape.request_urls == [""] * len(tape.exchanges)
+    assert tape.content_redacted is False
+
+
+def test_golden_v2_fixture_digest_matches_equivalent_fresh_tape():
+    data = (_FIXTURES_DIR / "legacy_tape_v2.blob").read_bytes()
+    loaded = Tape.from_bytes(data)
+    fresh = Tape(agent_name="golden-agent-v2", boundary="single-process-asyncio-v1")
+    fresh.draws = [("clock", "2026-01-01T00:00:00+00:00"), ("uuid", "abc123")]
+    fresh.append_exchange(b"request-1", b"response-1")
+    fresh.append_exchange(b"request-2", b"response-2")
+    fresh.append_exchange(b"request-1", b"response-1")
+    assert loaded.digest() == fresh.digest()
+
+
+def test_golden_v3_fixture_decodes_via_upcaster_chain():
+    data = (_FIXTURES_DIR / "legacy_tape_v3.blob").read_bytes()
+    tape = Tape.from_bytes(data)
+    assert tape.boundary == "single-process-asyncio-v1"
+    assert tape.agent_name == "golden-agent-v3"
+    assert tape.draws == [("clock", "2026-01-01T00:00:00+00:00"), ("uuid", "def456")]
+    assert tape.exchanges == [
+        (b"request-1", b"response-1"),
+        (b"request-2", b"response-2"),
+    ]
+    # v3 introduces the tool log but predates the concurrency-batch log /
+    # provenance / request-URL witness log -- those upcast to empty defaults.
+    assert tape.tool_exchanges == [(b"tool-request-1", b"tool-response-1")]
+    assert tape.async_batches == []
+    assert tape.provenance == {}
+    assert tape.request_urls == [""] * len(tape.exchanges)
+    assert tape.content_redacted is False
+
+
+def test_golden_v3_fixture_digest_matches_equivalent_fresh_tape():
+    data = (_FIXTURES_DIR / "legacy_tape_v3.blob").read_bytes()
+    loaded = Tape.from_bytes(data)
+    fresh = Tape(agent_name="golden-agent-v3", boundary="single-process-asyncio-v1")
+    fresh.draws = [("clock", "2026-01-01T00:00:00+00:00"), ("uuid", "def456")]
+    fresh.append_exchange(b"request-1", b"response-1")
+    fresh.append_exchange(b"request-2", b"response-2")
+    fresh.append_tool_exchange(b"tool-request-1", b"tool-response-1")
+    assert loaded.digest() == fresh.digest()
+
+
+def test_golden_v2_and_v3_fixtures_carry_their_declared_envelope_version():
+    from tracefork.constants import TAPE_MAGIC
+
+    v2 = (_FIXTURES_DIR / "legacy_tape_v2.blob").read_bytes()
+    v3 = (_FIXTURES_DIR / "legacy_tape_v3.blob").read_bytes()
+    assert v2[: len(TAPE_MAGIC)] == TAPE_MAGIC
+    assert v3[: len(TAPE_MAGIC)] == TAPE_MAGIC
+    import struct
+
+    (v2_version,) = struct.unpack_from(">H", v2, len(TAPE_MAGIC))
+    (v3_version,) = struct.unpack_from(">H", v3, len(TAPE_MAGIC))
+    assert v2_version == 2
+    assert v3_version == 3

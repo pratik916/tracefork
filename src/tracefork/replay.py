@@ -21,6 +21,7 @@ from __future__ import annotations
 import enum
 import importlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,11 +31,25 @@ import httpx
 
 from .certificate import ReplayCertificate
 from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
+from .errors import TraceforkError
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError, find_divergence
 from .observability import instrument
 from .tape import Tape
 from .transport import TraceforkTransport
+
+__all__ = [
+    "DriftCause",
+    "ProvenanceMismatchError",
+    "DivergenceReport",
+    "VerificationResult",
+    "ReplayVerifier",
+    "DriftDoctor",
+    "verification_result_to_dict",
+    "FixtureResult",
+    "CorpusCheckResult",
+    "run_fixture_corpus_check",
+]
 
 
 class DriftCause(enum.Enum):
@@ -43,7 +58,7 @@ class DriftCause(enum.Enum):
     BOUNDARY_VIOLATION = "boundary_violation"
 
 
-class ProvenanceMismatchError(RuntimeError):
+class ProvenanceMismatchError(RuntimeError, TraceforkError):
     """Raised when a tape's recorded `provenance` (see `tape.Tape.provenance`)
     disagrees with the replay-time configuration — currently just whether the
     same `RequestMatcher` is in use. Opt-in: only fires when the tape's
@@ -103,7 +118,7 @@ class ReplayVerifier:
     def __init__(
         self,
         tape: Tape,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any]
+        agent_fn: Callable[[anthropic.Anthropic], Any],
         *,
         api_key: str = "sk-ant-replay",
         matcher: RequestMatcher | None = None,
@@ -279,7 +294,7 @@ def run_fixture_corpus_check(fixtures_dir: Path) -> CorpusCheckResult:
     directory doesn't exist or wasn't set up).
     """
     manifest_path = fixtures_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     results: list[FixtureResult] = []
     for entry in manifest:

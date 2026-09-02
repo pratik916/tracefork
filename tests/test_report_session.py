@@ -95,6 +95,68 @@ def test_run_id_present_in_agent_map_yields_real_replay_receipt(tmp_path):
         store.close()
 
 
+def test_session_report_template_wires_lane_run_id_link_to_its_own_report(tmp_path):
+    """v1.0.0 readiness item 45: the session board was unreachable from
+    either of the other two report surfaces AND itself linked nowhere --
+    each lane's run_id now renders as a link to `/?run_id=<id>`, matching
+    the query-param contract report.html's loadData reads. This is a JS
+    template-literal assertion (the link is built client-side from
+    `lane.run_id`, see the module docstring's static-only scope note) --
+    generate a real report and read the STATIC TEMPLATE source (not the
+    injected data blob) for the rendering wire-up."""
+    store, session_id = _seeded_session(tmp_path)
+    try:
+        out = tmp_path / "board.html"
+        generate_session_report(store, session_id, out)
+        content = out.read_text()
+        assert 'href="/?run_id=${encodeURIComponent(lane.run_id)}"' in content
+        assert 'class="lane-run-id"' in content
+        # a real run_id from this session actually appears in the injected data
+        data = _extract_session_data(content)
+        assert any(lane["run_id"] == "root" for lane in data["lanes"])
+    finally:
+        store.close()
+
+
+def test_generate_session_report_escapes_attribute_breakout_in_run_id(tmp_path):
+    """v1.0.0 readiness item 41: web/session_report.html's escape() omitted
+    `"`, which is interpolated into (now four, after tracefork-sis.29 added
+    a title="..." attribute -- all still covered by the same fix)
+    double-quoted HTML attributes. Reachable via bundle.import_bundle
+    (a tape/bundle from someone else feeding an attacker-controlled run_id
+    into the rendered session board). A run_id carrying a `"` plus an
+    attribute-breakout payload must never let that payload land as a real
+    HTML attribute in the output."""
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        evil_run_id = 'r1" onmouseover="alert(1)'
+        store.save_tape(_record(single_turn_agent, [TEXT_RESP]), run_id=evil_run_id)
+        session_id = store.create_session(root_run_id=evil_run_id)
+
+        out = tmp_path / "board.html"
+        generate_session_report(store, session_id, out)
+        content = out.read_text()
+
+        # the raw payload must never appear verbatim (that would mean it
+        # broke out of the attribute it was placed in)
+        assert 'r1" onmouseover="alert(1)' not in content
+        # the STATIC TEMPLATE now routes run_id through escapeAttr at every
+        # attribute-context interpolation site
+        assert 'data-run-id="${escapeAttr(lane.run_id)}"' in content
+        assert 'id="lane-detail-${escapeAttr(lane.run_id)}"' in content
+        # the escaped quote character is present somewhere in escapeAttr's
+        # own implementation (regression pin: escape() alone never did this)
+        assert "function escapeAttr(s)" in content
+        assert "replace(/\"/g, '&quot;')" in content
+        # and the raw run_id (with its literal quote) still round-trips
+        # correctly into the injected DATA payload (JSON-escaped, a
+        # different -- already-safe -- context)
+        data = _extract_session_data(content)
+        assert data["lanes"][0]["run_id"] == evil_run_id
+    finally:
+        store.close()
+
+
 def test_generate_session_report_escapes_script_breakout(tmp_path):
     store = TapeStore(str(tmp_path / "store.db"))
     try:

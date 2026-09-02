@@ -11,7 +11,7 @@ one provider's schema. Byte output is intentionally identical to the pre-seam
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from ..constants import SONNET
 from ..tape import sha256_hex
@@ -22,6 +22,8 @@ from .base import (
     register_adapter,
     register_capabilities,
 )
+
+__all__ = ["AnthropicAdapter"]
 
 
 class AnthropicAdapter:
@@ -40,7 +42,7 @@ class AnthropicAdapter:
     def detect_model(self, request_bytes: bytes, request_url: str | None = None) -> str | None:
         # request_url is unused: the body already carries a real "model" field.
         try:
-            return json.loads(request_bytes).get("model")
+            return cast("str | None", json.loads(request_bytes).get("model"))
         except Exception:
             return None
 

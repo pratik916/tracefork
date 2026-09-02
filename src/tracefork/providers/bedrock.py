@@ -50,6 +50,9 @@ from .base import (
     register_capabilities,
 )
 
+__all__ = ["ANTHROPIC_VERSION", "BedrockAdapter", "build_invoke_model_request"]
+
+
 #: Bedrock's fixed InvokeModel request-body version tag (not a Claude model id).
 ANTHROPIC_VERSION = "bedrock-2023-05-31"
 

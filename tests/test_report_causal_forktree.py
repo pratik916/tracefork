@@ -180,6 +180,76 @@ def test_cli_report_branch_details_survives_fork_point_drift(tmp_path):
     assert data["branch_details"][branch_id]["error"] == "fork_point_drift"
 
 
+# ── step-aligned counterfactual diff view (v1.0.0 readiness item 65) ───────
+# The Forks panel previously rendered a small 240px SVG summary and, on
+# node click, four lines of branch metadata -- no diff. `branch_details`
+# (item 37/tracefork-bge.37) already carries the full delta-tape data a
+# real diff view needs; this promotes the click-through to a step-aligned
+# parent-vs-branch table.
+
+
+def test_report_html_wires_the_diff_view_functions():
+    content = (Path(__file__).resolve().parent.parent / "web" / "report.html").read_text()
+    assert "function branchDiffRows(parentExchanges, divergenceStep, branchExchanges)" in content
+    assert "function renderBranchDiffTableHtml(branchId, branch)" in content
+    assert "function renderBranchDetailHtml(branchId, branch)" in content
+    # both the static-embedded and live-fetched click paths render through
+    # the SAME shared function -- one diff view, not two to keep in sync
+    # (3 total: the `function ...(` definition itself, plus these 2 calls)
+    assert content.count("renderBranchDetailHtml(branchId,") == 3
+    assert content.count("detailEl.innerHTML = renderBranchDetailHtml(branchId,") == 2
+
+
+def test_branch_diff_rows_aligns_branch_offset_j_with_parent_divergence_step_plus_j():
+    """`delta_tape` holds ONLY the exchanges from divergence_step onward
+    (fork.py's contract) -- branch offset j must align with the PARENT's
+    exchange at divergence_step + j, not with branch offset j directly."""
+    content = (Path(__file__).resolve().parent.parent / "web" / "report.html").read_text()
+    start = content.index("function branchDiffRows(")
+    body = content[start : start + 500]
+    assert "parentExchanges[divergenceStep + j]" in body
+    assert "branchExchanges[j]" in body
+
+
+def test_branch_diff_compares_full_exchange_signature_not_just_the_truncated_preview():
+    """A counterfactual that only changes response fields the 80-char
+    `preview` string truncates away must still show as 'changed' -- the
+    diff compares (role, request, response_preview), not just preview."""
+    content = (Path(__file__).resolve().parent.parent / "web" / "report.html").read_text()
+    start = content.index("function _exchangeSignature(ex)")
+    body = content[start : start + 200]
+    assert "ex.role" in body
+    assert "ex.request" in body
+    assert "ex.response_preview" in body
+    assert "ex.preview" not in body
+
+
+def test_generate_report_embeds_branch_exchanges_the_diff_view_reads(tmp_path):
+    """End-to-end data-shape proof: a branch's `_tape_to_data` exchanges
+    (what `branchDiffRows` reads as `branchExchanges`) and the parent run's
+    own `exchanges` (what it reads as `parentExchanges`) both round-trip
+    into the payload with the shapes the diff functions expect."""
+    tape = _make_tape()
+    causal_edges = [_SAMPLE_EDGE]
+    branch_details = {
+        "b1": {
+            **_tape_to_data(tape),
+            "divergence_step": 0,
+            "mutation_desc": "swapped response",
+            "branch_digest": "d1",
+            "parent_run_id": "run1",
+        }
+    }
+    out = tmp_path / "report.html"
+    generate_report(tape, out, causal_edges=causal_edges, branch_details=branch_details)
+    data = _extract_data(out.read_text())
+    branch = data["branch_details"]["b1"]
+    assert "exchanges" in branch
+    assert branch["exchanges"][0]["role"] == data["exchanges"][0]["role"]
+    assert branch["exchanges"][0]["request"] == data["exchanges"][0]["request"]
+    assert branch["divergence_step"] == 0
+
+
 def test_cli_report_tape_path_leaves_causal_edges_and_branch_details_empty(tmp_path):
     tape = _make_tape()
     tape_path = tmp_path / "run.tape.sqlite"

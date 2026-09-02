@@ -24,6 +24,9 @@ from enum import StrEnum
 from .record_mode import RecordMode
 from .redact import Redactor, safe_defaults, with_content_redaction
 
+__all__ = ["ENV_PREFIX", "RedactionPolicy", "LogFormat", "TraceforkConfig"]
+
+
 #: Default environment-variable prefix consulted by ``TraceforkConfig.from_env()``.
 ENV_PREFIX = "TRACEFORK_"
 

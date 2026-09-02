@@ -136,7 +136,7 @@ def session_topological_order(store: TapeStore, session_id: str) -> list[RunRef]
     return expand(root_run_id)
 
 
-def cross_tape_causal_edges(store: TapeStore, session_id: str) -> list[dict]:
+def cross_tape_causal_edges(store: TapeStore, session_id: str) -> list[dict[str, Any]]:
     """Every already-persisted ``causal_edges`` row across ``session_id``'s
     tapes, ordered by :func:`session_topological_order`'s cross-tape
     position.
@@ -154,11 +154,11 @@ def cross_tape_causal_edges(store: TapeStore, session_id: str) -> list[dict]:
     for i, ref in enumerate(order):
         position.setdefault(ref.run_id, {})[ref.step_index] = i
 
-    edges: list[dict] = []
+    edges: list[dict[str, Any]] = []
     for run_id in store.session_tapes(session_id):
         edges.extend(store.causal_edges_for_run(run_id))
 
-    def _position(edge: dict) -> int:
+    def _position(edge: dict[str, Any]) -> int:
         return position.get(edge["run_id"], {}).get(edge["step_index"], len(order))
 
     edges.sort(key=_position)

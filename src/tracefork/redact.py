@@ -44,11 +44,28 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .tape import sha256_hex
+
+__all__ = [
+    "RedactorFn",
+    "REDACTED",
+    "REDACTED_STR",
+    "DEFAULT_SECRET_ENV_VARS",
+    "DEFAULT_REDACTED_HEADERS",
+    "regex_redactor",
+    "secret_value_redactor",
+    "content_redactor",
+    "RedactingMatcher",
+    "Redactor",
+    "safe_defaults",
+    "with_content_redaction",
+]
+
 
 RedactorFn = Callable[[bytes], bytes | None]
 
@@ -140,7 +157,7 @@ def _redact_content_blocks(blocks: object) -> None:
                 _redact_content_blocks(block["content"])
 
 
-def _redact_message_content(obj: dict) -> None:
+def _redact_message_content(obj: dict[str, Any]) -> None:
     """Blank `system` / `messages[].content` (request shape) and top-level
     `content` (response shape) in an Anthropic Messages-API JSON body, in
     place."""

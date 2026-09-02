@@ -32,6 +32,23 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
+__all__ = [
+    "OTEL_ENABLED_ENV",
+    "STRUCTLOG_IMPORT_HINT",
+    "OTEL_IMPORT_HINT",
+    "structlog_available",
+    "require_structlog",
+    "otel_available",
+    "require_otel",
+    "enable_otel_instrumentation",
+    "reset_otel_instrumentation_override",
+    "configure_structlog_json",
+    "get_logger",
+    "traced_span",
+    "instrument",
+]
+
+
 #: Env var truthy values ("1", "true", "yes", "on", case-insensitive) enable
 #: OTel self-instrumentation without an explicit `enable_otel_instrumentation()`
 #: call. Unset (the default) means disabled.

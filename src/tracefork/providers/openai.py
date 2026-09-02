@@ -16,6 +16,7 @@ bytes exactly like the Anthropic fakes.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 
 from ..tape import sha256_hex
@@ -26,6 +27,9 @@ from .base import (
     register_adapter,
     register_capabilities,
 )
+
+__all__ = ["DEFAULT_OPENAI_MODEL", "OpenAIAdapter"]
+
 
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -260,7 +264,7 @@ def _decode_arguments(arguments: Any) -> dict[str, Any]:
     return {}
 
 
-def _sse_data_payloads(response_bytes: bytes):
+def _sse_data_payloads(response_bytes: bytes) -> Iterator[str]:
     """Yield ``data:`` payloads from an SSE stream, skipping the ``[DONE]`` marker."""
     text = response_bytes.decode(errors="replace")
     for line in text.splitlines():

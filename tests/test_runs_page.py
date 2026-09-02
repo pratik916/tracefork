@@ -70,3 +70,52 @@ def test_runs_page_empty_store_returns_200(tmp_path):
     api_resp = client.get("/api/runs")
     assert api_resp.status_code == 200
     assert api_resp.json() == []
+
+
+# ── app-bar cross-navigation (v1.0.0 readiness item 45) ─────────────────────
+# report.html shipped with zero <a> elements -- nothing linked back to
+# /runs, and web/session_report.html was unreachable from either page. The
+# three templates now share a consistent app bar (see web/*.html's
+# `.app-nav`/`.app-nav-link`); this section proves each page carries at
+# least one resolvable link to one of the other two.
+
+_REPORT_HTML = _RUNS_HTML.parent / "report.html"
+_SESSION_REPORT_HTML = _RUNS_HTML.parent / "session_report.html"
+
+
+def test_report_html_links_to_runs_page():
+    content = _REPORT_HTML.read_text()
+    assert 'id="nav-runs-link"' in content
+    assert 'href="/runs"' in content
+
+
+def test_report_html_hides_the_runs_link_in_static_mode_not_a_dead_link():
+    """`/runs` is a live-server route (see server.py's `serve_runs_page`), not
+    a file next to a static report export -- the link must be hidden rather
+    than shipped as a dead link when window.__TRACEFORK_SERVER_URL__ is
+    undefined (the static-report case)."""
+    content = _REPORT_HTML.read_text()
+    assert "window.__TRACEFORK_SERVER_URL__ === undefined) link.hidden = true" in content
+
+
+def test_runs_html_app_nav_marks_itself_as_the_current_page():
+    content = _RUNS_HTML.read_text()
+    assert 'id="nav-runs-link"' in content
+    assert 'aria-current="page"' in content
+
+
+def test_report_html_and_runs_html_share_the_same_app_nav_css_classes():
+    report_content = _REPORT_HTML.read_text()
+    runs_content = _RUNS_HTML.read_text()
+    for cls in (".app-nav {", ".app-nav-link {"):
+        assert cls in report_content, f"report.html missing {cls!r}"
+        assert cls in runs_content, f"runs.html missing {cls!r}"
+
+
+def test_session_report_html_links_each_lane_back_to_its_own_run_report():
+    """web/session_report.html was unreachable from either page AND itself
+    linked nowhere -- each lane's run_id now links to `/?run_id=...`, the
+    query-param contract report.html's loadData already reads."""
+    content = _SESSION_REPORT_HTML.read_text()
+    assert 'href="/?run_id=${encodeURIComponent(lane.run_id)}"' in content
+    assert 'class="lane-run-id"' in content

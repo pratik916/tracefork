@@ -279,8 +279,10 @@ def _corpus_blame_registered() -> bool:
 
 
 def test_corpus_blame_cli_exits_zero_and_writes_json(tmp_path):
-    if not _corpus_blame_registered():
-        pytest.skip("corpus-blame not yet wired into cli.py (see cli_command)")
+    # Hard assertion, not a skip: `corpus-blame` is verified wired today, so
+    # deliberately unwiring it must fail this test loudly rather than make it
+    # vanish silently (tracefork-sis.54).
+    assert _corpus_blame_registered(), "corpus-blame not wired into cli.py"
 
     db = tmp_path / "store.db"
     store = TapeStore(str(db))

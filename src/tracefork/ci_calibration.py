@@ -38,10 +38,36 @@ from dataclasses import dataclass, field
 
 from .blame import CIMethod, proportion_ci
 
+__all__ = [
+    "DEFAULT_N_REPEATS",
+    "DEFAULT_CONFIDENCE",
+    "TOLERANCE_SIGMA",
+    "DEFAULT_TRUE_PS",
+    "DEFAULT_N_TRIALS_GRID",
+    "DEFAULT_METHODS",
+    "monte_carlo_error",
+    "CoverageResult",
+    "CalibrationReport",
+    "simulate_coverage",
+    "run_calibration",
+]
+
+
 #: Replicate count whose Monte Carlo error at the default 95% confidence
 #: level is ~0.0049 (0.49 percentage points) — small enough that a coverage
 #: value outside the documented tolerance band is a genuine signal, not
 #: sampling noise. See Brown-Cai-DasGupta (2001) and the module docstring.
+#:
+#: `simulate_coverage`/`run_calibration` resolve this NAME at call time
+#: (never bake it into a bound default-argument value) specifically so a
+#: caller that wants a smaller replicate count without threading an
+#: explicit `n_repeats=` through every call site — e.g. a test driving
+#: `cli.py`'s `release-receipt` command, which calls `run_calibration()`
+#: with no arguments — can override it by reassigning this module
+#: attribute (`ci_calibration.DEFAULT_N_REPEATS = 50`, or
+#: `monkeypatch.setattr`) before the call. A real Python default-argument
+#: value is evaluated once at function-definition time and would NOT
+#: observe a later reassignment of this name.
 DEFAULT_N_REPEATS = 2000
 
 #: Nominal confidence level calibrated against, matching `blame.py`'s default.
@@ -136,7 +162,7 @@ def simulate_coverage(
     *,
     method: CIMethod = CIMethod.WILSON,
     confidence: float = DEFAULT_CONFIDENCE,
-    n_repeats: int = DEFAULT_N_REPEATS,
+    n_repeats: int | None = None,
     seed: int = 0,
 ) -> CoverageResult:
     """Empirical coverage of ``method`` at a KNOWN ``true_p`` over ``n_trials``
@@ -148,7 +174,14 @@ def simulate_coverage(
     reimplementation), and checks whether ``true_p`` falls inside it.
     ``coverage`` is the fraction of replicates where it did. Deterministic
     given ``seed`` — the SAME seed always drives the SAME sequence of draws.
+
+    ``n_repeats`` defaults to (a fresh read of) module-level
+    `DEFAULT_N_REPEATS` when omitted or passed as ``None`` — see that
+    constant's docstring for why this is a runtime lookup rather than a
+    bound default-argument value.
     """
+    if n_repeats is None:
+        n_repeats = DEFAULT_N_REPEATS
     if not 0.0 <= true_p <= 1.0:
         raise ValueError("true_p must be in [0, 1]")
     if n_trials <= 0:
@@ -181,7 +214,7 @@ def run_calibration(
     n_trials_grid: Sequence[int] = DEFAULT_N_TRIALS_GRID,
     methods: Sequence[CIMethod] = DEFAULT_METHODS,
     confidence: float = DEFAULT_CONFIDENCE,
-    n_repeats: int = DEFAULT_N_REPEATS,
+    n_repeats: int | None = None,
     seed: int = 0,
 ) -> CalibrationReport:
     """Calibrate every ``method`` over the full grid of ``true_ps`` x
@@ -189,7 +222,17 @@ def run_calibration(
     ``(true_p, n_trials)`` pair across methods so their coverage figures are
     directly comparable (same simulated draws, different CI backend applied
     to the same success counts).
+
+    ``n_repeats`` defaults to (a fresh read of) module-level
+    `DEFAULT_N_REPEATS` when omitted or passed as ``None`` — see that
+    constant's docstring. This is what lets a caller shrink every cell's
+    replicate count for a callsite it doesn't control the arguments of
+    (e.g. `cli.py`'s `release-receipt` command, which calls
+    ``run_calibration()`` with no arguments) by reassigning the module
+    attribute instead.
     """
+    if n_repeats is None:
+        n_repeats = DEFAULT_N_REPEATS
     results: list[CoverageResult] = []
     for n_trials in n_trials_grid:
         for true_p in true_ps:

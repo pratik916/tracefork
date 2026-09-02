@@ -75,7 +75,7 @@ a documented limitation, not a silently-weakened claim.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +84,15 @@ import httpx
 from .matcher import RequestMatcher, bedrock_matcher
 from .nondet import DivergenceError
 from .tape import Tape
+
+__all__ = [
+    "DEFAULT_SERVICE_ID",
+    "DEFAULT_OPERATIONS",
+    "prepared_request_to_httpx",
+    "default_sender",
+    "BedrockTransport",
+]
+
 
 #: The `serviceId` AWS's bedrock-runtime service model hyphenizes to.
 DEFAULT_SERVICE_ID = "bedrock-runtime"
@@ -135,7 +144,7 @@ class _RawBody:
 
     data: bytes
 
-    def stream(self, amt: int | None = None, decode_content: bool = False):
+    def stream(self, amt: int | None = None, decode_content: bool = False) -> Iterator[bytes]:
         yield self.data
 
     def read(self, amt: int | None = None) -> bytes:

@@ -43,6 +43,19 @@ from dataclasses import dataclass
 
 from .blame import FlipRateResult, Oracle, register_oracle, z_from_confidence
 
+__all__ = [
+    "JudgeExample",
+    "LLMJudgeOracle",
+    "KAPPA_ALERT_THRESHOLD",
+    "GoldExample",
+    "CalibrationResult",
+    "calibrate_oracle",
+    "rogan_gladen_correct",
+    "DebiasedFlipRate",
+    "debias_flip_rate",
+]
+
+
 # ── few-shot examples ────────────────────────────────────────────────────────
 
 

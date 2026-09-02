@@ -34,6 +34,18 @@ import os
 from importlib import metadata
 from typing import TypeVar
 
+__all__ = [
+    "T",
+    "ALLOW_PLUGINS_ENV",
+    "PROVIDER_GROUP",
+    "ORACLE_GROUP",
+    "SERIALIZER_GROUP",
+    "MATCHER_GROUP",
+    "ADAPTER_GROUP",
+    "Registry",
+]
+
+
 T = TypeVar("T")
 
 #: Comma-separated allowlist of entry-point names to auto-load, or "*" for all.

@@ -1,19 +1,24 @@
 """Per-run cost/profile aggregation for the report's cost-profile panel
 (tracefork-bge.52).
 
-Built entirely on the existing `providers.get_adapter`/`pricing.get_rates`
-seams `blame.BudgetGovernor.estimate` already uses — no new pricing logic.
-Walks `tape.exchanges` (the same `(req_bytes, resp_bytes)` pairs
+Built on the existing `providers.get_adapter`/`pricing.get_rates` seams
+`blame.BudgetGovernor.estimate` already uses, plus `pricing.get_cache_rates`/
+`pricing.parse_cache_tokens` (tracefork-sis.66) for prompt-cache token
+accounting. Walks `tape.exchanges` (the same `(req_bytes, resp_bytes)` pairs
 `report._tape_to_data`/`blame._avg_tokens`/`blame._detect_model` already
 iterate), normalizes each response via the adapter (falling back to
 `detect_model`/`constants.SONNET` and a len(bytes)//4 token estimate on parse
 failure — mirroring `blame._avg_tokens`'s exact fallback), and groups the
 priced exchanges into per-model (`ModelCost`) and per-tool (`ToolCost`) rows.
+`ModelCost.total_cost_usd` (and `ToolCost.total_cost_usd`) fold in each
+exchange's cache-read/cache-creation cost at the cached rate — a tape with no
+cache activity contributes 0 there, so this is byte-identical to before this
+item for every pre-caching tape.
 
 Per-tool cost attribution is an honest over-count for multi-tool exchanges:
 Anthropic bills per-exchange, not per-tool-call, so an exchange invoking more
-than one tool attributes its FULL modeled cost to each tool name it called —
-no token-level sub-split is invented.
+than one tool attributes its FULL modeled cost (base + cache) to each tool
+name it called — no token-level sub-split is invented.
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from .providers import get_adapter
 from .providers.base import NormalizedResponse, ProviderAdapter
 from .tape import Tape
 
+__all__ = ["ModelCost", "ToolCost", "CostProfile", "compute_cost_profile", "cost_profile_to_dict"]
+
 
 @dataclass(frozen=True)
 class ModelCost:
@@ -35,6 +42,16 @@ class ModelCost:
     input_tokens: int
     output_tokens: int
     total_cost_usd: float
+    # Prompt-cache token totals + their own cost slice (already folded into
+    # total_cost_usd above, not additional on top of it). Default 0/0.0 so
+    # every pre-existing construction call site (none outside this module —
+    # see compute_cost_profile) and every existing test asserting the
+    # original five fields stays byte-identical; a tape with no cache
+    # activity at all (parse_cache_tokens returns (0, 0) for every exchange)
+    # leaves total_cost_usd EXACTLY as it was before this fix.
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -97,16 +114,33 @@ def compute_cost_profile(tape: Tape, *, provider: str = "anthropic") -> CostProf
         norm = _normalize_exchange(adapter, req, resp)
         model = norm.model or SONNET
         in_rate, out_rate = pricing.get_rates(model, provider)
+        cache_read_rate, cache_write_rate = pricing.get_cache_rates(model, provider)
         in_tok = norm.input_tokens or 0
         out_tok = norm.output_tokens or 0
-        cost = in_tok * in_rate + out_tok * out_rate
+        cache_read_tok, cache_creation_tok = pricing.parse_cache_tokens(resp)
+        cache_cost = cache_read_tok * cache_read_rate + cache_creation_tok * cache_write_rate
+        cost = in_tok * in_rate + out_tok * out_rate + cache_cost
         total_cost += cost
 
-        mt = model_totals.setdefault(model, {"n": 0.0, "in": 0.0, "out": 0.0, "cost": 0.0})
+        mt = model_totals.setdefault(
+            model,
+            {
+                "n": 0.0,
+                "in": 0.0,
+                "out": 0.0,
+                "cost": 0.0,
+                "cache_read": 0.0,
+                "cache_creation": 0.0,
+                "cache_cost": 0.0,
+            },
+        )
         mt["n"] += 1
         mt["in"] += in_tok
         mt["out"] += out_tok
         mt["cost"] += cost
+        mt["cache_read"] += cache_read_tok
+        mt["cache_creation"] += cache_creation_tok
+        mt["cache_cost"] += cache_cost
 
         tool_names = {p.tool_name for p in norm.content if p.type == "tool_use" and p.tool_name}
         for name in tool_names:
@@ -121,6 +155,9 @@ def compute_cost_profile(tape: Tape, *, provider: str = "anthropic") -> CostProf
             input_tokens=int(v["in"]),
             output_tokens=int(v["out"]),
             total_cost_usd=v["cost"],
+            cache_read_tokens=int(v["cache_read"]),
+            cache_creation_tokens=int(v["cache_creation"]),
+            cache_cost_usd=v["cache_cost"],
         )
         for m, v in sorted(model_totals.items())
     )
@@ -142,6 +179,9 @@ def cost_profile_to_dict(profile: CostProfile) -> dict[str, Any]:
                 "input_tokens": m.input_tokens,
                 "output_tokens": m.output_tokens,
                 "total_cost_usd": m.total_cost_usd,
+                "cache_read_tokens": m.cache_read_tokens,
+                "cache_creation_tokens": m.cache_creation_tokens,
+                "cache_cost_usd": m.cache_cost_usd,
             }
             for m in profile.by_model
         ],

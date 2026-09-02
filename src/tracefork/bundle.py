@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 
 from .store import TapeStore
 
+__all__ = ["BundleExportResult", "BundleImportResult", "export_bundle", "import_bundle"]
+
 
 @dataclass
 class BundleExportResult:

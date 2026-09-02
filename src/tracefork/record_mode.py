@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+__all__ = ["RecordMode", "resolve_transport_mode"]
+
 
 class RecordMode(StrEnum):
     """VCR-style cassette policy names for the record-vs-replay choice.

@@ -14,8 +14,12 @@ record/replay bit-exactness is unaffected.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .constants import SONNET
 from .providers import get_adapter
+
+__all__ = ["make_text_response", "make_tool_use_response"]
 
 
 def make_text_response(
@@ -33,7 +37,7 @@ def make_text_response(
 
 def make_tool_use_response(
     tool_name: str,
-    tool_input: dict,
+    tool_input: dict[str, Any],
     *,
     model: str = SONNET,
     preamble: str = "",

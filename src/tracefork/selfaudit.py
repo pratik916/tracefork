@@ -37,6 +37,14 @@ from pathlib import Path
 
 from tracefork.coverage import _call_path
 
+__all__ = [
+    "SANCTIONED_CALL_SITES",
+    "ArchitectureViolation",
+    "scan_file_for_violations",
+    "audit_package",
+]
+
+
 # The 5 call-shapes `BoundaryGuard.__enter__` actually patches
 # (`boundary_guard.py`), plus `uuid.uuid4` (patched globally by
 # `recorder.py`/`adapters/base.py`, not `BoundaryGuard`, but read outside
@@ -94,7 +102,7 @@ def scan_file_for_violations(path: Path, package_root: Path) -> list[Architectur
     `Path(tracefork.__file__).parent`. `path` outside `package_root` reports
     its filename unchanged rather than raising.
     """
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     try:
         rel = str(path.relative_to(package_root))

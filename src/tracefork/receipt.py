@@ -33,6 +33,8 @@ from .replay import VerificationResult, verification_result_to_dict
 if TYPE_CHECKING:
     from .tape import Tape
 
+__all__ = ["SCHEMA_VERSION", "build_trust_receipt", "build_shield_json"]
+
 #: Bumped only on a breaking shape change; consumers should tolerate unknown
 #: keys within a major version.
 SCHEMA_VERSION = "tracefork/trust-receipt/v1"

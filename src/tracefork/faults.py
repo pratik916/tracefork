@@ -28,6 +28,10 @@ from collections.abc import Callable
 from typing import Any
 
 from .providers import NormalizedResponse, get_adapter
+from .tape import Tape
+
+__all__ = ["FAULT_MARKER", "FAULT_MARKER_BYTES", "FaultClass", "FaultInjector"]
+
 
 FAULT_MARKER = "FAULT_MARKER"
 FAULT_MARKER_BYTES = FAULT_MARKER.encode()
@@ -84,7 +88,7 @@ class FaultInjector:
 
     @staticmethod
     def inject(
-        tape, step_idx: int, fault_class: FaultClass, *, provider: str = "anthropic"
+        tape: Tape, step_idx: int, fault_class: FaultClass, *, provider: str = "anthropic"
     ) -> bytes:
         """Return mutated response bytes for `tape.exchanges[step_idx][1]`."""
         original_resp = tape.exchanges[step_idx][1]
@@ -101,7 +105,7 @@ class FaultInjector:
 
     @staticmethod
     def corrupt_tool_output(
-        resp_bytes: bytes, *, field: str, new_value, provider: str = "anthropic"
+        resp_bytes: bytes, *, field: str, new_value: Any, provider: str = "anthropic"
     ) -> bytes:
         """Flip a field in a tool-call input and tag the input with the marker.
 

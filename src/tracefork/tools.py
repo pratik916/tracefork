@@ -39,6 +39,23 @@ from .nondet import DivergenceError
 from .redact import Redactor
 from .tape import Tape, sha256_hex
 
+__all__ = [
+    "ToolCall",
+    "DEFAULT_VOLATILE_FRAME_FIELDS",
+    "canonical_frame",
+    "frame_fingerprint",
+    "frame_id",
+    "retarget_frame_id",
+    "make_request_frame",
+    "make_result_frame",
+    "make_tool_call_frame",
+    "decode_result",
+    "ToolTransport",
+    "ToolForkTransport",
+    "NativeToolSeam",
+]
+
+
 #: A tool call: takes a request frame (bytes), returns a response frame (bytes).
 ToolCall = Callable[[bytes], bytes]
 

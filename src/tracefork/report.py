@@ -6,12 +6,88 @@ into the HTML template as `window.__TRACEFORK_DATA__ = {...}`.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 from pathlib import Path
+from typing import Any
 
 from .providers import get_adapter
+from .tape import Tape
+
+__all__ = [
+    "DEFAULT_COMPRESSION_STEP_THRESHOLD",
+    "DEFAULT_BRANCH_DETAILS_CAP_BYTES",
+    "generate_report",
+]
+
 
 _INJECT_MARKER = "</head>"
+
+# A 400-exchange run's report can run into the hundreds of MB uncompressed
+# (see `_maybe_compressed_inject_script`'s docstring) -- nobody hits this in
+# the demo/quickstart (a handful of exchanges), but it is a real ceiling on
+# the product's usable scale. 50 is a documented, tunable default: small
+# enough that a genuinely long real run gets compressed automatically,
+# large enough that the demo/quickstart/every offline test's small tapes
+# never take the gzip path (keeping their output byte-for-byte identical to
+# before this feature existed). `generate_report`'s
+# `compression_step_threshold` parameter lets a caller widen or narrow it.
+DEFAULT_COMPRESSION_STEP_THRESHOLD = 50
+
+# `branch_details` (branch_id -> full delta-tape report data) is, by far, the
+# largest contributor to a report's payload once a run has more than a
+# handful of forks -- measured: a run with 100 branches produced a 1.67 MB
+# report of which 1.35 MB (81%) was branch_details alone, with no cap and no
+# opt-out (tracefork-sis.56). 256 KiB is a documented, tunable default: large
+# enough to embed a healthy number of real branches whole, small enough that
+# a pathological fork count can no longer balloon the report unboundedly.
+# `generate_report`/`cli.py`'s `report --branch-details-cap-bytes` both let a
+# caller widen or narrow it.
+DEFAULT_BRANCH_DETAILS_CAP_BYTES = 256 * 1024
+
+
+def _cap_branch_details(
+    branch_details: dict[str, dict[str, Any]], cap_bytes: int
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    """Keep `branch_details` entries (in dict/insertion order) until their
+    cumulative COMPACT JSON size would exceed `cap_bytes`, dropping the rest.
+
+    Returns `(kept, None)` unchanged when the full dict already fits (the
+    common case for a run with few branches — no truncation, no marker).
+    Otherwise returns `(kept, marker)` where `marker` is a small,
+    JSON-safe truncation notice (`included`/`omitted`/`total_branches`/
+    `cap_bytes`) a consumer can render or act on, instead of the excess
+    branches silently vanishing with no trace.
+
+    Per-entry size is measured via `json.dumps` with NO indentation — a
+    conservative proxy for that entry's contribution to the final,
+    `indent=2`-pretty-printed payload `_safe_json` emits (which is always
+    somewhat LARGER due to indentation/newlines), so the true embedded size
+    stays close to, and never wildly under, `cap_bytes` — a hint sized to be
+    conservative, not a byte-exact guarantee.
+    """
+    total = len(branch_details)
+    if total == 0:
+        return branch_details, None
+    if len(json.dumps(branch_details)) <= cap_bytes:
+        return branch_details, None
+
+    kept: dict[str, dict[str, Any]] = {}
+    running = 2  # the enclosing `{}` of the eventual dict
+    for branch_id, detail in branch_details.items():
+        entry_size = len(json.dumps({branch_id: detail})) - 2  # minus its own `{}`
+        if kept and running + entry_size > cap_bytes:
+            break
+        running += entry_size
+        kept[branch_id] = detail
+
+    return kept, {
+        "included": len(kept),
+        "omitted": total - len(kept),
+        "total_branches": total,
+        "cap_bytes": cap_bytes,
+    }
 
 
 def _template_path() -> Path:
@@ -46,18 +122,25 @@ def _runs_template_path() -> Path:
 
 
 def _tape_to_data(
-    tape,
-    blame: dict | None = None,
-    replay: dict | None = None,
-    branches: list[dict] | None = None,
-    causal_edges: list[dict] | None = None,
-    branch_details: dict[str, dict] | None = None,
-    shapley: dict | None = None,
-    cost_profile: dict | None = None,
-    causal_closure: list[dict] | None = None,
+    tape: Tape,
+    blame: dict[str, Any] | None = None,
+    replay: dict[str, Any] | None = None,
+    branches: list[dict[str, Any]] | None = None,
+    causal_edges: list[dict[str, Any]] | None = None,
+    branch_details: dict[str, dict[str, Any]] | None = None,
+    shapley: dict[str, Any] | None = None,
+    cost_profile: dict[str, Any] | None = None,
+    causal_closure: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
-) -> dict:
-    """Convert a Tape to the JSON shape expected by the web UI."""
+    branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
+) -> dict[str, Any]:
+    """Convert a Tape to the JSON shape expected by the web UI.
+
+    `branch_details_cap_bytes` (default `DEFAULT_BRANCH_DETAILS_CAP_BYTES`)
+    caps how much of `branch_details` actually gets embedded — see
+    `_cap_branch_details`. A `branch_details` dict that already fits under
+    the cap round-trips unchanged.
+    """
     adapter = get_adapter("anthropic")
     exchanges = []
     for req_bytes, resp_bytes in tape.exchanges:
@@ -109,6 +192,10 @@ def _tape_to_data(
             }
         )
 
+    capped_branch_details, branch_details_truncated = _cap_branch_details(
+        branch_details or {}, branch_details_cap_bytes
+    )
+
     return {
         "agent_name": tape.agent_name,
         "exchanges": exchanges,
@@ -143,8 +230,16 @@ def _tape_to_data(
         # exact shape `server.py`'s `/api/branch/{id}` already returns, baked
         # into the static report so a fork-tree click needs no live server.
         # `{}` (falsy) when none were passed, same neutral empty-state
-        # pattern as `branches`/`causal_edges`.
-        "branch_details": branch_details or {},
+        # pattern as `branches`/`causal_edges`. Capped at
+        # `branch_details_cap_bytes` (see `_cap_branch_details`,
+        # tracefork-sis.56) — a run with many branches no longer silently
+        # balloons the report; `branch_details_truncated` (below) says so.
+        "branch_details": capped_branch_details,
+        # `None` (falsy) when `branch_details` already fit under the cap
+        # whole; otherwise a small notice (`included`/`omitted`/
+        # `total_branches`/`cap_bytes`) a consumer can render instead of the
+        # excess branches silently vanishing with no trace.
+        "branch_details_truncated": branch_details_truncated,
         # Per-step Shapley necessity/sufficiency quadrant (ShapleyResult/
         # causal_edges shape, step_index-keyed) — the Timeline panel's
         # inline quadrant badge (see `web/report.html`'s
@@ -168,7 +263,7 @@ def _tape_to_data(
     }
 
 
-def _safe_json(data: dict) -> str:
+def _safe_json(data: dict[str, Any]) -> str:
     """Serialize `data` and escape HTML-significant chars so recorded agent I/O
     (which can contain ``</script>``) cannot break out of the inline <script>.
 
@@ -184,19 +279,57 @@ def _safe_json(data: dict) -> str:
     )
 
 
+def _gzip_b64(data: dict[str, Any]) -> str:
+    """gzip-compress `data`'s COMPACT (no `indent=`) JSON encoding and
+    base64-encode the result for embedding in a <script> tag.
+
+    Unlike `_safe_json`, no `< > &` escaping is needed: the base64 alphabet
+    (`A-Za-z0-9+/=`) contains none of those characters, so a `</script>`
+    breakout is structurally impossible here regardless of what the
+    recorded agent I/O contained -- the escaping problem `_safe_json` exists
+    to solve doesn't apply to this path at all.
+    """
+    raw = json.dumps(data).encode("utf-8")
+    compressed = gzip.compress(raw, compresslevel=9)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def _inject_script(data: dict[str, Any], compression_step_threshold: int) -> str:
+    """Build the `<script>` block that seeds the report's data, taking the
+    gzip+base64 path (`window.__TRACEFORK_DATA_GZIP_B64__`) once
+    `len(data["exchanges"])` reaches `compression_step_threshold`, the plain
+    path (`window.__TRACEFORK_DATA__`, byte-for-byte the same as before this
+    feature existed) otherwise.
+
+    Measured (this repo's own fixtures, a real multi-turn conversation --
+    see README.md's "Scale envelope (measured)" table for the full numbers):
+    at 400 exchanges, gzip+base64 shrinks the injected payload by roughly
+    50x versus the equivalent `_safe_json` text. `web/report.html`'s
+    `loadData` decodes the compressed path via the standard
+    `DecompressionStream('gzip')` Web API -- no new dependency, matching
+    this project's "no CDN, no library" discipline for `web/*.html`.
+    """
+    if len(data.get("exchanges", [])) >= compression_step_threshold:
+        payload = json.dumps(_gzip_b64(data))  # a base64 string -- json.dumps just quotes it
+        return f"\n<script>\nwindow.__TRACEFORK_DATA_GZIP_B64__ = {payload};\n</script>\n"
+    return f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
+
+
 def generate_report(
-    tape,
+    tape: Tape,
     output_path: Path,
     *,
-    blame: dict | None = None,
-    replay: dict | None = None,
-    branches: list[dict] | None = None,
-    causal_edges: list[dict] | None = None,
-    branch_details: dict[str, dict] | None = None,
-    shapley: dict | None = None,
-    cost_profile: dict | None = None,
-    causal_closure: list[dict] | None = None,
+    blame: dict[str, Any] | None = None,
+    replay: dict[str, Any] | None = None,
+    branches: list[dict[str, Any]] | None = None,
+    causal_edges: list[dict[str, Any]] | None = None,
+    branch_details: dict[str, dict[str, Any]] | None = None,
+    shapley: dict[str, Any] | None = None,
+    cost_profile: dict[str, Any] | None = None,
+    causal_closure: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
+    compression_step_threshold: int = DEFAULT_COMPRESSION_STEP_THRESHOLD,
 ) -> None:
     """Write a self-contained HTML report to `output_path`.
 
@@ -226,8 +359,20 @@ def generate_report(
     `run_id` (optional) is this run's own id, so the UI can distinguish an
     external-anchor entry from one already covered by this run's own blame
     rows.
+    `branch_details_cap_bytes` (default `DEFAULT_BRANCH_DETAILS_CAP_BYTES`,
+    tracefork-sis.56) caps how much of `branch_details` is actually
+    embedded — see `_cap_branch_details`'s docstring. A run with many
+    branches no longer silently balloons the report; exceeding it embeds a
+    `branch_details_truncated` notice alongside the (still fully valid,
+    just partial) `branch_details` dict.
+    `compression_step_threshold` (default `DEFAULT_COMPRESSION_STEP_THRESHOLD`)
+    is the exchange count at or above which the tape payload is gzip+base64
+    compressed instead of embedded as plain (HTML-escaped) JSON — see
+    `_inject_script`'s docstring. A report under the threshold is
+    byte-for-byte identical to what this function produced before this
+    feature existed.
     """
-    html = _template_path().read_text()
+    html = _template_path().read_text(encoding="utf-8")
     data = _tape_to_data(
         tape,
         blame,
@@ -239,9 +384,10 @@ def generate_report(
         cost_profile,
         causal_closure,
         run_id,
+        branch_details_cap_bytes,
     )
-    inject = f"\n<script>\nwindow.__TRACEFORK_DATA__ = {_safe_json(data)};\n</script>\n"
+    inject = _inject_script(data, compression_step_threshold)
     html = html.replace(_INJECT_MARKER, inject + _INJECT_MARKER, 1)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")

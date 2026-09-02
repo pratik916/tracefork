@@ -148,6 +148,145 @@ def test_v4_tape_without_provenance_upcasts_to_empty_dict_unchanged_digest():
     assert restored.digest() == t.digest() == GOLDEN_DIGEST
 
 
+def _encode_as_v6_without_response_meta(t: Tape) -> bytes:
+    """Hand-construct a genuine pre-v7 (v6) envelope -- no `response_status`/
+    `response_content_type` keys in the header at all -- to prove the
+    v6->v7 upcaster defaults a pre-v7 tape's response status/content-type to
+    200/"application/json" with an unchanged digest."""
+    import zstandard as zstd
+
+    from tracefork.tape import sha256_hex
+
+    zctx = zstd.ZstdCompressor(level=3)
+    order: list[str] = []
+    seen: dict[str, bytes] = {}
+    for req, resp in (*t.exchanges, *t.tool_exchanges):
+        for blob in (req, resp):
+            h = sha256_hex(blob)
+            if h not in seen:
+                seen[h] = blob
+                order.append(h)
+    header = {
+        "boundary": t.boundary,
+        "agent_name": t.agent_name,
+        "draws": t.draws,
+        "exchanges": [[sha256_hex(r), sha256_hex(s)] for r, s in t.exchanges],
+        "tool_exchanges": [[sha256_hex(r), sha256_hex(s)] for r, s in t.tool_exchanges],
+        "async_batches": t.async_batches,
+        "provenance": t.provenance,
+        "request_urls": t.request_urls,
+        "blob_hashes": order,
+        "content_redacted": t.content_redacted,
+    }
+    header_json = json.dumps(header).encode()
+    parts = [TAPE_MAGIC, struct.pack(">H", 6), struct.pack(">I", len(header_json)), header_json]
+    for h in order:
+        comp = zctx.compress(seen[h])
+        parts.append(struct.pack(">I", len(comp)))
+        parts.append(comp)
+    return b"".join(parts)
+
+
+def test_v6_tape_without_response_meta_upcasts_to_default_unchanged_digest():
+    t = _golden_tape()
+    blob = _encode_as_v6_without_response_meta(t)
+    restored = Tape.from_bytes(blob)
+    assert restored.response_status == [200] * len(t.exchanges)
+    assert restored.response_content_type == ["application/json"] * len(t.exchanges)
+    assert restored.digest() == t.digest() == GOLDEN_DIGEST
+
+
+def test_v7_roundtrip_preserves_response_status_and_content_type():
+    t = Tape(agent_name="v7-agent")
+    t.append_exchange(b"req-1", b"resp-1", response_status=429, response_content_type="text/plain")
+    t.append_exchange(
+        b"req-2",
+        b"resp-2",
+        response_status=200,
+        response_content_type="text/event-stream",
+    )
+    ver, header = _parse_v2_envelope(t.to_bytes())
+    assert ver == 7
+    assert header["response_status"] == [429, 200]
+    assert header["response_content_type"] == ["text/plain", "text/event-stream"]
+    restored = Tape.from_bytes(t.to_bytes())
+    assert restored.response_status == [429, 200]
+    assert restored.response_content_type == ["text/plain", "text/event-stream"]
+    assert restored.exchange_status(0) == 429
+    assert restored.exchange_content_type(0) == "text/plain"
+    assert restored.exchange_status(1) == 200
+    assert restored.exchange_content_type(1) == "text/event-stream"
+
+
+def test_response_status_and_content_type_never_feed_digest():
+    """Two tapes differing ONLY in recorded response status/content-type must
+    hash identically -- this metadata is forensic/replay-fidelity only, never
+    hash-chained content (mirrors request_urls'/provenance's own guarantee)."""
+    a = Tape(agent_name="x")
+    a.append_exchange(
+        b"req", b"resp", response_status=200, response_content_type="application/json"
+    )
+    b = Tape(agent_name="x")
+    b.append_exchange(b"req", b"resp", response_status=429, response_content_type="text/plain")
+    assert a.digest() == b.digest()
+
+
+def test_response_status_and_content_type_roundtrip_through_sqlite_save_load(tmp_path):
+    t = Tape(agent_name="sqlite-agent")
+    t.append_exchange(b"req-1", b"resp-1", response_status=503, response_content_type="text/html")
+    path = str(tmp_path / "t.tape.sqlite")
+    t.save(path)
+    restored = Tape.load(path)
+    assert restored.response_status == [503]
+    assert restored.response_content_type == ["text/html"]
+    assert restored.digest() == t.digest()
+
+
+def test_legacy_sqlite_without_response_meta_loads_default_status_and_content_type(tmp_path):
+    """A store.db written before response_status/response_content_type existed
+    (no such meta rows) must load with the documented (200, application/json)
+    default, not KeyError."""
+    t = Tape(agent_name="pre-v7-sqlite")
+    t.append_exchange(b"req-1", b"resp-1")
+    path = str(tmp_path / "t.tape.sqlite")
+    t.save(path)
+
+    con = open_sqlite(path)
+    con.execute("DELETE FROM meta WHERE key IN ('response_status', 'response_content_type')")
+    con.commit()
+    con.close()
+
+    restored = Tape.load(path)
+    assert restored.response_status == [200]
+    assert restored.response_content_type == ["application/json"]
+
+
+def test_load_nonexistent_path_raises_without_creating_a_file(tmp_path):
+    """tracefork-sis.32: `sqlite3.connect` auto-creates an empty file at
+    connect time for a mistyped path whose parent directory exists -- `Tape.load`
+    must check existence FIRST so a typo'd path never side-effect-creates a
+    junk empty `.sqlite` file before raising."""
+    path = tmp_path / "does-not-exist.tape.sqlite"
+    assert not path.exists()
+    with pytest.raises(FileNotFoundError):
+        Tape.load(str(path))
+    assert not path.exists()
+
+
+def test_exchange_status_and_content_type_default_for_hand_built_tape():
+    """A `Tape` constructed with `exchanges=` directly (e.g. `tournament.py`'s
+    single/pair-exchange cost-estimation probe tapes) never populates
+    response_status/response_content_type -- the accessor methods must
+    default gracefully rather than raising IndexError."""
+    t = Tape(exchanges=[(b"req-1", b"resp-1"), (b"req-2", b"resp-2")])
+    assert t.response_status == []
+    assert t.response_content_type == []
+    assert t.exchange_status(0) == 200
+    assert t.exchange_status(1) == 200
+    assert t.exchange_content_type(0) == "application/json"
+    assert t.exchange_content_type(1) == "application/json"
+
+
 # ── backward-compat: the committed golden legacy blob ───────────────────────
 
 
@@ -919,6 +1058,58 @@ def test_prune_with_no_filters_is_a_safe_noop(tmp_path):
         store.close()
 
 
+def test_vacuum_reclaims_disk_space_pruned_rows_left_behind(tmp_path):
+    """tracefork-sis.59: `prune()`'s `DELETE FROM tapes/branches` frees pages
+    *inside* the sqlite file but never shrinks the file itself -- `vacuum()`
+    is the deliberately-separate, higher-risk step that actually reclaims
+    that space, without touching (let alone hard-deleting) the archived rows
+    prune() copied out first."""
+    import os
+
+    db_path = tmp_path / "store.db"
+    store = TapeStore(str(db_path))
+    try:
+        run_ids = []
+        for i in range(8):
+            t = Tape(agent_name="w")
+            t.append_exchange(os.urandom(80_000), os.urandom(80_000))
+            rid = store.save_tape(t, run_id=f"big-run-{i}", created_at="2020-01-01T00:00:00+00:00")
+            run_ids.append(rid)
+
+        report = store.prune(run_ids=run_ids)
+        assert sorted(report.tapes_archived) == sorted(run_ids)
+
+        # Checkpoint (WAL) so the on-disk main file actually reflects the
+        # post-prune state before measuring -- otherwise recently-committed
+        # bytes may still be sitting in the -wal file, not the main one.
+        store._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_before_vacuum = os.path.getsize(db_path)
+
+        size_before_report, size_after_report = store.vacuum()
+
+        size_after_vacuum = os.path.getsize(db_path)
+
+        assert size_after_vacuum < size_before_vacuum
+        assert size_after_report < size_before_report
+
+        # Archived rows survive untouched -- vacuum reclaims freed PAGES, it
+        # never deletes the soft-archived data prune() already moved aside.
+        archived = {
+            r[0] for r in store._con.execute("SELECT run_id FROM tapes_archived").fetchall()
+        }
+        assert set(run_ids) <= archived
+        for rid in run_ids:
+            row = store._con.execute(
+                "SELECT tape_bytes FROM tapes_archived WHERE run_id=?", (rid,)
+            ).fetchone()
+            assert row is not None and len(row[0]) > 0
+
+        # Live tables are uncorrupted: still queryable, no rows lost.
+        assert store.list_runs() == []
+    finally:
+        store.close()
+
+
 def test_concurrent_writers_shared_store_serialized(tmp_path):
     """One shared connection across threads: the write lock must serialize the
     fan-out so two threads never open a transaction on it at once."""
@@ -941,5 +1132,123 @@ def test_concurrent_writers_shared_store_serialized(tmp_path):
     try:
         assert not errors, errors
         assert len(store.list_runs()) == 8 * 5
+    finally:
+        store.close()
+
+
+# ── branches(parent_run_id) index ───────────────────────────────────────────
+#
+# `list_branches(parent_run_id)` -- WHERE parent_run_id=? ORDER BY
+# created_at DESC -- is the store's hottest read filter (backs `report.py`'s
+# fork-tree panel and `cli.py branch`'s DAG queries). A composite index on
+# (parent_run_id, created_at DESC) lets SQLite satisfy the filter AND the
+# ORDER BY straight off the index, with neither a full table scan nor a
+# separate sort pass.
+
+_LIST_BRANCHES_QUERY = (
+    "SELECT branch_id, divergence_step, mutation_desc, created_at, branch_digest, "
+    "confinement_tier FROM branches WHERE parent_run_id=? ORDER BY created_at DESC"
+)
+
+
+def test_list_branches_query_plan_avoids_scan_and_temp_sort(tmp_path):
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        plan = store._con.execute(
+            f"EXPLAIN QUERY PLAN {_LIST_BRANCHES_QUERY}", ("some-parent",)
+        ).fetchall()
+        plan_text = " | ".join(row[3] for row in plan)
+        assert "SCAN branches" not in plan_text, plan_text
+        assert "TEMP B-TREE" not in plan_text, plan_text
+        assert "idx_branches_parent_run_id" in plan_text, plan_text
+    finally:
+        store.close()
+
+
+def test_branches_parent_run_id_index_exists_on_fresh_and_migrated_db(tmp_path):
+    """The index must exist both for a brand-new database (created straight
+    from `_DDL`) and for a `store.db` that predates this index (simulated by
+    dropping it and re-opening a `TapeStore` against the same file, which
+    re-runs `_migrate_branch_metadata_columns`/`_DDL`)."""
+    path = str(tmp_path / "store.db")
+    store = TapeStore(path)
+    try:
+        names = {
+            row[0]
+            for row in store._con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='branches'"
+            ).fetchall()
+        }
+        assert "idx_branches_parent_run_id" in names
+        store._con.execute("DROP INDEX idx_branches_parent_run_id")
+    finally:
+        store.close()
+
+    reopened = TapeStore(path)
+    try:
+        names = {
+            row[0]
+            for row in reopened._con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='branches'"
+            ).fetchall()
+        }
+        assert "idx_branches_parent_run_id" in names
+    finally:
+        reopened.close()
+
+
+def test_index_on_branches_parent_run_id_measures_speedup(tmp_path):
+    """The bead's own claim: the composite index measurably speeds up
+    `list_branches`'s filter+order query relative to a full scan + temp
+    b-tree sort, at a dataset large enough for the difference to be stable.
+    Same connection, same data, index dropped/restored in place -- isolates
+    the index itself as the only variable."""
+    import time
+
+    store = TapeStore(str(tmp_path / "store.db"))
+    try:
+        target_parent = "needle-parent"
+        store.save_tape(_small_tape(b"needle-tape"), run_id=target_parent)
+        n_other = 3000
+        for i in range(n_other):
+            other_parent = f"other-parent-{i}"
+            store.save_tape(_small_tape(f"o{i}".encode()), run_id=other_parent)
+            store.save_branch(
+                parent_run_id=other_parent,
+                divergence_step=0,
+                delta_tape=_small_tape(f"ob{i}".encode()),
+                mutation_desc="filler",
+            )
+        for i in range(5):
+            store.save_branch(
+                parent_run_id=target_parent,
+                divergence_step=i,
+                delta_tape=_small_tape(f"nb{i}".encode()),
+                mutation_desc="needle",
+            )
+
+        def timed(reps: int) -> float:
+            start = time.perf_counter()
+            for _ in range(reps):
+                store._con.execute(_LIST_BRANCHES_QUERY, (target_parent,)).fetchall()
+            return time.perf_counter() - start
+
+        reps = 300
+        with_index = timed(reps)
+
+        store._con.execute("DROP INDEX idx_branches_parent_run_id")
+        try:
+            without_index = timed(reps)
+        finally:
+            store._con.execute(
+                "CREATE INDEX idx_branches_parent_run_id "
+                "ON branches(parent_run_id, created_at DESC)"
+            )
+
+        assert without_index > with_index * 1.5, (
+            f"expected the index to measurably speed up list_branches's query "
+            f"(indexed={with_index:.4f}s over {reps} reps, "
+            f"unindexed={without_index:.4f}s over {reps} reps)"
+        )
     finally:
         store.close()

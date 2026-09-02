@@ -53,7 +53,7 @@ Python **3.12** via [uv](https://docs.astral.sh/uv/). Everything below is offlin
 ```bash
 uv sync --extra dev
 
-uv run pytest -q                       # full offline suite (1438 tests, $0)
+uv run pytest -q                       # full offline suite (1640 tests, $0)
 uv run tracefork validate              # blame vs injected, known-root-cause faults
 uv run tracefork bench                 # discrimination among competing causes
 uv run python examples/demo_report.py  # write examples/demo_report.html (the screenshot)
@@ -121,7 +121,7 @@ pip install 'tracefork[all]'   # + providers, Bedrock, MCP, observability
 ```
 
 Framework adapters are separate extras so one library's version churn can't block the rest:
-`frameworks` (LangChain/LangGraph), `openai-agents`, `crewai`, `autogen`, `adk`. Providers
+`frameworks` (LangChain/LangGraph), `openai-agents`, `crewai`, `autogen`, `adk`, `pydantic-ai`. Providers
 (`openai`, `google-genai`) come via `providers`; AWS via `bedrock`. Every framework import is
 guarded — `import tracefork` and the full test suite run with none of them installed.
 
@@ -198,6 +198,20 @@ outside it — and the verifier *detects* the resulting drift rather than paperi
 opt-in `BoundaryGuard` turns the catchable violations into a loud error at record time. See
 [`SPIKE0.md`](https://github.com/pratik916/tracefork/blob/main/SPIKE0.md) for how the boundary was de-risked.
 
+**Headers are out of scope by default.** The bit-exactness claim is asserted on the request
+*body* only: the default matcher fingerprints `sha256(request.content)` and never looks at a
+header, so `anthropic-version`, `anthropic-beta`, and SDK/platform headers (`user-agent`,
+`x-stainless-*`, populated by the SDK's `platform_headers()`) can all change between record and
+replay without tripping a divergence. That's deliberate — most header variance (SDK version, OS/
+arch, retry counters) is incidental noise you don't want failing an otherwise-identical replay —
+but it also means a body-identical request sent under a different beta feature flag or API
+version replays as the *same* exchange even though the provider could legitimately have behaved
+differently. Callers who need that distinguished can opt into
+`matcher.anthropic_header_matcher()`, which folds `anthropic-version`/`anthropic-beta` into the
+fingerprint while still collapsing rotating `authorization`/`x-api-key` auth — see `matcher.py`'s
+module docstring for the general `RequestMatcher` seam and its other opt-in presets
+(`gemini_matcher()`/`bedrock_matcher()`/`redacting_matcher()`).
+
 ## Validation scope
 
 Read this before trusting any accuracy number here. The load-bearing, *proven* claim is the
@@ -220,6 +234,35 @@ tracefork has **not** been run against any external benchmark — no dataset is 
 (offline/$0 is non-negotiable). Read the numbers as: *"the instrument reliably finds a single
 planted cause, and — with one named exception — discriminates among several on one longer run,"*
 not as a score on real multi-agent traces.
+
+## Scale envelope (measured)
+
+The single-file HTML report inlines the *entire* tape as JSON — that's what makes `tracefork
+report`/`tracefork serve` a $0, dependency-free, share-as-one-file workflow, and it's also a real
+ceiling: nobody hits it in the quickstart above (a handful of exchanges), but a long recorded run
+eventually produces a large HTML file. Reports at or above `DEFAULT_COMPRESSION_STEP_THRESHOLD`
+(**50 exchanges**) are automatically gzip+base64-compressed instead of embedded as indented,
+HTML-escaped JSON; `web/report.html` decodes it client-side with the standard
+`DecompressionStream('gzip')` Web API — no new dependency, same "single self-contained file"
+guarantee, byte-for-byte identical rendered UI either way (`generate_report`'s
+`compression_step_threshold` parameter can move the line in either direction).
+
+Measured on this repo's own scripted test fixtures (`tracefork.tests.fakes`, a deterministic
+fake Anthropic transport — not a live model), a realistic-length multi-turn conversation:
+
+| Exchanges | Tape size (SQLite) | Report, uncompressed | Report, compressed (default) | Ratio |
+|---:|---:|---:|---:|---:|
+| 10 (below the 50-exchange default threshold — shown for comparison only) | 44 KiB | 115 KiB | *not applied by default* | — |
+| 50 | 240 KiB | 980 KiB | 89 KiB | 11.0x |
+| 100 | 696 KiB | 3.5 MiB | 482 KiB | 7.5x |
+| 250 | 3.4 MiB | 21.3 MiB | 3.2 MiB | 6.7x |
+| 400 | 8.1 MiB | 54.4 MiB | 8.2 MiB | 6.6x |
+
+The compression ratio itself is content-dependent (repetitive tool output compresses better than
+high-entropy content like already-compressed binaries or random identifiers) — read these as *"a
+400-exchange run went from ~54 MB to ~8 MB, a real difference for a file meant to be opened by
+double-clicking it,"* not as a universal constant. Regenerate the table yourself: `uv run pytest
+tests/test_report.py -k gzip -v` exercises the same code path the numbers above came from.
 
 ## Related work and scope
 
@@ -294,14 +337,14 @@ src/tracefork_spike/  the original bit-exact record/replay spike
 web/report.html       the single-file UI: Timeline rail, Exchange Detail panel, and a
                       tabbed Blame/Forks/Cost analysis rail (both rails collapsible)
 examples/             runnable demo that produces the report above
-tests/                1438 offline tests ($0, no key)
+tests/                1640 offline tests ($0, no key)
 experiments/          committed reference reports for the regression gates
 ```
 
 ## Testing
 
 ```bash
-uv run pytest -q                       # all 1438 offline tests
+uv run pytest -q                       # all 1640 offline tests
 uv run tracefork validate --check      # regression-gate vs committed report
 uv run tracefork replay --check experiments/replay_fixtures  # replay-corpus gate
 uv run tracefork bench                 # competing-cause discrimination
@@ -314,6 +357,25 @@ defines exactly what that covers — the `tracefork.__all__` Python API, the CLI
 tape on-disk format's backward-compatibility promise, the supported Python versions, and the
 deprecation procedure — and what it explicitly doesn't (direct `tracefork.<submodule>` imports,
 human-readable stdout formatting, the test-scaffolding modules).
+
+**Release receipt.** The 1.0.0 release proves itself the same way the tool proves everything
+else: [`docs/release_receipts/1.0.0.json`](https://github.com/pratik916/tracefork/blob/main/docs/release_receipts/1.0.0.json)
+is `tracefork release-receipt 1.0.0`'s own content-addressed evidence document, optionally
+HMAC-signed (the `receipt.py` trust-receipt idiom applied at the repo/release level — see
+Integrations below),
+generated by re-running the real gates, not by hand: the full offline suite (1640 tests, 0
+failures), a fresh $0 replay-fixture-corpus check (2/2 fixtures bit-exact and digest-matched),
+`validate` (1.00 top-1 precision, 0.00 negative-control flip rate), `bench` (10/11 planted
+causes resolved, the one documented `[LIMITATION]` from Validation scope above), and a 144-cell
+Monte Carlo CI-coverage calibration sweep (`ci_calibration.py`) against `blame.py`'s real
+Wilson/Jeffreys/Clopper-Pearson/Agresti-Coull backends. Published honestly rather than
+green-washed: 126/144 calibration cells clear their tolerance band, and the 18 that don't are
+every one of them in the small-trial-count (`n=5/10/20`), near-0-or-1-`true_p` regime where
+Wilson/Jeffreys/Agresti-Coull are documented to run slightly under nominal coverage — a known
+property of those unmodified statistical backends, not a regression — so the receipt's own
+`calibration.all_within_tolerance` is `false` and `release-receipt`'s exit code is 1. Unsigned
+(no `TRACEFORK_RELEASE_SIGNING_KEY` was set for this run) — an honest absent marker rather than
+a fabricated signature.
 
 ## Contributing
 

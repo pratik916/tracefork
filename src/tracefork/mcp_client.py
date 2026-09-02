@@ -25,6 +25,9 @@ from .redact import Redactor
 from .tape import Tape
 from .tools import ToolTransport, decode_result, make_result_frame, make_tool_call_frame
 
+__all__ = ["MCP_IMPORT_HINT", "mcp_available", "require_mcp", "RecordingMCPSession"]
+
+
 MCP_IMPORT_HINT = "MCP support needs the optional 'mcp' extra: pip install 'tracefork[mcp]'"
 
 

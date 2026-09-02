@@ -40,6 +40,17 @@ import struct
 from binascii import crc32
 from dataclasses import dataclass
 
+from .errors import TraceforkError
+
+__all__ = [
+    "EventStreamError",
+    "EventStreamMessage",
+    "encode_message",
+    "decode_message",
+    "decode_messages",
+]
+
+
 #: Bytes covered by the prelude CRC: `total_length` (4B) + `headers_length` (4B).
 _PRELUDE_CRC_INPUT_LEN = 8
 #: Full prelude including its own trailing CRC field.
@@ -47,7 +58,7 @@ _PRELUDE_LEN = _PRELUDE_CRC_INPUT_LEN + 4
 _STRING_TYPE = 7
 
 
-class EventStreamError(Exception):
+class EventStreamError(TraceforkError):
     """A malformed event-stream frame: bad CRC, truncated prelude/payload, or
     an unsupported header type tag."""
 

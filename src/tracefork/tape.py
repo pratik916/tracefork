@@ -25,12 +25,27 @@ import sqlite3
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import zstandard as zstd
 
 from .constants import BOUNDARY_V1, TAPE_FORMAT_VERSION, TAPE_MAGIC
 from .plugins import SERIALIZER_GROUP, Registry
+
+__all__ = [
+    "sha256_hex",
+    "open_sqlite",
+    "Tape",
+    "TapeSerializer",
+    "BinaryTapeSerializer",
+    "SERIALIZER_REGISTRY",
+    "register_serializer",
+    "get_serializer",
+    "registered_serializers",
+    "load_serializer_entry_points",
+]
+
 
 _ZCTX = zstd.ZstdCompressor(level=3)
 _DCTX = zstd.ZstdDecompressor()
@@ -109,15 +124,57 @@ class Tape:
     # existing tape's content digest is unchanged and a pre-v6 tape upcasts to
     # `[""] * len(exchanges)`.
     request_urls: list[str] = field(default_factory=list)
+    # Response status/content-type witness log (v7): parallel-indexed to
+    # `exchanges` — index `i` here is exchange `i`'s real HTTP status code /
+    # content-type as captured at record time (`transport.py`). Exists so a
+    # recorded non-2xx response (e.g. a 429 rate-limit) replays with the SAME
+    # status/content-type it was recorded with, instead of every replay
+    # response being hard-coded to (200, "application/json") regardless of
+    # what was actually recorded. Purely forensic/replay-fidelity metadata:
+    # like `boundary`/`agent_name`/`async_batches`/`provenance`/
+    # `request_urls`, it is NEVER fed into `digest()`, so every existing
+    # tape's content digest is unchanged and a pre-v7 tape upcasts to
+    # `[200] * len(exchanges)` / `["application/json"] * len(exchanges)`.
+    # Always read through `exchange_status`/`exchange_content_type` (below),
+    # never indexed directly — those default to (200, "application/json") for
+    # any index these lists don't cover, which happens not just for a pre-v7
+    # upcast but also for a `Tape` hand-built with `exchanges=` directly and
+    # no `response_status=`/`response_content_type=` (e.g. `tournament.py`'s
+    # single/pair-exchange cost-estimation probe tapes, which never go
+    # through `append_exchange`/`from_bytes`/`load`).
+    response_status: list[int] = field(default_factory=list)
+    response_content_type: list[str] = field(default_factory=list)
 
     def append_exchange(
-        self, request_body: bytes, response_body: bytes, request_url: str | None = None
+        self,
+        request_body: bytes,
+        response_body: bytes,
+        request_url: str | None = None,
+        response_status: int | None = None,
+        response_content_type: str | None = None,
     ) -> None:
         self.exchanges.append((request_body, response_body))
         self.request_urls.append(request_url or "")
+        self.response_status.append(response_status if response_status is not None else 200)
+        self.response_content_type.append(response_content_type or "application/json")
 
     def exchange(self, i: int) -> tuple[bytes, bytes]:
         return self.exchanges[i]
+
+    def exchange_status(self, i: int) -> int:
+        """Exchange `i`'s recorded HTTP status code, defaulting to 200 for any
+        index `response_status` doesn't cover (see the field's docstring)."""
+        return self.response_status[i] if i < len(self.response_status) else 200
+
+    def exchange_content_type(self, i: int) -> str:
+        """Exchange `i`'s recorded response content-type, defaulting to
+        "application/json" for any index `response_content_type` doesn't
+        cover (see the field's docstring)."""
+        return (
+            self.response_content_type[i]
+            if i < len(self.response_content_type)
+            else "application/json"
+        )
 
     def append_tool_exchange(self, request_frame: bytes, response_frame: bytes) -> None:
         self.tool_exchanges.append((request_frame, response_frame))
@@ -159,7 +216,7 @@ class Tape:
         a content-addressed, zstd-compressed binary container). Shared blobs are
         stored once by sha256, and there is no base64, so the ~1.33x base64
         blow-up of the legacy format is gone. Read back with `from_bytes`."""
-        return _encode_v6(self)
+        return _encode_v7(self)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Tape:
@@ -180,6 +237,8 @@ class Tape:
         tape.async_batches = [list(b) for b in f.get("async_batches", [])]
         tape.provenance = dict(f.get("provenance", {}))
         tape.request_urls = list(f.get("request_urls", []))
+        tape.response_status = list(f.get("response_status", []))
+        tape.response_content_type = list(f.get("response_content_type", []))
         return tape
 
     def save(self, path: str) -> None:
@@ -230,12 +289,15 @@ class Tape:
                 "INSERT INTO meta VALUES ('async_batches', ?)",
                 (json.dumps(self.async_batches),),
             )
-            # Provenance witness block (v5) and request-URL witness log (v6),
-            # persisted as JSON meta values for the same reason `async_batches`
-            # is: structural, not an event stream. Absent on legacy DBs (written
-            # before this fix) -> loads as `{}` / `[""] * len(exchanges)`, same
-            # upcast discipline as `to_bytes`/`from_bytes` (see `load`). Neither
-            # field feeds `digest()` — this is metadata persistence only.
+            # Provenance witness block (v5), request-URL witness log (v6), and
+            # response status/content-type witness logs (v7), persisted as
+            # JSON meta values for the same reason `async_batches` is:
+            # structural, not an event stream. Absent on legacy DBs (written
+            # before each field existed) -> loads as `{}` / `[""] *
+            # len(exchanges)` / `[200] * len(exchanges)` / `["application/
+            # json"] * len(exchanges)`, same upcast discipline as
+            # `to_bytes`/`from_bytes` (see `load`). None of these fields feed
+            # `digest()` — this is metadata persistence only.
             con.execute(
                 "INSERT INTO meta VALUES ('provenance', ?)",
                 (json.dumps(self.provenance),),
@@ -244,12 +306,26 @@ class Tape:
                 "INSERT INTO meta VALUES ('request_urls', ?)",
                 (json.dumps(self.request_urls),),
             )
+            con.execute(
+                "INSERT INTO meta VALUES ('response_status', ?)",
+                (json.dumps(self.response_status),),
+            )
+            con.execute(
+                "INSERT INTO meta VALUES ('response_content_type', ?)",
+                (json.dumps(self.response_content_type),),
+            )
             con.execute("COMMIT")
         finally:
             con.close()
 
     @classmethod
     def load(cls, path: str) -> Tape:
+        # `sqlite3.connect` auto-creates an empty file at connect time for a
+        # path whose parent directory exists but whose file doesn't -- check
+        # existence FIRST so a typo'd path raises cleanly instead of leaving
+        # a junk empty `.sqlite` file behind as a side effect.
+        if not Path(path).exists():
+            raise FileNotFoundError(f"no tape file at {path!r}")
         con = open_sqlite(path)
         try:
             raw_blobs = dict(con.execute("SELECT hash, data FROM blobs").fetchall())
@@ -273,6 +349,14 @@ class Tape:
                 tape.request_urls = list(json.loads(meta["request_urls"]))
             else:
                 tape.request_urls = [""] * len(tape.exchanges)
+            if "response_status" in meta:
+                tape.response_status = list(json.loads(meta["response_status"]))
+            else:
+                tape.response_status = [200] * len(tape.exchanges)
+            if "response_content_type" in meta:
+                tape.response_content_type = list(json.loads(meta["response_content_type"]))
+            else:
+                tape.response_content_type = ["application/json"] * len(tape.exchanges)
             return tape
         finally:
             con.close()
@@ -288,17 +372,19 @@ class Tape:
 _Fields = dict[str, Any]
 
 
-def _encode_v6(tape: Tape) -> bytes:
-    """Version-6 body: a JSON header (boundary, agent_name, draws, the LLM
+def _encode_v7(tape: Tape) -> bytes:
+    """Version-7 body: a JSON header (boundary, agent_name, draws, the LLM
     exchange hash pairs, the tool-exchange hash pairs, the concurrency-batch log,
-    the provenance witness block, the request-URL witness log, and the dedup'd
-    blob-hash order) followed by, for each unique blob in order, a uint32 length
-    + its zstd-compressed bytes. Content-addressed (each distinct request/
-    response stored once, LLM and tool blobs sharing one store) and base64-free.
-    LLM blobs are ordered first, so an LLM-only tape's blob layout is identical
-    to the v2 format that preceded the tool log. `request_urls` is the only
-    addition over v5: a list of strings parallel-indexed to `exchanges`, empty
-    string for any exchange recorded with no known URL."""
+    the provenance witness block, the request-URL witness log, the response
+    status/content-type witness logs, and the dedup'd blob-hash order) followed
+    by, for each unique blob in order, a uint32 length + its zstd-compressed
+    bytes. Content-addressed (each distinct request/response stored once, LLM
+    and tool blobs sharing one store) and base64-free. LLM blobs are ordered
+    first, so an LLM-only tape's blob layout is identical to the v2 format
+    that preceded the tool log. `response_status`/`response_content_type` are
+    the only addition over v6: two lists parallel-indexed to `exchanges`,
+    `200`/`"application/json"` for any exchange recorded with neither known
+    (mirroring `request_urls`'s `""`-for-unknown convention)."""
     order: list[str] = []
     seen: dict[str, bytes] = {}
     for req, resp in (*tape.exchanges, *tape.tool_exchanges):
@@ -318,6 +404,8 @@ def _encode_v6(tape: Tape) -> bytes:
         "async_batches": tape.async_batches,
         "provenance": tape.provenance,
         "request_urls": tape.request_urls,
+        "response_status": tape.response_status,
+        "response_content_type": tape.response_content_type,
         "blob_hashes": order,
         "content_redacted": tape.content_redacted,
     }
@@ -428,8 +516,9 @@ def _decode_v5_binary(body: bytes) -> _Fields:
 
 
 def _decode_v6_binary(body: bytes) -> _Fields:
-    """Content-addressed zstd container written by `_encode_v6` (adds the
-    `request_urls` witness log over v5)."""
+    """Content-addressed zstd container written by the pre-v7 encoder (adds
+    the `request_urls` witness log over v5, but has no `response_status`/
+    `response_content_type`)."""
     header, blobs = _read_blob_container(body)
     return {
         "boundary": header["boundary"],
@@ -442,6 +531,27 @@ def _decode_v6_binary(body: bytes) -> _Fields:
         "async_batches": [list(b) for b in header.get("async_batches", [])],
         "provenance": dict(header.get("provenance", {})),
         "request_urls": list(header.get("request_urls", [])),
+        "content_redacted": header.get("content_redacted", False),
+    }
+
+
+def _decode_v7_binary(body: bytes) -> _Fields:
+    """Content-addressed zstd container written by `_encode_v7` (adds the
+    `response_status`/`response_content_type` witness logs over v6)."""
+    header, blobs = _read_blob_container(body)
+    return {
+        "boundary": header["boundary"],
+        "agent_name": header["agent_name"],
+        "draws": [tuple(pair) for pair in header["draws"]],
+        "exchanges": [(blobs[req], blobs[resp]) for req, resp in header["exchanges"]],
+        "tool_exchanges": [
+            (blobs[req], blobs[resp]) for req, resp in header.get("tool_exchanges", [])
+        ],
+        "async_batches": [list(b) for b in header.get("async_batches", [])],
+        "provenance": dict(header.get("provenance", {})),
+        "request_urls": list(header.get("request_urls", [])),
+        "response_status": list(header.get("response_status", [])),
+        "response_content_type": list(header.get("response_content_type", [])),
         "content_redacted": header.get("content_redacted", False),
     }
 
@@ -487,6 +597,17 @@ def _upcast_v5_to_v6(fields: _Fields) -> _Fields:
     return fields
 
 
+def _upcast_v6_to_v7(fields: _Fields) -> _Fields:
+    """v6 -> v7 adds the response status/content-type witness logs; a pre-v7
+    tape has neither, so they default to `200`/`"application/json"` per
+    already-decoded exchange. Neither field is ever hashed into `digest()`,
+    so this leaves every existing tape's content digest and replay behavior
+    unchanged."""
+    fields.setdefault("response_status", [200] * len(fields["exchanges"]))
+    fields.setdefault("response_content_type", ["application/json"] * len(fields["exchanges"]))
+    return fields
+
+
 _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     1: _decode_v1_json,
     2: _decode_v2_binary,
@@ -494,6 +615,7 @@ _DECODERS: dict[int, Callable[[bytes], _Fields]] = {
     4: _decode_v4_binary,
     5: _decode_v5_binary,
     6: _decode_v6_binary,
+    7: _decode_v7_binary,
 }
 _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     1: _upcast_v1_to_v2,
@@ -501,6 +623,7 @@ _UPCASTERS: dict[int, Callable[[_Fields], _Fields]] = {
     3: _upcast_v3_to_v4,
     4: _upcast_v4_to_v5,
     5: _upcast_v5_to_v6,
+    6: _upcast_v6_to_v7,
 }
 
 

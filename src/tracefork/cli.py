@@ -13,20 +13,76 @@ board/cost/divergence/record/replay/fork/blame/cross-blame/chaos/serve).
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
+import struct
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
+import zstandard
 
 from tracefork.config import TraceforkConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from tracefork.boundary_guard import ConfinementViolationError
+    from tracefork.convergence import ConvergenceResult
+    from tracefork.diff import StepDiff
+    from tracefork.effects import Effect
+    from tracefork.locate import TapeHit
+    from tracefork.replay import VerificationResult
     from tracefork.store import TapeStore
     from tracefork.tape import Tape
+
+__all__ = [
+    "app",
+    "replay",
+    "verify",
+    "fork",
+    "coalition_fork",
+    "diff",
+    "converge",
+    "conflicts",
+    "settlement_diff",
+    "report",
+    "receipt",
+    "release_receipt",
+    "serve",
+    "blame",
+    "validate",
+    "bench",
+    "export",
+    "ingest",
+    "bundle_export",
+    "bundle_import",
+    "prune",
+    "proxy",
+    "coverage",
+    "corpus_blame",
+    "tournament",
+    "locate",
+    "query",
+    "branch_app",
+    "branch_descendants_cmd",
+    "branch_ancestors_cmd",
+    "branch_siblings_cmd",
+    "session_app",
+    "session_create",
+    "session_spawn",
+    "session_show",
+    "session_board",
+    "session_cost",
+    "session_divergence",
+    "session_record",
+    "session_replay_cmd",
+    "session_fork",
+    "session_blame",
+    "session_cross_blame",
+    "session_chaos_cmd",
+    "session_serve",
+]
 
 app = typer.Typer(name="tracefork", help="Time-travel debugger for AI agents.")
 
@@ -47,7 +103,7 @@ def _err(msg: str) -> None:
     typer.echo(msg, err=True)
 
 
-def _resolve_agent(spec: str) -> Callable:
+def _resolve_agent(spec: str) -> Callable[..., Any]:
     """Resolve a `pkg.module:fn_name` agent spec into the callable it names.
 
     Turns the three ways this goes wrong for a newcomer into one actionable
@@ -69,28 +125,47 @@ def _resolve_agent(spec: str) -> Callable:
         _err(f"invalid --agent {spec!r}: module {module_path!r} not found ({exc})")
         raise typer.Exit(1) from exc
     try:
-        return getattr(module, fn_name)
+        return cast("Callable[..., Any]", getattr(module, fn_name))
     except AttributeError as exc:
         _err(f"invalid --agent {spec!r}: {module_path!r} has no attribute {fn_name!r}")
         raise typer.Exit(1) from exc
 
 
+# Every way a truncated/bit-corrupted tape (disk corruption, a crash
+# mid-write outside the checkpoint path, a hand-edited file, or a mistyped
+# path) can raise on `Tape.load`/`Tape.from_bytes` -- caught by both
+# `_load_tape_or_exit` and `_load_run_or_exit` below so either surfaces one
+# clean stderr line + exit 1 instead of a raw traceback into `zstandard`/
+# `json`/`struct`/`sqlite3`'s internals (tracefork-sis.32).
+_CORRUPT_TAPE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    sqlite3.OperationalError,
+    FileNotFoundError,
+    zstandard.ZstdError,
+    json.JSONDecodeError,
+    struct.error,
+)
+
+
 def _load_tape_or_exit(path: Path) -> Tape:
     """Load a single `.tape.sqlite` file, or print an actionable stderr
     message and exit 1 instead of letting `sqlite3.OperationalError` (no such
-    file) or a corrupt-database error surface as a raw traceback."""
+    file), `FileNotFoundError` (a mistyped path -- see `Tape.load`), or a
+    truncated/bit-corrupted tape (`zstandard.ZstdError`, `json.JSONDecodeError`,
+    `struct.error` -- disk corruption, a crash mid-write, a hand-edited file)
+    surface as a raw traceback."""
     from tracefork.tape import Tape
 
     try:
         return Tape.load(str(path))
-    except sqlite3.OperationalError as exc:
-        _err(f"no tape at {str(path)!r} ({exc})")
+    except _CORRUPT_TAPE_EXCEPTIONS as exc:
+        _err(f"corrupt or truncated tape at {str(path)!r} ({exc})")
         raise typer.Exit(1) from exc
 
 
 def _load_run_or_exit(db: TapeStore, run_id: str, store_path: str) -> Tape:
     """Load a tape by `run_id` from an open `TapeStore`, or print an
-    actionable stderr message and exit 1 instead of a raw `KeyError`."""
+    actionable stderr message and exit 1 instead of a raw `KeyError` or a
+    truncated/bit-corrupted tape row surfacing as a raw traceback."""
     try:
         return db.load_tape(run_id)
     except KeyError as exc:
@@ -99,6 +174,23 @@ def _load_run_or_exit(db: TapeStore, run_id: str, store_path: str) -> Tape:
             f"'tracefork query --store {store_path} --cmd \"tree\"' to list runs"
         )
         raise typer.Exit(1) from exc
+    except _CORRUPT_TAPE_EXCEPTIONS as exc:
+        _err(f"corrupt or truncated tape for run {run_id!r} in {store_path!r} ({exc})")
+        raise typer.Exit(1) from exc
+
+
+def _trial_progress_printer(label: str) -> Callable[[int, int], None]:
+    """A `progress=` callback for `BlameEngine.rank`/`shapley_rank` or
+    `TournamentEngine.run` (tracefork-sis.51): prints one stderr line per
+    COMPLETED trial, so a long, silent, sequential, potentially real-money
+    `n x k` sweep never looks indistinguishable from a hang. Routed through
+    `_err` like every other diagnostic line, so it never lands on stdout and
+    contaminates a piped JSON payload."""
+
+    def _cb(completed: int, total: int) -> None:
+        _err(f"  [{label}] trial {completed}/{total} complete")
+
+    return _cb
 
 
 def _confinement_violation_from(exc: BaseException) -> ConfinementViolationError | None:
@@ -124,7 +216,7 @@ def _confinement_violation_from(exc: BaseException) -> ConfinementViolationError
     return None
 
 
-def _load_branch_or_exit(db: TapeStore, branch_id: str, store_path: str) -> dict:
+def _load_branch_or_exit(db: TapeStore, branch_id: str, store_path: str) -> dict[str, Any]:
     """Load a branch by `branch_id` from an open `TapeStore`, or print an
     actionable stderr message and exit 1 instead of a raw `KeyError`."""
     try:
@@ -598,7 +690,7 @@ def diff(
     raise typer.Exit(0 if n_changed == 0 else 1)
 
 
-def _print_diff_receipt(heading: str, step_diffs) -> None:
+def _print_diff_receipt(heading: str, step_diffs: Sequence[StepDiff]) -> None:
     """Operator-facing receipt for `diff` — one line per step, PASS when
     unchanged, FAIL (with the field-diff count) otherwise. Mirrors
     `_run_replay_check`'s PASS/FAIL-per-row style."""
@@ -656,7 +748,7 @@ def converge(
     raise typer.Exit(0 if result.stable else 1)
 
 
-def _print_convergence_receipt(heading: str, result) -> None:
+def _print_convergence_receipt(heading: str, result: ConvergenceResult) -> None:
     """Operator-facing receipt for `converge` -- one line per step, MATCH
     when both sides fingerprint identically, DIVERGED otherwise. Mirrors
     `_print_diff_receipt`'s PASS/FAIL-per-row style."""
@@ -724,7 +816,7 @@ def conflicts(
     if output is not None:
         import json as _json
 
-        def _effect_dict(e):
+        def _effect_dict(e: Effect) -> dict[str, Any]:
             return {
                 "source": e.source,
                 "index": e.index,
@@ -753,7 +845,8 @@ def conflicts(
                     "has_conflict": report.has_conflict,
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -810,7 +903,7 @@ def settlement_diff(
     typer.echo(f"  ops  {len(diff.ops)}")
 
     if output is not None:
-        output.write_text(text)
+        output.write_text(text, encoding="utf-8")
         typer.echo(f"  Settlement diff written to {output}\n")
     else:
         typer.echo("")
@@ -853,6 +946,14 @@ def report(
         "shapley_value) to embed a per-step necessity/sufficiency quadrant "
         "badge in the report's Timeline panel",
     ),
+    branch_details_cap_bytes: int | None = typer.Option(
+        None,
+        "--branch-details-cap-bytes",
+        help="Cap on how much of each branch's full delta-tape detail gets "
+        "embedded in the report before truncating with a notice (a run with "
+        "many forks otherwise balloons the payload); default 262144 (256 "
+        "KiB) -- see report.py's DEFAULT_BRANCH_DETAILS_CAP_BYTES",
+    ),
 ) -> None:
     """Generate a self-contained HTML report from a tape.
 
@@ -872,12 +973,18 @@ def report(
     import json as _json
 
     from tracefork.cost_profile import compute_cost_profile, cost_profile_to_dict
-    from tracefork.report import _tape_to_data, generate_report
+    from tracefork.report import DEFAULT_BRANCH_DETAILS_CAP_BYTES, _tape_to_data, generate_report
 
-    branches: list[dict] | None = None
-    causal_edges: list[dict] | None = None
-    branch_details: dict[str, dict] | None = None
-    causal_closure: list[dict] | None = None
+    effective_branch_details_cap_bytes = (
+        branch_details_cap_bytes
+        if branch_details_cap_bytes is not None
+        else DEFAULT_BRANCH_DETAILS_CAP_BYTES
+    )
+
+    branches: list[dict[str, Any]] | None = None
+    causal_edges: list[dict[str, Any]] | None = None
+    branch_details: dict[str, dict[str, Any]] | None = None
+    causal_closure: list[dict[str, Any]] | None = None
     report_run_id: str | None = None
     if tape_path:
         tape = _load_tape_or_exit(tape_path)
@@ -922,12 +1029,12 @@ def report(
 
     blame_dict = None
     if blame_report is not None:
-        blame_data = _json.loads(blame_report.read_text())
+        blame_data = _json.loads(blame_report.read_text(encoding="utf-8"))
         blame_dict = {r["step_index"]: r for r in blame_data.get("results", [])}
 
     shapley_dict = None
     if shapley_report is not None:
-        shapley_data = _json.loads(shapley_report.read_text())
+        shapley_data = _json.loads(shapley_report.read_text(encoding="utf-8"))
         shapley_dict = {r["step_index"]: r for r in shapley_data.get("results", [])}
 
     cost_profile_dict = cost_profile_to_dict(compute_cost_profile(tape))
@@ -944,6 +1051,7 @@ def report(
         cost_profile=cost_profile_dict,
         causal_closure=causal_closure,
         run_id=report_run_id,
+        branch_details_cap_bytes=effective_branch_details_cap_bytes,
     )
     typer.echo(f"Report written to {output}")
     _print_trust_lines(tape)
@@ -1024,11 +1132,11 @@ def receipt(
 
     validate_data = None
     if validation_report.exists():
-        validate_data = _json.loads(validation_report.read_text())
+        validate_data = _json.loads(validation_report.read_text(encoding="utf-8"))
 
     bench_data = None
     if bench_report_path.exists():
-        bench_data = _json.loads(bench_report_path.read_text())
+        bench_data = _json.loads(bench_report_path.read_text(encoding="utf-8"))
 
     receipt_dict = build_trust_receipt(
         tape,
@@ -1036,13 +1144,13 @@ def receipt(
         validate_report=validate_data,
         bench_report=bench_data,
     )
-    output.write_text(_json.dumps(receipt_dict, indent=2))
+    output.write_text(_json.dumps(receipt_dict, indent=2), encoding="utf-8")
     typer.echo(f"  Receipt written to {output}")
     typer.echo(f"  tape_fingerprint  {receipt_dict['tape_fingerprint']}")
 
     if shield_output is not None:
         shield_dict = build_shield_json(receipt_dict)
-        shield_output.write_text(_json.dumps(shield_dict, indent=2))
+        shield_output.write_text(_json.dumps(shield_dict, indent=2), encoding="utf-8")
         typer.echo(f"  Shield badge written to {shield_output}")
 
 
@@ -1114,11 +1222,11 @@ def release_receipt(
 
     validate_data = None
     if validation_report.exists():
-        validate_data = _json.loads(validation_report.read_text())
+        validate_data = _json.loads(validation_report.read_text(encoding="utf-8"))
 
     bench_data = None
     if bench_report_path.exists():
-        bench_data = _json.loads(bench_report_path.read_text())
+        bench_data = _json.loads(bench_report_path.read_text(encoding="utf-8"))
 
     replay_corpus_result = run_fixture_corpus_check(replay_fixtures_dir)
     calibration_report = run_calibration()
@@ -1139,7 +1247,7 @@ def release_receipt(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{version}.json"
-    output_path.write_text(_json.dumps(receipt, indent=2))
+    output_path.write_text(_json.dumps(receipt, indent=2), encoding="utf-8")
     typer.echo(f"  Release receipt written to {output_path}")
     typer.echo(f"  receipt_digest  {receipt['receipt_digest']}")
 
@@ -1282,7 +1390,7 @@ def blame(
 
         mutated = make_text_response(perturbation)
 
-        def perturb_factory(step_idx: int):
+        def perturb_factory(step_idx: int) -> tuple[bytes, None]:
             # tail_transport=None → the counterfactual tail hits the real API.
             return mutated, None
 
@@ -1299,6 +1407,7 @@ def blame(
             null_flip_rate=null_flip_rate,
             fdr_q=fdr_q,
             matcher=matcher,
+            progress=_trial_progress_printer("blame"),
         )
 
         ci_pct = round(confidence * 100)
@@ -1367,12 +1476,13 @@ def blame(
                     ],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {report_path}")
 
         narrative_path = Path(f"blame_{run_id}.md")
-        narrative_path.write_text(narrative.explain_blame_report(report))
+        narrative_path.write_text(narrative.explain_blame_report(report), encoding="utf-8")
         typer.echo(f"  Narrative saved to {narrative_path}")
 
         edge_ids = db.save_blame_report(run_id, report)
@@ -1381,7 +1491,9 @@ def blame(
         db.close()
 
 
-def _validate_regressions(report_data: dict, old: dict, tolerance: float) -> list[str]:
+def _validate_regressions(
+    report_data: dict[str, Any], old: dict[str, Any], tolerance: float
+) -> list[str]:
     """Pure diff between a fresh `validate` run and a committed report.
 
     `ValidationRunner`/`run_all_fault_classes` are fully deterministic given a
@@ -1442,7 +1554,7 @@ def validate(
     typer.echo(f"\n  overall top-1 precision: {overall_precision:.2f}")
     typer.echo(f"  negative control max flip: {max_ctrl:.2f} (threshold 0.30)")
 
-    output.write_text(_json.dumps(report_data, indent=2))
+    output.write_text(_json.dumps(report_data, indent=2), encoding="utf-8")
     typer.echo(f"\n  Report saved to {output}\n")
 
     control_threshold = 0.30
@@ -1460,7 +1572,7 @@ def validate(
         if not committed.exists():
             _err("  No committed report found — run without --check to create one.")
             raise typer.Exit(1)
-        old = _json.loads(committed.read_text())
+        old = _json.loads(committed.read_text(encoding="utf-8"))
         regressions = _validate_regressions(report_data, old, VALIDATE_CHECK_TOLERANCE)
         if regressions:
             typer.echo("  REGRESSION detected:")
@@ -1509,9 +1621,8 @@ def bench(
             typer.echo(f"               {c.note}")
 
     typer.echo(
-        f"\n  competing-fault discrimination: {report.accuracy:.2f} "
-        f"({report.n_resolved}/{report.n_cases}), "
-        f"95% CI [{report.ci_lo:.2f}, {report.ci_hi:.2f}]"
+        f"\n  competing-fault discrimination: {report.n_resolved}/{report.n_cases} "
+        f"planted cases resolve correctly ({report.accuracy:.2f})"
     )
     typer.echo(
         f"  context only, not reproduced here: published Who&When log-based "
@@ -1527,8 +1638,6 @@ def bench(
                 "accuracy": report.accuracy,
                 "n_resolved": report.n_resolved,
                 "n_cases": report.n_cases,
-                "ci_lo": report.ci_lo,
-                "ci_hi": report.ci_hi,
                 "who_and_when_anchor": report.who_and_when_anchor,
                 "cases": [
                     {
@@ -1546,7 +1655,8 @@ def bench(
                 ],
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     typer.echo(f"\n  Report saved to {output}\n")
 
@@ -1579,6 +1689,12 @@ def export(
     output: Path = typer.Option(  # noqa: B008
         Path("export.json"), "--output", "-o", help="Output JSON file"
     ),
+    otlp_endpoint: str = typer.Option(
+        None,
+        "--otlp-endpoint",
+        help="Also push the exported trace to a live OTLP collector's base URL "
+        "(POSTed to <endpoint>/v1/traces as OTLP/HTTP+JSON) -- --otel only",
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
@@ -1589,17 +1705,28 @@ def export(
     export (gen_ai.*/llm.* attributes as plain JSON) — no opentelemetry-sdk
     install needed to produce or consume it. See `tracefork ingest` for the
     reverse direction and its blame-only, not-bit-exact-replay caveat.
+
+    --otlp-endpoint additionally pushes the same export to a live OTLP
+    collector over plain HTTP+JSON (see `interop.push_otlp_trace`'s
+    docstring for why no exporter package is needed) -- the local --output
+    file is still written either way.
     """
     import json as _json
 
     from tracefork.interop import (
+        OtlpExportError,
         blame_report_from_json,
         build_openinference_dataset,
         build_otel_trace,
+        push_otlp_trace,
     )
 
     if otel == openinference:
         _err("Pass exactly one of --otel or --openinference")
+        raise typer.Exit(1)
+
+    if otlp_endpoint and not otel:
+        _err("--otlp-endpoint requires --otel (OTLP has no OpenInference equivalent)")
         raise typer.Exit(1)
 
     if tape_path:
@@ -1618,16 +1745,24 @@ def export(
 
     blame = None
     if blame_report is not None:
-        blame = blame_report_from_json(_json.loads(blame_report.read_text()))
+        blame = blame_report_from_json(_json.loads(blame_report.read_text(encoding="utf-8")))
 
     data = (
         build_otel_trace(tape, blame=blame)
         if otel
         else build_openinference_dataset(tape, blame=blame)
     )
-    output.write_text(_json.dumps(data, indent=2))
+    output.write_text(_json.dumps(data, indent=2), encoding="utf-8")
     kind = "OTel GenAI trace" if otel else "OpenInference dataset"
     typer.echo(f"  {kind} written to {output} ({len(tape.exchanges)} exchange(s))")
+
+    if otlp_endpoint:
+        try:
+            push_otlp_trace(data, otlp_endpoint)
+        except OtlpExportError as exc:
+            _err(f"  {exc}")
+            raise typer.Exit(1) from exc
+        typer.echo(f"  Pushed to {otlp_endpoint.rstrip('/')}/v1/traces")
 
 
 @app.command()
@@ -1660,7 +1795,7 @@ def ingest(
         _err("Pass exactly one of --otel or --openinference")
         raise typer.Exit(1)
 
-    data = _json.loads(input_path.read_text())
+    data = _json.loads(input_path.read_text(encoding="utf-8"))
     tape = ingest_otel_trace(data) if otel else ingest_openinference_dataset(data)
     tape.save(str(output))
 
@@ -1754,6 +1889,12 @@ def prune(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Compute the candidate set; mutate nothing"
     ),
+    vacuum: bool = typer.Option(
+        False,
+        "--vacuum",
+        help="Reclaim disk space prune's archive-then-delete left behind "
+        "(a real VACUUM; mutually exclusive with --dry-run)",
+    ),
     store: Path = typer.Option(  # noqa: B008
         Path(_DEFAULT_CONFIG.db_path), "--store", help="Path to store.db"
     ),
@@ -1762,20 +1903,32 @@ def prune(
 
     Mirrors git gc / borg prune's mark-and-sweep-with-soft-archive
     discipline: matching rows move to tapes_archived/branches_archived and
-    stay queryable there forever; reclaiming that space is a distinct,
-    out-of-scope, higher-risk step. A tape matches if it's older than
+    stay queryable there forever. A tape matches if it's older than
     --older-than-days OR named by a repeatable --run-id; passing neither
     matches nothing. --dry-run previews the candidate set with zero writes.
+
+    --vacuum reclaims the disk space this soft-archiving otherwise leaves
+    behind: SQLite frees a deleted row's pages *inside* the file for reuse
+    but never shrinks the file itself without a real VACUUM. It runs
+    regardless of whether THIS call found new candidates, so a store with
+    content archived by an earlier prune still gets reclaimed. Never deletes
+    the archived rows themselves -- only compacts the free pages their
+    original live-table deletion already created.
 
     NOTE: report links for a pruned run_id go stale — server.py's
     list_runs/get_run/get_branch correctly 404 it via the existing KeyError
     path, same as any unknown run_id.
 
-    Always exits 0: pruning is a maintenance operation, not a pass/fail gate.
+    Always exits 0 (1 only for the --dry-run/--vacuum conflict): pruning is a
+    maintenance operation, not a pass/fail gate.
     """
     import datetime as _dt
 
     from tracefork.store import TapeStore
+
+    if dry_run and vacuum:
+        _err("Pass at most one of --dry-run or --vacuum (vacuum always mutates the file)")
+        raise typer.Exit(1)
 
     older_than_iso = None
     if older_than_days is not None:
@@ -1785,6 +1938,7 @@ def prune(
     db = TapeStore(str(store))
     try:
         report = db.prune(older_than_iso=older_than_iso, run_ids=list(run_id), dry_run=dry_run)
+        vacuum_sizes = db.vacuum() if vacuum else None
     finally:
         db.close()
 
@@ -1800,6 +1954,12 @@ def prune(
         typer.echo(
             f"\n  {verb} {len(report.tapes_archived)} tape(s), "
             f"{len(report.branches_archived)} branch(es)"
+        )
+    if vacuum_sizes is not None:
+        before, after = vacuum_sizes
+        reclaimed = max(before - after, 0)
+        typer.echo(
+            f"\n  vacuum: reclaimed {reclaimed:,} bytes ({before:,} -> {after:,} bytes on disk)"
         )
     typer.echo("")
 
@@ -1906,7 +2066,7 @@ def coverage(
     from tracefork.coverage import coverage_report
 
     tape = _load_tape_or_exit(tape_path)
-    source = agent_source.read_text() if agent_source is not None else None
+    source = agent_source.read_text(encoding="utf-8") if agent_source is not None else None
     result = coverage_report(tape, agent_source=source)
 
     typer.echo(f"\n  tracefork coverage — {tape_path.name}")
@@ -1951,7 +2111,8 @@ def coverage(
                     ],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -2039,7 +2200,8 @@ def corpus_blame(
                     "regressions": [asdict(f) for f in flags],
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
         typer.echo(f"  Report saved to {output}\n")
 
@@ -2149,6 +2311,7 @@ def tournament(
             ci_method=method,
             confidence=confidence,
             fdr_q=fdr_q,
+            progress=_trial_progress_printer("tournament"),
         )
     except BudgetExceededError as exc:
         typer.echo(f"  {exc}")
@@ -2205,7 +2368,8 @@ def tournament(
                 ],
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     typer.echo(f"  Report saved to {report_path}")
 
@@ -2280,7 +2444,9 @@ def locate(
     raise typer.Exit(0 if found is not None else 1)
 
 
-def _print_locate_receipt(heading: str, hit, *, branch_id: str | None, depth: int | None) -> None:
+def _print_locate_receipt(
+    heading: str, hit: TapeHit | None, *, branch_id: str | None, depth: int | None
+) -> None:
     """Operator-facing receipt for `locate` -- PASS with the found location
     plus blob_sha256/tape_digest lines, or FAIL 'not found'. Mirrors
     `_print_diff_receipt`'s PASS/FAIL style."""
@@ -2565,7 +2731,7 @@ def session_board(
 
     resolved_agent_map = None
     if agent_map is not None:
-        manifest = _json.loads(agent_map.read_text())
+        manifest = _json.loads(agent_map.read_text(encoding="utf-8"))
         resolved_agent_map = session_replay.resolve_agent_manifest(manifest)
 
     db = TapeStore(str(store))
@@ -2682,7 +2848,7 @@ def session_divergence(
     from tracefork.replay import DriftDoctor
     from tracefork.store import TapeStore
 
-    manifest = json.loads(agents_manifest.read_text())
+    manifest = json.loads(agents_manifest.read_text(encoding="utf-8"))
     agent_fns = session_replay.resolve_agent_manifest(manifest)
 
     db = TapeStore(str(store))
@@ -3069,7 +3235,7 @@ def session_serve(
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
 
-def _print_receipt(tape_path: Path, result, tape) -> None:
+def _print_receipt(tape_path: Path, result: VerificationResult, tape: Tape) -> None:
     from tracefork.replay import DriftDoctor
 
     status = "PASS" if result.bit_exact else "FAIL"
@@ -3090,7 +3256,7 @@ def _print_receipt(tape_path: Path, result, tape) -> None:
     typer.echo("")
 
 
-def _print_trust_lines(tape) -> None:
+def _print_trust_lines(tape: Tape) -> None:
     """Print the two trust/provenance lines (`Tape.boundary`/`content_redacted`)
     shared by the replay/verify receipt and the `report` command's terminal
     echo — a forensic-only or content-redacted tape must

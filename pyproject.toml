@@ -38,7 +38,13 @@ keywords = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
+    # tracefork-sis.64: CI only runs ubuntu-latest, and the code is genuinely
+    # platform-sensitive (SQLite/WAL, patched builtins.open/socket.connect,
+    # real multiprocessing workers) -- name the runner actually tested rather
+    # than claim untested macOS/Windows portability via "OS Independent".
+    # Revisit (widen to POSIX / add per-OS classifiers) once CI gains real
+    # macOS/Windows legs -- see this item's own "or" alternative.
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -146,6 +152,20 @@ autogen = [
 adk = [
     "google-adk>=2.3,<3",
 ]
+# Optional: Pydantic AI, only needed to bind a *live* Pydantic AI Agent/Model's
+# underlying openai/anthropic SDK client to tracefork's transport seam
+# (`adapters/pydantic_ai.py`). Its own provider layer (OpenAIProvider/
+# AnthropicProvider) is already httpx-based, so the adapter is a defensive
+# `.copy(http_client=...)` client swap -- the cheapest adapter to add, same
+# idiom `recorder.py` itself uses. The import is guarded, so `import
+# tracefork` and the whole offline test suite work with it NOT installed.
+# Floor only -- no upper cap: unlike the adapters above, this one targets the
+# already-stable openai/anthropic SDK client contract, not pydantic-ai's own
+# fast-moving internals, so a Schreiner-style private-internals cap isn't
+# warranted here. CI-against-latest is still the real guard either way.
+"pydantic-ai" = [
+    "pydantic-ai>=0.1",
+]
 # Optional: structlog JSON logging + OTel self-instrumentation of
 # record/replay/fork/blame (see observability.py). Export/ingest of OTel
 # GenAI / OpenInference data (interop.py) needs NEITHER of these — it produces
@@ -184,14 +204,43 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
-# Explicit denylist so the sdist file-selection does NOT depend on
-# .gitignore inheritance for safety -- hatchling's default sdist sweep
-# selects by .gitignore PATTERN, not git-tracking status, so an untracked
-# file matching no ignore rule (docs/shepherd-gap-analysis.md, before the
-# corresponding .gitignore entry landed) still shipped verbatim, and that
-# file must never land in a built artifact (see this repo's naming policy).
-# These excludes hold even if .gitignore is ever edited to drop the
-# matching lines -- belt AND suspenders, not either/or.
+# Explicit INCLUDE allowlist, not just excludes (tracefork-sis.44): hatchling's
+# default sdist selection sweeps the whole git-tracked tree, so a FUTURE
+# untracked file at the repo root that happens to match no .gitignore pattern
+# would still ship silently -- exactly the tracefork-sis.13 leak
+# (docs/shepherd-gap-analysis.md, before its own .gitignore entry landed).
+# Naming every top-level path that belongs in a source distribution here means
+# a stray file is excluded BY CONSTRUCTION (it matches none of these
+# patterns), not by remembering to add it to .gitignore -- reviewable,
+# deterministic (two consecutive `uv build`s with no source changes produce
+# an identical `tar -tzf` listing), and independent of .gitignore state.
+include = [
+    "/src",
+    "/tests",
+    "/web",
+    "/docs",
+    "/examples",
+    "/experiments",
+    "/scripts",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CLAUDE.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/SPIKE0.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/.editorconfig",
+    "/.gitignore",
+    "/.pre-commit-config.yaml",
+]
+# Belt-and-suspenders excludes (tracefork-sis.13): hold even if one of the
+# include patterns above is ever widened to a broader glob, and even if
+# .gitignore is ever edited to drop the matching lines -- either/or is not
+# enough for a file whose framing language must never land in a built
+# artifact (see this repo's naming policy).
 exclude = [
     "/docs/shepherd-gap-analysis.md",
     "/.hypothesis",
@@ -257,6 +306,50 @@ files = ["src/tracefork"]
 ignore_missing_imports = true
 no_implicit_optional = true
 warn_unused_ignores = true
+# tracefork-sis.63: `py.typed` (see `docs/stability.md`) tells every importer
+# this package's inline types are load-bearing, not decorative -- `strict` is
+# what actually holds the full ~88-module surface to that promise, instead of
+# it quietly drifting the moment someone runs plain `mypy` without
+# remembering `--strict` by hand. `uv run mypy src/tracefork`
+# (`scripts/e2e.sh`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml`)
+# is now the same check as `mypy --strict src/tracefork`.
+strict = true
+
+[[tool.mypy.overrides]]
+# tracefork-sis.63: five OPTIONAL, guarded framework adapters -- none of
+# langchain-core/langgraph, crewai, autogen-core/-ext, google-adk, or
+# openai-agents is a hard or `dev`-extra dependency (see this file's
+# `frameworks`/`crewai`/`autogen`/`adk`/`openai-agents` extras); each module
+# imports its real third-party base class ONLY inside a `require_X()`-guarded
+# factory function, so `import tracefork` and the whole offline suite work
+# with none of them installed (see each adapter's own module docstring).
+# Every method the thin real subclass defines already carries a full,
+# honest `Any`-typed signature (see e.g. `langchain.py`'s
+# `TraceforkCallbackHandler`) -- nothing here is an unannotated function this
+# codebase forgot to type. The two checks relaxed below fire ONLY because,
+# in this dev/CI environment, the base class (or CrewAI's
+# `crewai_event_bus.on(...)` decorator) itself resolves to `Any`
+# (`ignore_missing_imports`, since the package isn't installed) rather than
+# a real stubbed type:
+#   - disallow_subclassing_any: `class TraceforkXAdapter(RealBaseClass)`
+#     where `RealBaseClass` is `Any` in this environment.
+#   - disallow_untyped_decorators: only `crewai.py`'s `@event_bus.on(...)`
+#     needs this -- listed here anyway rather than in its own override block,
+#     since a no-op relaxation on the other four modules (which have no
+#     decorators to trigger it) is harmless and keeps this one exclusion
+#     list in one place.
+# Narrower than a blanket ignore: every OTHER strict check (no-untyped-def
+# elsewhere in these files, type-arg, no-any-return, ...) still applies and
+# still fails the build on a real regression.
+module = [
+    "tracefork.adapters.langchain",
+    "tracefork.adapters.crewai",
+    "tracefork.adapters.autogen",
+    "tracefork.adapters.adk",
+    "tracefork.adapters.openai_agents",
+]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
 
 [tool.coverage.run]
 # tracefork_spike excluded: retired prototype code (see the wheel packages

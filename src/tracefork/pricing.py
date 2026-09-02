@@ -25,6 +25,20 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any
 
+__all__ = [
+    "pricing_version",
+    "get_rates",
+    "CACHE_READ_MULTIPLIER",
+    "CACHE_WRITE_MULTIPLIER_5M",
+    "get_cache_rates",
+    "parse_cache_tokens",
+    "is_fallback_model",
+    "get_rates_per_million",
+    "registered_models",
+    "registered_providers",
+]
+
+
 #: List price in the snapshot is quoted per this many tokens.
 _PER_MILLION = 1_000_000
 
@@ -104,6 +118,58 @@ def get_rates(model: str | None, provider: str | None = None) -> tuple[float, fl
     """
     entry = _lookup_entry(model, provider)
     return (entry["input"] / _PER_MILLION, entry["output"] / _PER_MILLION)
+
+
+# ── Prompt-cache economics ───────────────────────────────────────────────────
+#
+# Anthropic's cache read/write multipliers are uniform ACROSS every model this
+# snapshot prices (verified against the claude-api skill's authoritative
+# rate table at implementation time, per this repo's standing "never a
+# remembered table" rule for pricing data) -- a cache READ costs ~0.1x the
+# model's base input rate, and a cache WRITE costs 1.25x for the default
+# 5-minute TTL (2x for an opt-in 1-hour TTL). ``get_cache_rates`` prices the
+# 5-minute-TTL write, since a recorded tape doesn't currently distinguish
+# which TTL produced a given ``cache_creation_input_tokens`` count -- this is
+# a documented, conservative (under-estimating, never over-estimating) gap
+# for the rarer 1-hour-TTL case, not a silently-assumed one. (Claude Fable
+# 5.1/Mythos 5.1's cheaper 0.025x cache-read rate is a documented
+# model-specific exception; those model ids aren't in this snapshot's
+# provider set yet, so it isn't modeled here.)
+CACHE_READ_MULTIPLIER = 0.1
+CACHE_WRITE_MULTIPLIER_5M = 1.25
+
+
+def get_cache_rates(model: str | None, provider: str | None = None) -> tuple[float, float]:
+    """Return ``(cache_read_per_token, cache_write_per_token)`` USD rates for
+    a model -- ``get_rates``'s input rate scaled by the standard prompt-cache
+    multipliers (see the module note above). Falls back exactly like
+    ``get_rates`` for an unknown model (the fallback's input rate, scaled).
+    """
+    input_rate, _output_rate = get_rates(model, provider)
+    return (input_rate * CACHE_READ_MULTIPLIER, input_rate * CACHE_WRITE_MULTIPLIER_5M)
+
+
+def parse_cache_tokens(resp: bytes) -> tuple[int, int]:
+    """Best-effort ``(cache_read_input_tokens, cache_creation_input_tokens)``
+    parsed directly from a raw Anthropic-wire-format response body's
+    ``usage`` object. Returns ``(0, 0)`` on any parse failure, or when either
+    field is absent -- a tape recorded before prompt caching was in play, a
+    non-Anthropic response body, or a streaming/opaque marker (the same
+    tolerance ``blame._avg_tokens``'s own fallback already has for
+    ``input_tokens``/``output_tokens``).
+
+    Lives here rather than on ``providers.base.NormalizedResponse`` /
+    ``ProviderAdapter.parse_response`` (the more natural long-term home once
+    that surface grows these two fields) because ``providers/`` was outside
+    this wave's file ownership -- see ``planning/HANDOFF.md``.
+    """
+    try:
+        usage = json.loads(resp).get("usage", {})
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        return (max(0, cache_read), max(0, cache_creation))
+    except Exception:
+        return (0, 0)
 
 
 def is_fallback_model(model: str | None, provider: str | None = None) -> bool:

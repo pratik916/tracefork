@@ -49,6 +49,20 @@ from typing import Any
 
 from .tape import Tape
 
+__all__ = [
+    "SOURCE_LLM_TOOL_USE",
+    "SOURCE_TOOL_FRAME",
+    "Effect",
+    "EffectExtractor",
+    "EFFECT_EXTRACTOR_REGISTRY",
+    "register_effect_extractor",
+    "extract_effects",
+    "EffectOverlap",
+    "ConflictReport",
+    "diff_effects",
+]
+
+
 #: `Effect.source` for a call found as an Anthropic `tool_use` content block
 #: inside `Tape.exchanges` response bytes.
 SOURCE_LLM_TOOL_USE = "llm_tool_use"

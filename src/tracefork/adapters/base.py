@@ -33,6 +33,22 @@ from ..redact import Redactor
 from ..tape import Tape
 from ..transport import AsyncTraceforkTransport, TraceforkTransport
 
+__all__ = [
+    "LLM_STEP_KINDS",
+    "Step",
+    "StepDAG",
+    "BindResult",
+    "build_http_clients",
+    "UuidPatch",
+    "FrameworkAdapter",
+    "BaseFrameworkAdapter",
+    "register_framework_adapter",
+    "get_framework_adapter",
+    "registered_framework_adapters",
+    "load_adapter_entry_points",
+]
+
+
 # LLM-flavoured step kinds — the two the blame/report seam treats as model calls.
 LLM_STEP_KINDS = ("llm", "chat_model")
 

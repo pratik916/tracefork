@@ -35,9 +35,18 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .errors import TraceforkError
+
 if TYPE_CHECKING:
     from .replay import VerificationResult
     from .tape import Tape
+
+__all__ = [
+    "CertificateStrength",
+    "ProofEnvelopeError",
+    "ReplayCertificate",
+    "certificate_from_verification",
+]
 
 
 class CertificateStrength(enum.Enum):
@@ -48,7 +57,7 @@ class CertificateStrength(enum.Enum):
     BIT_EXACT_FULL_REPLAY = "bit_exact_full_replay"
 
 
-class ProofEnvelopeError(ValueError):
+class ProofEnvelopeError(ValueError, TraceforkError):
     """Raised when a `ReplayCertificate`'s claimed strength isn't justified
     by its own `matched`/`total`/fingerprint fields."""
 

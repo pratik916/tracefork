@@ -94,6 +94,26 @@ from .tape import Tape
 from .transport import TraceforkTransport
 from .wire import make_text_response
 
+__all__ = [
+    "SUCCESS_TEXT",
+    "FAIL_TEXT",
+    "NEUTRAL_TEXT",
+    "SUCCESS_RESP",
+    "FAIL_RESP",
+    "NEUTRAL_RESP",
+    "make_linear_agent",
+    "ExpectedCase",
+    "ArchetypeResult",
+    "OR_CAUSE_A",
+    "OR_CAUSE_B",
+    "OR_BOTH",
+    "run_or_redundancy",
+    "run_n_way_conjunction",
+    "LONG_RELAY_ROOT",
+    "run_long_relay",
+]
+
+
 SUCCESS_TEXT = "SUCCESS - archetype run complete"
 FAIL_TEXT = "FAIL - archetype fault triggered"
 NEUTRAL_TEXT = "ok, continuing"  # deliberately matches neither success_re nor failure_re

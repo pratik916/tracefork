@@ -13,18 +13,29 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Callable
+from typing import Any, cast
 
 from . import pricing
 from .constants import SONNET
+from .errors import TraceforkError
 from .providers import get_adapter
 from .tape import Tape
+
+__all__ = [
+    "FORK_AGENTS_ENV",
+    "AgentNotAllowlistedError",
+    "parse_allowlist_env",
+    "resolve_agent_fn",
+    "estimate_single_fork_usd",
+]
+
 
 #: Comma-separated `name=module:fn` pairs, e.g. "my_agent=pkg.mod:run_agent".
 #: Unset (the default) means: nothing allowlisted, every fork endpoint 403s.
 FORK_AGENTS_ENV = "TRACEFORK_FORK_AGENTS"
 
 
-class AgentNotAllowlistedError(RuntimeError):
+class AgentNotAllowlistedError(RuntimeError, TraceforkError):
     """Raised when an `agent_name` isn't in the fork endpoint's allowlist."""
 
 
@@ -48,7 +59,7 @@ def parse_allowlist_env(raw: str | None = None) -> dict[str, str]:
     return allowlist
 
 
-def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable:
+def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable[..., Any]:
     """Resolve `agent_name`'s `"module:fn"` import path from `allowlist`.
 
     Raises `AgentNotAllowlistedError` (naming what IS allowlisted, the same
@@ -63,7 +74,7 @@ def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable:
         )
     module_path, _, fn_name = path.rpartition(":")
     module = importlib.import_module(module_path)
-    return getattr(module, fn_name)
+    return cast("Callable[..., Any]", getattr(module, fn_name))
 
 
 def estimate_single_fork_usd(tape: Tape, step: int, model: str | None = None) -> float:

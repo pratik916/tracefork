@@ -1,6 +1,7 @@
 """Blame engine tests — all offline, zero API spend."""
 
 import itertools
+import math
 import threading
 import uuid
 
@@ -17,9 +18,11 @@ from tracefork.blame import (
     StringMatchOracle,
     _batch_blocks,
     _block_orderings,
+    _normal_ci,
     benjamini_hochberg,
     binom_sf_ge,
     proportion_ci,
+    t_from_confidence,
     wilson_ci,
     z_from_confidence,
 )
@@ -256,6 +259,114 @@ def test_z_from_confidence():
 def test_proportion_ci_rejects_out_of_range():
     with pytest.raises(ValueError):
         proportion_ci(11, 10, method=CIMethod.WILSON)
+
+
+# ── Student-t quantile for the Shapley CI (tracefork-sis.37) ───────────────
+
+
+def test_t_from_confidence_matches_known_table_values():
+    # Standard two-sided Student-t critical values (e.g. any stats table).
+    assert abs(t_from_confidence(0.95, df=1) - 12.706205) < 1e-4
+    assert abs(t_from_confidence(0.95, df=2) - 4.302653) < 1e-4
+    assert abs(t_from_confidence(0.95, df=29) - 2.045230) < 1e-4
+    assert abs(t_from_confidence(0.99, df=2) - 9.924843) < 1e-4
+
+
+def test_t_from_confidence_converges_to_z_for_large_df():
+    # The t distribution's normal limit as df -> infinity.
+    assert abs(t_from_confidence(0.95, df=100_000) - z_from_confidence(0.95)) < 1e-3
+
+
+def test_t_from_confidence_exceeds_z_at_small_df():
+    # The whole point of this fix: at small df, t is strictly wider than z.
+    z = z_from_confidence(0.95)
+    for df in (1, 2, 3, 5, 10):
+        assert t_from_confidence(0.95, df=df) > z
+
+
+def test_t_from_confidence_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        t_from_confidence(1.5, df=2)
+    with pytest.raises(ValueError):
+        t_from_confidence(0.95, df=0)
+    with pytest.raises(ValueError):
+        t_from_confidence(0.95, df=-1)
+
+
+def test_normal_ci_at_m_samples_3_matches_t_distribution_not_normal():
+    """The bead's own literal acceptance test: at m_samples=3 (df=2),
+    `_normal_ci`'s interval width must match the Student-t calculation
+    (t(2, .975) ≈ 4.303), not the normal z calculation (z ≈ 1.96) -- the
+    normal approximation is roughly 2.2x too narrow at this sample size."""
+    values = [0.10, 0.30, 0.50]  # m_samples=3
+    n = len(values)
+    mean = sum(values) / n
+    variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+    stderr = math.sqrt(variance / n)
+
+    lo, hi = _normal_ci(values, confidence=0.95)
+
+    t_expected = t_from_confidence(0.95, df=n - 1)
+    z_wrong = z_from_confidence(0.95)
+    assert abs((hi - lo) - 2 * t_expected * stderr) < 1e-9
+    # The old (incorrect) normal-quantile width must NOT match.
+    assert abs((hi - lo) - 2 * z_wrong * stderr) > 1e-3
+    assert lo == pytest.approx(max(-1.0, mean - t_expected * stderr))
+    assert hi == pytest.approx(min(1.0, mean + t_expected * stderr))
+
+
+def test_normal_ci_degenerate_cases_unchanged():
+    """n=0, n=1, and zero-variance samples must still degenerate to a point
+    interval exactly as before this fix -- the t-quantile path is only
+    reached once there are >=2 samples with nonzero variance."""
+    assert _normal_ci([], confidence=0.95) == (0.0, 0.0)
+    assert _normal_ci([0.4], confidence=0.95) == (0.4, 0.4)
+    # Genuinely-identical repeats degenerate to (near-)zero-width intervals
+    # regardless of quantile -- pre-existing float noise (mean/variance
+    # arithmetic on repeated 0.2s isn't bit-exact zero) means this is
+    # approx, not exact, unchanged from before this fix.
+    lo, hi = _normal_ci([0.2, 0.2, 0.2], confidence=0.95)
+    assert lo == pytest.approx(0.2, abs=1e-6)
+    assert hi == pytest.approx(0.2, abs=1e-6)
+
+
+def test_shapley_ci_wiring_calls_normal_ci_with_m_samples_length_and_confidence(monkeypatch):
+    """End-to-end: `BlameEngine.shapley_rank` at m_samples=3 must actually
+    invoke `_normal_ci` (the function whose internals this item fixes) once
+    per step, each time with exactly `m_samples` marginal-contribution
+    values and the run's `confidence` -- confirming the fix is wired into
+    the real Shapley path, not just correct in isolation. (The booking
+    fixture's fully-scripted, deterministic perturb path means a step's 3
+    repeats can come out with zero variance across them, in which case
+    `_normal_ci` legitimately short-circuits before ever reaching
+    `t_from_confidence` -- see `test_normal_ci_degenerate_cases_unchanged`
+    -- so this test asserts the call shape, not that the t-quantile branch
+    specifically fires; the exact t-vs-z math is proven directly by
+    `test_normal_ci_at_m_samples_3_matches_t_distribution_not_normal`.)
+    """
+    import tracefork.blame as blame_mod
+
+    real_normal_ci = blame_mod._normal_ci
+    calls: list[tuple[int, float]] = []
+
+    def spy(values: list[float], confidence: float) -> tuple[float, float]:
+        calls.append((len(values), confidence))
+        return real_normal_ci(values, confidence)
+
+    monkeypatch.setattr(blame_mod, "_normal_ci", spy)
+
+    tape = _record_booking(NEUTRAL_RESP, SUCCESS_RESP)
+    oracle = StringMatchOracle(success_re=r"SUCCESS", failure_re=r"FAIL")
+
+    def perturb_factory(step_idx: int) -> tuple[bytes, object]:
+        return FAIL_RESP, ScriptedFakeLLM([SUCCESS_RESP])
+
+    report = BlameEngine.shapley_rank(
+        tape, _booking_agent, oracle, perturb_factory=perturb_factory, k=3, m_samples=3
+    )
+    assert len(report.results) == 2
+    assert all(r.n_samples == 3 for r in report.results)
+    assert calls == [(3, 0.95), (3, 0.95)]  # one call per step, m_samples values each
 
 
 # ── binomial tail + Benjamini-Hochberg ────────────────────────────────────────

@@ -21,6 +21,7 @@ from tracefork.matcher import (
     AdapterMatcher,
     CanonicalizingMatcher,
     IdentityMatcher,
+    anthropic_header_matcher,
     bedrock_matcher,
     gemini_matcher,
     redacting_matcher,
@@ -69,6 +70,7 @@ ALL_MATCHERS = [
     gemini_matcher(),
     bedrock_matcher(),
     redacting_matcher(),
+    anthropic_header_matcher(),
     CanonicalizingMatcher(),
 ]
 
@@ -188,6 +190,103 @@ def test_canonicalizing_non_json_body_is_deterministic_and_distinct():
     b = _req(b"\x00\x01other")
     assert m.stored_request(a1) == m.stored_request(a2)
     assert m.live_fingerprint(a1) != m.live_fingerprint(b)
+
+
+def test_anthropic_header_matcher_collapses_auth_rotation():
+    m = anthropic_header_matcher()
+    body = b'{"model": "claude-sonnet-4-6", "messages": []}'
+    url = "https://api.anthropic.com/v1/messages"
+    a = _req(
+        body,
+        url=url,
+        headers={
+            "authorization": "Bearer T1",
+            "x-api-key": "sk-A",
+            "anthropic-version": "2023-06-01",
+        },
+    )
+    b = _req(
+        body,
+        url=url,
+        headers={
+            "authorization": "Bearer T9",
+            "x-api-key": "sk-Z",
+            "anthropic-version": "2023-06-01",
+        },
+    )
+    # Rotating auth headers are volatile -> collapse.
+    assert m.live_fingerprint(a) == m.live_fingerprint(b)
+
+
+def test_anthropic_header_matcher_distinguishes_version_and_beta():
+    m = anthropic_header_matcher()
+    body = b'{"model": "claude-sonnet-4-6", "messages": []}'
+    url = "https://api.anthropic.com/v1/messages"
+    base_headers = {"authorization": "Bearer T1", "anthropic-version": "2023-06-01"}
+    a = _req(body, url=url, headers=base_headers)
+    # A different anthropic-version is a genuinely different request.
+    b = _req(body, url=url, headers={**base_headers, "anthropic-version": "2024-01-01"})
+    assert m.live_fingerprint(a) != m.live_fingerprint(b)
+    # A present-vs-absent anthropic-beta flag likewise distinguishes.
+    c = _req(body, url=url, headers={**base_headers, "anthropic-beta": "tools-2024-01-01"})
+    assert m.live_fingerprint(a) != m.live_fingerprint(c)
+
+
+def test_anthropic_header_matcher_ignores_unlisted_headers():
+    m = anthropic_header_matcher()
+    body = b'{"model": "claude-sonnet-4-6", "messages": []}'
+    url = "https://api.anthropic.com/v1/messages"
+    # user-agent / x-stainless-* (SDK platform_headers()) are noise, same as the
+    # default identity path -- only anthropic-version/anthropic-beta join the identity.
+    a = _req(
+        body,
+        url=url,
+        headers={"user-agent": "anthropic-sdk-python/0.40.0", "x-stainless-os": "MacOS"},
+    )
+    b = _req(
+        body,
+        url=url,
+        headers={"user-agent": "anthropic-sdk-python/0.41.0", "x-stainless-os": "Linux"},
+    )
+    assert m.live_fingerprint(a) == m.live_fingerprint(b)
+
+
+def test_anthropic_header_matcher_record_replay_agreement_with_rotated_auth():
+    m = anthropic_header_matcher()
+    tape = Tape()
+    url = "https://api.anthropic.com/v1/messages"
+    body = b'{"model": "claude-sonnet-4-6", "messages": []}'
+    rec = TraceforkTransport("record", tape, _SyncInner([b"r0"]), matcher=m)
+    rec.handle_request(
+        _req(
+            body,
+            url=url,
+            headers={"authorization": "Bearer T1", "anthropic-version": "2023-06-01"},
+        )
+    )
+    rep = TraceforkTransport("replay", tape, matcher=m)
+    # Rotated bearer token at replay time still matches the recorded exchange.
+    assert (
+        rep.handle_request(
+            _req(
+                body,
+                url=url,
+                headers={"authorization": "Bearer T9", "anthropic-version": "2023-06-01"},
+            )
+        ).read()
+        == b"r0"
+    )
+    assert rep.fully_consumed()
+    # But a different anthropic-version at replay time is a real divergence.
+    rep2 = TraceforkTransport("replay", tape, matcher=m)
+    with pytest.raises(DivergenceError, match="diverged"):
+        rep2.handle_request(
+            _req(
+                body,
+                url=url,
+                headers={"authorization": "Bearer T9", "anthropic-version": "2024-01-01"},
+            )
+        )
 
 
 def test_adapter_matcher_anthropic_equals_identity():
