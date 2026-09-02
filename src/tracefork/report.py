@@ -13,6 +13,13 @@ from pathlib import Path
 
 from .providers import get_adapter
 
+__all__ = [
+    "DEFAULT_COMPRESSION_STEP_THRESHOLD",
+    "DEFAULT_BRANCH_DETAILS_CAP_BYTES",
+    "generate_report",
+]
+
+
 _INJECT_MARKER = "</head>"
 
 # A 400-exchange run's report can run into the hundreds of MB uncompressed

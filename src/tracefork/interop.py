@@ -66,6 +66,45 @@ from .providers.base import NormalizedResponse
 from .store import TapeStore
 from .tape import Tape, sha256_hex
 
+__all__ = [
+    "ATTR_PROVIDER_NAME",
+    "ATTR_OPERATION_NAME",
+    "ATTR_REQUEST_MODEL",
+    "ATTR_RESPONSE_MODEL",
+    "ATTR_RESPONSE_ID",
+    "ATTR_RESPONSE_FINISH_REASONS",
+    "ATTR_USAGE_INPUT_TOKENS",
+    "ATTR_USAGE_OUTPUT_TOKENS",
+    "ATTR_TOOL_NAME",
+    "ATTR_CONVERSATION_ID",
+    "ATTR_STEP_INDEX",
+    "ATTR_TOOL_STEP_INDEX",
+    "ATTR_BLAME_FLIP_RATE",
+    "ATTR_BLAME_CI_LO",
+    "ATTR_BLAME_CI_HI",
+    "ATTR_BLAME_CI_METHOD",
+    "ATTR_BLAME_Q_VALUE",
+    "ATTR_BLAME_RESPONSIBLE",
+    "OI_SPAN_KIND",
+    "OI_MODEL_NAME",
+    "OI_PROVIDER",
+    "OI_TOKEN_PROMPT",
+    "OI_TOKEN_COMPLETION",
+    "OI_INPUT_VALUE",
+    "OI_OUTPUT_VALUE",
+    "normalized_to_genai_attributes",
+    "blame_report_from_json",
+    "build_otel_trace",
+    "OtlpExportError",
+    "push_otlp_trace",
+    "locate_trace",
+    "locate_span_step",
+    "build_openinference_dataset",
+    "ingest_otel_trace",
+    "ingest_openinference_dataset",
+]
+
+
 # ── gen_ai.* attribute names (OTel GenAI semantic conventions) ─────────────
 # https://github.com/open-telemetry/semantic-conventions-genai — version
 # pinned as GENAI_SEMCONV_VERSION in constants.py. `gen_ai.system` (the

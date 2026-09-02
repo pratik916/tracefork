@@ -32,6 +32,8 @@ from .providers import get_adapter
 from .providers.base import NormalizedResponse, ProviderAdapter
 from .tape import Tape
 
+__all__ = ["ModelCost", "ToolCost", "CostProfile", "compute_cost_profile", "cost_profile_to_dict"]
+
 
 @dataclass(frozen=True)
 class ModelCost:

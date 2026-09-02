@@ -62,6 +62,23 @@ from .tape import Tape
 from .transport import AsyncTraceforkTransport
 from .wire import make_text_response
 
+__all__ = [
+    "NEUTRAL_TEXT",
+    "SUCCESS_TEXT",
+    "FAIL_TEXT",
+    "NEUTRAL_RESP",
+    "SUCCESS_RESP",
+    "FAIL_RESP",
+    "FAULT_RESP",
+    "build_multi_branch_tape",
+    "make_single_branch_perturb_factory",
+    "run_shapley_multi_branch",
+    "run_shapley_negative_control",
+    "ConcurrentValidationReport",
+    "run_concurrent_branch_validation",
+]
+
+
 # ── tape shape ───────────────────────────────────────────────────────────────
 #
 # One setup turn, `n_branches` concurrent sibling turns, one merge turn, one

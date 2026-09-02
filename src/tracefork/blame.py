@@ -63,6 +63,34 @@ from .plugins import ORACLE_GROUP, Registry
 from .providers import default_adapter, get_adapter, registered_providers
 from .tape import Tape
 
+__all__ = [
+    "z_from_confidence",
+    "t_from_confidence",
+    "binom_sf_ge",
+    "benjamini_hochberg",
+    "CIMethod",
+    "wilson_ci",
+    "proportion_ci",
+    "Oracle",
+    "StringMatchOracle",
+    "ORACLE_REGISTRY",
+    "register_oracle",
+    "get_oracle",
+    "registered_oracles",
+    "load_oracle_entry_points",
+    "TrialOutcome",
+    "FlipRateResult",
+    "BlameReport",
+    "ShapleyResult",
+    "ShapleyReport",
+    "BlameEstimate",
+    "ConfinementRisk",
+    "BudgetExceededError",
+    "BudgetGovernor",
+    "BlameEngine",
+]
+
+
 # ── Statistical primitives (pure-python, no scipy) ──────────────────────────
 
 

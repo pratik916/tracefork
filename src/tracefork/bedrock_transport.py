@@ -85,6 +85,15 @@ from .matcher import RequestMatcher, bedrock_matcher
 from .nondet import DivergenceError
 from .tape import Tape
 
+__all__ = [
+    "DEFAULT_SERVICE_ID",
+    "DEFAULT_OPERATIONS",
+    "prepared_request_to_httpx",
+    "default_sender",
+    "BedrockTransport",
+]
+
+
 #: The `serviceId` AWS's bedrock-runtime service model hyphenizes to.
 DEFAULT_SERVICE_ID = "bedrock-runtime"
 #: Operations this seam intercepts by default when `.register()` is called

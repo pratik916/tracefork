@@ -41,6 +41,9 @@ from fastapi.responses import StreamingResponse
 
 from .checkpoint import checkpoint_status, read_new_exchanges
 
+__all__ = ["POLL_INTERVAL_SECONDS", "router", "stream_checkpoint"]
+
+
 # How often the generator re-polls the checkpoint file while waiting for new
 # exchanges or finalization. A live SQLite file, not a push notification —
 # polling is the honest model here, same as any other WAL-tailing consumer.

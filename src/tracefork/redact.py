@@ -50,6 +50,22 @@ import httpx
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .tape import sha256_hex
 
+__all__ = [
+    "RedactorFn",
+    "REDACTED",
+    "REDACTED_STR",
+    "DEFAULT_SECRET_ENV_VARS",
+    "DEFAULT_REDACTED_HEADERS",
+    "regex_redactor",
+    "secret_value_redactor",
+    "content_redactor",
+    "RedactingMatcher",
+    "Redactor",
+    "safe_defaults",
+    "with_content_redaction",
+]
+
+
 RedactorFn = Callable[[bytes], bytes | None]
 
 REDACTED = b"REDACTED"

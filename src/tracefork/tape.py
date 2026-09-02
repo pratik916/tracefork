@@ -33,6 +33,20 @@ import zstandard as zstd
 from .constants import BOUNDARY_V1, TAPE_FORMAT_VERSION, TAPE_MAGIC
 from .plugins import SERIALIZER_GROUP, Registry
 
+__all__ = [
+    "sha256_hex",
+    "open_sqlite",
+    "Tape",
+    "TapeSerializer",
+    "BinaryTapeSerializer",
+    "SERIALIZER_REGISTRY",
+    "register_serializer",
+    "get_serializer",
+    "registered_serializers",
+    "load_serializer_entry_points",
+]
+
+
 _ZCTX = zstd.ZstdCompressor(level=3)
 _DCTX = zstd.ZstdDecompressor()
 

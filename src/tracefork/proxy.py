@@ -62,6 +62,9 @@ from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError
 from .tape import Tape
 
+__all__ = ["RecordProxy", "ReplayProxy", "build_record_app", "build_replay_app"]
+
+
 # Headers that are connection-scoped or body-framing and must never be forwarded
 # verbatim from an incoming request to the outgoing (upstream, or matcher-facing)
 # one — a bog-standard reverse-proxy hop-by-hop list plus `host`/`content-length`,

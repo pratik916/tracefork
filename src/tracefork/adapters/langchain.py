@@ -719,6 +719,7 @@ register_framework_adapter(LangChainAdapter())
 
 __all__ = [
     "CheckpointRecord",
+    "CheckpointRecordList",
     "FRAMEWORKS_IMPORT_HINT",
     "LangChainAdapter",
     "TapeBackedCheckpointStore",

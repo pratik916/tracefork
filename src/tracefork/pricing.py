@@ -25,6 +25,20 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any
 
+__all__ = [
+    "pricing_version",
+    "get_rates",
+    "CACHE_READ_MULTIPLIER",
+    "CACHE_WRITE_MULTIPLIER_5M",
+    "get_cache_rates",
+    "parse_cache_tokens",
+    "is_fallback_model",
+    "get_rates_per_million",
+    "registered_models",
+    "registered_providers",
+]
+
+
 #: List price in the snapshot is quoted per this many tokens.
 _PER_MILLION = 1_000_000
 

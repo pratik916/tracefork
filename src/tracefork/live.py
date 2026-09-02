@@ -22,6 +22,8 @@ from .checkpoint import checkpoint_status, read_new_exchanges
 from .report import _tape_to_data
 from .tape import Tape
 
+__all__ = ["format_sse", "tail_checkpoint"]
+
 
 def format_sse(event: str, data: dict[str, Any]) -> str:
     """One SSE frame: ``event: <event>\\ndata: <json>\\n\\n``."""

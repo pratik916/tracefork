@@ -110,6 +110,35 @@ from .tape import Tape
 from .transport import AsyncTraceforkTransport, TraceforkTransport
 from .wire import make_text_response
 
+__all__ = [
+    "N_TURNS",
+    "ROOT_MARKER",
+    "GATE_MARKER",
+    "PAYLOAD_MARKER",
+    "SUCCESS_TEXT",
+    "FAIL_TEXT",
+    "NEUTRAL_TEXT",
+    "SUCCESS_RESP",
+    "FAIL_RESP",
+    "NEUTRAL_RESP",
+    "StepRole",
+    "STEP_ROLES",
+    "ACTIVATABLE_ROLES",
+    "SCENARIO_ROOT_ECHO",
+    "SCENARIO_GATE_PAYLOAD",
+    "SCENARIO_ALL",
+    "mutated_response_for",
+    "RuleBasedTail",
+    "make_perturb_factory",
+    "competing_fault_agent",
+    "build_competing_fault_tape",
+    "run_shapley",
+    "concurrent_competing_fault_agent",
+    "build_concurrent_gate_payload_tape",
+    "run_shapley_concurrent",
+]
+
+
 N_TURNS = 7
 
 ROOT_MARKER = b"CFX_ROOT_CAUSE"

@@ -23,6 +23,8 @@ from .base import (
     register_capabilities,
 )
 
+__all__ = ["AnthropicAdapter"]
+
 
 class AnthropicAdapter:
     """Normalizes/builds Anthropic Messages-API wire bytes."""

@@ -37,6 +37,19 @@ from .observability import instrument
 from .tape import Tape
 from .transport import TraceforkTransport
 
+__all__ = [
+    "DriftCause",
+    "ProvenanceMismatchError",
+    "DivergenceReport",
+    "VerificationResult",
+    "ReplayVerifier",
+    "DriftDoctor",
+    "verification_result_to_dict",
+    "FixtureResult",
+    "CorpusCheckResult",
+    "run_fixture_corpus_check",
+]
+
 
 class DriftCause(enum.Enum):
     UNRECORDED_NONDET = "unrecorded_nondet"

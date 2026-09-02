@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from .blame import BudgetGovernor
 from .store import TapeStore
 
+__all__ = ["SessionForkPlan", "plan_session_fork"]
+
 
 @dataclass
 class SessionForkPlan:

@@ -23,6 +23,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tracefork.blame import BlameReport, FlipRateResult, ShapleyReport, ShapleyResult
 
+__all__ = [
+    "explain_flip_result",
+    "explain_shapley_result",
+    "explain_blame_report",
+    "explain_shapley_report",
+]
+
 
 def explain_flip_result(r: FlipRateResult) -> str:
     """One deterministic sentence summarizing a single step's flip-rate result."""

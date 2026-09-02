@@ -41,6 +41,13 @@ if TYPE_CHECKING:
     from .replay import VerificationResult
     from .tape import Tape
 
+__all__ = [
+    "CertificateStrength",
+    "ProofEnvelopeError",
+    "ReplayCertificate",
+    "certificate_from_verification",
+]
+
 
 class CertificateStrength(enum.Enum):
     """Reproducibility tiers a `ReplayCertificate` can claim, weakest first."""

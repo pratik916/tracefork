@@ -37,6 +37,14 @@ from pathlib import Path
 
 from tracefork.coverage import _call_path
 
+__all__ = [
+    "SANCTIONED_CALL_SITES",
+    "ArchitectureViolation",
+    "scan_file_for_violations",
+    "audit_package",
+]
+
+
 # The 5 call-shapes `BoundaryGuard.__enter__` actually patches
 # (`boundary_guard.py`), plus `uuid.uuid4` (patched globally by
 # `recorder.py`/`adapters/base.py`, not `BoundaryGuard`, but read outside

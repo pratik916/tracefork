@@ -71,6 +71,13 @@ from typing import Any
 
 from .errors import TraceforkError
 
+__all__ = [
+    "BoundaryViolationError",
+    "ConfinementViolationError",
+    "ConfinementSpec",
+    "BoundaryGuard",
+]
+
 
 class BoundaryViolationError(RuntimeError, TraceforkError):
     """Raised when guarded code performs an operation that bypasses

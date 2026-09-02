@@ -58,6 +58,13 @@ from .nondet import DivergenceError
 from .redact import Redactor
 from .tape import Tape
 
+__all__ = [
+    "TraceforkTransport",
+    "DEFAULT_ORDERED_RELEASE_TIMEOUT_S",
+    "AsyncTraceforkTransport",
+    "chaos_release_order",
+]
+
 
 class TraceforkTransport(httpx.BaseTransport):
     """Sync recording/replay transport."""

@@ -1,5 +1,29 @@
 """Centralised constants — model IDs, pricing, determinism boundary, tape format."""
 
+__all__ = [
+    "BOUNDARY_V1",
+    "TAPE_MAGIC",
+    "TAPE_FORMAT_VERSION",
+    "DIGEST_CHAIN_VERSION",
+    "SONNET",
+    "HAIKU",
+    "OPUS",
+    "PRICING_VERSION",
+    "SONNET_INPUT_PER_TOKEN",
+    "SONNET_OUTPUT_PER_TOKEN",
+    "HAIKU_INPUT_PER_TOKEN",
+    "HAIKU_OUTPUT_PER_TOKEN",
+    "OPUS_INPUT_PER_TOKEN",
+    "OPUS_OUTPUT_PER_TOKEN",
+    "GENAI_SEMCONV_VERSION",
+    "OTEL_INGESTED_BOUNDARY",
+    "PROXY_BOUNDARY",
+    "CONFINEMENT_TIER_NONE",
+    "CONFINEMENT_TIER_GUARDED",
+    "CONFINEMENT_TIER_DECLARED",
+    "VALIDATE_CHECK_TOLERANCE",
+]
+
 BOUNDARY_V1 = "single-process-asyncio-v1"
 
 # ── Tape on-the-wire (to_bytes/from_bytes) format ───────────────────────────

@@ -17,6 +17,8 @@ changes ``isinstance`` results callers already rely on.
 
 from __future__ import annotations
 
+__all__ = ["TraceforkError"]
+
 
 class TraceforkError(Exception):
     """Base class for every exception tracefork itself raises.

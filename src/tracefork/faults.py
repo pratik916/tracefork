@@ -29,6 +29,9 @@ from typing import Any
 
 from .providers import NormalizedResponse, get_adapter
 
+__all__ = ["FAULT_MARKER", "FAULT_MARKER_BYTES", "FaultClass", "FaultInjector"]
+
+
 FAULT_MARKER = "FAULT_MARKER"
 FAULT_MARKER_BYTES = FAULT_MARKER.encode()
 

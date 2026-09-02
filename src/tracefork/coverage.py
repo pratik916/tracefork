@@ -44,6 +44,16 @@ from dataclasses import dataclass, field
 
 from tracefork.tape import Tape
 
+__all__ = [
+    "DRAW_KINDS",
+    "CallFinding",
+    "CoverageReport",
+    "tape_draw_coverage",
+    "scan_source_for_nondeterminism_calls",
+    "coverage_report",
+]
+
+
 #: The five draw kinds `nondet.py` actually records (`RecordingNondet.draws`).
 #: Kept in sync with `nondet.py` -- do not invent new kinds here.
 DRAW_KINDS: tuple[str, ...] = ("clock", "uuid", "random", "env", "read_file")

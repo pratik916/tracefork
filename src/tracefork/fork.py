@@ -90,6 +90,20 @@ from .nondet import DivergenceError
 from .observability import instrument
 from .tape import Tape, sha256_hex
 
+__all__ = [
+    "BranchSpec",
+    "Branch",
+    "compute_divergence_exchange_digest",
+    "compute_branch_digest",
+    "compute_confinement_tier",
+    "ForkTransport",
+    "StepIntervention",
+    "CoalitionSpec",
+    "CoalitionForkTransport",
+    "RebaseTransport",
+    "ForkEngine",
+]
+
 
 @dataclass
 class BranchSpec:

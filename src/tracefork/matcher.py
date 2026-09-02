@@ -48,6 +48,23 @@ from .tape import sha256_hex
 if TYPE_CHECKING:
     from .providers.base import ProviderAdapter
 
+__all__ = [
+    "RequestMatcher",
+    "IdentityMatcher",
+    "AdapterMatcher",
+    "CanonicalizingMatcher",
+    "IDENTITY_MATCHER",
+    "gemini_matcher",
+    "bedrock_matcher",
+    "redacting_matcher",
+    "anthropic_header_matcher",
+    "MATCHER_REGISTRY",
+    "register_matcher",
+    "get_matcher",
+    "registered_matchers",
+    "load_matcher_entry_points",
+]
+
 
 @runtime_checkable
 class RequestMatcher(Protocol):

@@ -31,6 +31,17 @@ from .tape import Tape
 from .transport import TraceforkTransport
 from .wire import make_text_response, make_tool_use_response
 
+__all__ = [
+    "SUCCESS_RESP",
+    "FAIL_RESP",
+    "TOOL_RESP",
+    "synthetic_agent",
+    "ValidationReport",
+    "ValidationRunner",
+    "run_all_fault_classes",
+]
+
+
 SUCCESS_RESP = make_text_response("SUCCESS — confirmed")
 FAIL_RESP = make_text_response("FAIL — cancelled")
 TOOL_RESP = make_tool_use_response("check_availability", {"seats": 3, "destination": "Tokyo"})

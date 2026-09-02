@@ -24,6 +24,30 @@ from .live import tail_checkpoint
 from .report import _runs_template_path, _tape_to_data, _template_path
 from .store import ForkPointDriftError, TapeStore
 
+__all__ = [
+    "app",
+    "CONTENT_SECURITY_POLICY",
+    "get_store",
+    "init_store",
+    "init_fork_allowlist",
+    "init_checkpoint_dirs",
+    "ForkEstimateRequest",
+    "ForkRequest",
+    "estimate_fork",
+    "do_fork",
+    "serve_ui",
+    "serve_runs_page",
+    "list_runs",
+    "get_run",
+    "get_branch",
+    "get_branch_related",
+    "otel_locate_trace",
+    "otel_locate_span",
+    "tail_checkpoint_endpoint",
+    "get_session",
+]
+
+
 # No CORS middleware: the UI is served same-origin by this app and uvicorn
 # binds to 127.0.0.1 (see the `serve` CLI command), so cross-origin access is
 # neither needed nor desirable.

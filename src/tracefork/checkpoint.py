@@ -48,6 +48,18 @@ from .constants import BOUNDARY_V1
 from .errors import TraceforkError
 from .tape import Tape, open_sqlite
 
+__all__ = [
+    "CHECKPOINT_DIRS_ENV",
+    "CheckpointPathNotAllowedError",
+    "parse_checkpoint_dirs_env",
+    "resolve_confined_checkpoint_path",
+    "CheckpointWriter",
+    "read_new_exchanges",
+    "checkpoint_status",
+    "recover_checkpoint",
+]
+
+
 _CREATE_CHECKPOINT_SCHEMA = """
     CREATE TABLE IF NOT EXISTS checkpoint_exchanges (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,

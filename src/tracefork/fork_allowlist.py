@@ -20,6 +20,15 @@ from .errors import TraceforkError
 from .providers import get_adapter
 from .tape import Tape
 
+__all__ = [
+    "FORK_AGENTS_ENV",
+    "AgentNotAllowlistedError",
+    "parse_allowlist_env",
+    "resolve_agent_fn",
+    "estimate_single_fork_usd",
+]
+
+
 #: Comma-separated `name=module:fn` pairs, e.g. "my_agent=pkg.mod:run_agent".
 #: Unset (the default) means: nothing allowlisted, every fork endpoint 403s.
 FORK_AGENTS_ENV = "TRACEFORK_FORK_AGENTS"

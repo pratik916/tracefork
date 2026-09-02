@@ -51,6 +51,8 @@ from .redact import Redactor
 from .tape import Tape
 from .transport import AsyncTraceforkTransport, TraceforkTransport
 
+__all__ = ["Recorder", "AsyncRecorder"]
+
 
 class Recorder:
     """Sync context manager that records an Anthropic client's I/O.

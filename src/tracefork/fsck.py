@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 
 from .store import TapeStore
 
+__all__ = ["FsckRow", "StoreFsckResult", "store_fsck"]
+
 
 @dataclass
 class FsckRow:

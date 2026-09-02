@@ -72,6 +72,18 @@ from .fork import BranchSpec, ForkEngine
 from .synthetic import FaultAwareFakeLLM
 from .validate import FAIL_RESP, SUCCESS_RESP, _record_clean_tape, synthetic_agent
 
+__all__ = [
+    "FAULT_STEP",
+    "render_transcript",
+    "correlational_attribute",
+    "CorrelationalBaselineReport",
+    "run_correlational_baseline",
+    "run_all_fault_classes_correlational",
+    "live_attribution_fn",
+    "main",
+]
+
+
 #: The root-cause step every fixture plants the fault at -- the same ground
 #: truth `validate.ValidationRunner.run()` scores its own top-1 precision
 #: against (its `fault_step = 0` local, not exported; documented here so the

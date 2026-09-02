@@ -17,6 +17,8 @@ from __future__ import annotations
 from .constants import SONNET
 from .providers import get_adapter
 
+__all__ = ["make_text_response", "make_tool_use_response"]
+
 
 def make_text_response(
     text: str,

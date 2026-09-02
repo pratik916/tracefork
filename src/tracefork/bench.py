@@ -34,6 +34,15 @@ from .competing_faults import (
     run_shapley_concurrent,
 )
 
+__all__ = [
+    "WHO_AND_WHEN_LOG_BASED_TOP1_ANCHOR",
+    "KNOWN_LIMITATION_CASES",
+    "CaseResult",
+    "BenchReport",
+    "run_bench",
+]
+
+
 # Published anchor: Zhang et al., "Who&When: Uncover the Whodunit and When of
 # LLM Multi-Agent Failures" (ICML 2025) reports ~14.2% top-1 accuracy for
 # log-based (single-pass, no re-execution) step attribution on their

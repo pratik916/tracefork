@@ -27,6 +27,9 @@ from .base import (
     register_capabilities,
 )
 
+__all__ = ["DEFAULT_OPENAI_MODEL", "OpenAIAdapter"]
+
+
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 

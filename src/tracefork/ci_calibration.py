@@ -38,6 +38,21 @@ from dataclasses import dataclass, field
 
 from .blame import CIMethod, proportion_ci
 
+__all__ = [
+    "DEFAULT_N_REPEATS",
+    "DEFAULT_CONFIDENCE",
+    "TOLERANCE_SIGMA",
+    "DEFAULT_TRUE_PS",
+    "DEFAULT_N_TRIALS_GRID",
+    "DEFAULT_METHODS",
+    "monte_carlo_error",
+    "CoverageResult",
+    "CalibrationReport",
+    "simulate_coverage",
+    "run_calibration",
+]
+
+
 #: Replicate count whose Monte Carlo error at the default 95% confidence
 #: level is ~0.0049 (0.49 percentage points) — small enough that a coverage
 #: value outside the documented tolerance band is a genuine signal, not

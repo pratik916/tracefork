@@ -83,6 +83,18 @@ from typing import Protocol
 
 from .errors import TraceforkError
 
+__all__ = [
+    "DEFAULT_MAX_READ_FILE_BYTES",
+    "DivergenceError",
+    "ReadFileTooLargeError",
+    "find_divergence",
+    "NondetSource",
+    "RecordingNondet",
+    "ReplayNondet",
+    "DriftingNondet",
+]
+
+
 #: Default cap for `RecordingNondet.read_file` (256 KiB). `read_file` is
 #: designed for small config/state files an agent reads mid-run, not bulk
 #: blobs -- a file over this cap raises `ReadFileTooLargeError` rather than

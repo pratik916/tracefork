@@ -32,6 +32,16 @@ if TYPE_CHECKING:
     from .matcher import RequestMatcher
     from .tape import Tape
 
+__all__ = [
+    "MISSING",
+    "FieldDiff",
+    "diff_json",
+    "diff_request_bytes",
+    "DivergenceDiagnostic",
+    "diagnose",
+    "diagnostic_to_dict",
+]
+
 # Sentinel for "this key/index is present on only one side" — a plain string
 # (not `None`) so a real recorded/live value of `null` is never confused with
 # "absent".

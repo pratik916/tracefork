@@ -31,6 +31,15 @@ import subprocess
 from dataclasses import dataclass
 from importlib import metadata
 
+__all__ = [
+    "RecordBasis",
+    "current_basis",
+    "basis_to_provenance_keys",
+    "basis_from_provenance",
+    "diff_basis",
+    "format_basis_drift_warning",
+]
+
 
 @dataclass(frozen=True)
 class RecordBasis:

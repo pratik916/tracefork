@@ -55,6 +55,18 @@ from xml.etree import ElementTree as ET
 from .ci_calibration import CalibrationReport
 from .replay import CorpusCheckResult
 
+__all__ = [
+    "SCHEMA_VERSION",
+    "parse_junit_test_summary",
+    "parse_coverage_summary",
+    "corpus_check_result_to_dict",
+    "calibration_report_to_dict",
+    "build_release_receipt",
+    "sign_release_receipt",
+    "verify_release_receipt_signature",
+]
+
+
 #: Bumped only on a breaking shape change; consumers should tolerate unknown
 #: keys within a major version.
 SCHEMA_VERSION = "tracefork/release-receipt/v1"

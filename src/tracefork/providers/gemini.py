@@ -32,6 +32,9 @@ from .base import (
     register_capabilities,
 )
 
+__all__ = ["DEFAULT_GEMINI_MODEL", "GeminiAdapter"]
+
+
 DEFAULT_GEMINI_MODEL = "gemini-1.5-pro"
 
 # Matches the model segment of a Gemini request URL path, e.g.

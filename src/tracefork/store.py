@@ -124,6 +124,15 @@ from .tape import Tape, open_sqlite
 if TYPE_CHECKING:
     from .blame import BlameReport, ShapleyReport
 
+__all__ = [
+    "TapeConflictError",
+    "ForkPointDriftError",
+    "StorageBackend",
+    "SessionStore",
+    "PruneReport",
+    "TapeStore",
+]
+
 
 class TapeConflictError(RuntimeError, TraceforkError):
     """Raised by ``save_tape`` when a ``run_id`` is reused with content whose
