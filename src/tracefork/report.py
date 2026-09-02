@@ -10,8 +10,10 @@ import base64
 import gzip
 import json
 from pathlib import Path
+from typing import Any
 
 from .providers import get_adapter
+from .tape import Tape
 
 __all__ = [
     "DEFAULT_COMPRESSION_STEP_THRESHOLD",
@@ -46,8 +48,8 @@ DEFAULT_BRANCH_DETAILS_CAP_BYTES = 256 * 1024
 
 
 def _cap_branch_details(
-    branch_details: dict[str, dict], cap_bytes: int
-) -> tuple[dict[str, dict], dict | None]:
+    branch_details: dict[str, dict[str, Any]], cap_bytes: int
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
     """Keep `branch_details` entries (in dict/insertion order) until their
     cumulative COMPACT JSON size would exceed `cap_bytes`, dropping the rest.
 
@@ -71,7 +73,7 @@ def _cap_branch_details(
     if len(json.dumps(branch_details)) <= cap_bytes:
         return branch_details, None
 
-    kept: dict[str, dict] = {}
+    kept: dict[str, dict[str, Any]] = {}
     running = 2  # the enclosing `{}` of the eventual dict
     for branch_id, detail in branch_details.items():
         entry_size = len(json.dumps({branch_id: detail})) - 2  # minus its own `{}`
@@ -120,18 +122,18 @@ def _runs_template_path() -> Path:
 
 
 def _tape_to_data(
-    tape,
-    blame: dict | None = None,
-    replay: dict | None = None,
-    branches: list[dict] | None = None,
-    causal_edges: list[dict] | None = None,
-    branch_details: dict[str, dict] | None = None,
-    shapley: dict | None = None,
-    cost_profile: dict | None = None,
-    causal_closure: list[dict] | None = None,
+    tape: Tape,
+    blame: dict[str, Any] | None = None,
+    replay: dict[str, Any] | None = None,
+    branches: list[dict[str, Any]] | None = None,
+    causal_edges: list[dict[str, Any]] | None = None,
+    branch_details: dict[str, dict[str, Any]] | None = None,
+    shapley: dict[str, Any] | None = None,
+    cost_profile: dict[str, Any] | None = None,
+    causal_closure: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
-) -> dict:
+) -> dict[str, Any]:
     """Convert a Tape to the JSON shape expected by the web UI.
 
     `branch_details_cap_bytes` (default `DEFAULT_BRANCH_DETAILS_CAP_BYTES`)
@@ -261,7 +263,7 @@ def _tape_to_data(
     }
 
 
-def _safe_json(data: dict) -> str:
+def _safe_json(data: dict[str, Any]) -> str:
     """Serialize `data` and escape HTML-significant chars so recorded agent I/O
     (which can contain ``</script>``) cannot break out of the inline <script>.
 
@@ -277,7 +279,7 @@ def _safe_json(data: dict) -> str:
     )
 
 
-def _gzip_b64(data: dict) -> str:
+def _gzip_b64(data: dict[str, Any]) -> str:
     """gzip-compress `data`'s COMPACT (no `indent=`) JSON encoding and
     base64-encode the result for embedding in a <script> tag.
 
@@ -292,7 +294,7 @@ def _gzip_b64(data: dict) -> str:
     return base64.b64encode(compressed).decode("ascii")
 
 
-def _inject_script(data: dict, compression_step_threshold: int) -> str:
+def _inject_script(data: dict[str, Any], compression_step_threshold: int) -> str:
     """Build the `<script>` block that seeds the report's data, taking the
     gzip+base64 path (`window.__TRACEFORK_DATA_GZIP_B64__`) once
     `len(data["exchanges"])` reaches `compression_step_threshold`, the plain
@@ -314,17 +316,17 @@ def _inject_script(data: dict, compression_step_threshold: int) -> str:
 
 
 def generate_report(
-    tape,
+    tape: Tape,
     output_path: Path,
     *,
-    blame: dict | None = None,
-    replay: dict | None = None,
-    branches: list[dict] | None = None,
-    causal_edges: list[dict] | None = None,
-    branch_details: dict[str, dict] | None = None,
-    shapley: dict | None = None,
-    cost_profile: dict | None = None,
-    causal_closure: list[dict] | None = None,
+    blame: dict[str, Any] | None = None,
+    replay: dict[str, Any] | None = None,
+    branches: list[dict[str, Any]] | None = None,
+    causal_edges: list[dict[str, Any]] | None = None,
+    branch_details: dict[str, dict[str, Any]] | None = None,
+    shapley: dict[str, Any] | None = None,
+    cost_profile: dict[str, Any] | None = None,
+    causal_closure: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     branch_details_cap_bytes: int = DEFAULT_BRANCH_DETAILS_CAP_BYTES,
     compression_step_threshold: int = DEFAULT_COMPRESSION_STEP_THRESHOLD,

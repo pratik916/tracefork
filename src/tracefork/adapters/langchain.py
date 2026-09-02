@@ -33,7 +33,7 @@ subclasses that wrap them are only reachable with the real framework present.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -203,7 +203,9 @@ class TraceforkCallbackCore:
             step.outputs = outputs
         return step
 
-    def on_chain_start(self, serialized, inputs, *, run_id, parent_run_id=None, **kwargs) -> Step:
+    def on_chain_start(
+        self, serialized: Any, inputs: Any, *, run_id: Any, parent_run_id: Any = None, **kwargs: Any
+    ) -> Step:
         return self._start(
             "chain",
             run_id,
@@ -213,10 +215,18 @@ class TraceforkCallbackCore:
             metadata=kwargs.get("metadata"),
         )
 
-    def on_chain_end(self, outputs, *, run_id, **kwargs) -> Step | None:
+    def on_chain_end(self, outputs: Any, *, run_id: Any, **kwargs: Any) -> Step | None:
         return self._end(run_id, outputs)
 
-    def on_llm_start(self, serialized, prompts, *, run_id, parent_run_id=None, **kwargs) -> Step:
+    def on_llm_start(
+        self,
+        serialized: Any,
+        prompts: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **kwargs: Any,
+    ) -> Step:
         return self._start(
             "llm",
             run_id,
@@ -228,7 +238,13 @@ class TraceforkCallbackCore:
         )
 
     def on_chat_model_start(
-        self, serialized, messages, *, run_id, parent_run_id=None, **kwargs
+        self,
+        serialized: Any,
+        messages: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **kwargs: Any,
     ) -> Step:
         return self._start(
             "chat_model",
@@ -240,7 +256,7 @@ class TraceforkCallbackCore:
             metadata=kwargs.get("metadata"),
         )
 
-    def on_llm_end(self, response, *, run_id, **kwargs) -> Step | None:
+    def on_llm_end(self, response: Any, *, run_id: Any, **kwargs: Any) -> Step | None:
         step = self.dag.by_id(str(run_id))
         if step is not None:
             text, model = _llm_result_text_and_model(response)
@@ -249,7 +265,15 @@ class TraceforkCallbackCore:
                 step.model = model
         return step
 
-    def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, **kwargs) -> Step:
+    def on_tool_start(
+        self,
+        serialized: Any,
+        input_str: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **kwargs: Any,
+    ) -> Step:
         return self._start(
             "tool",
             run_id,
@@ -259,7 +283,7 @@ class TraceforkCallbackCore:
             metadata=kwargs.get("metadata"),
         )
 
-    def on_tool_end(self, output, *, run_id, **kwargs) -> Step | None:
+    def on_tool_end(self, output: Any, *, run_id: Any, **kwargs: Any) -> Step | None:
         return self._end(run_id, output)
 
 
@@ -286,25 +310,25 @@ def make_callback_handler(core: TraceforkCallbackCore | None = None) -> Any:
             self.core = the_core
             self.dag = the_core.dag
 
-        def on_chain_start(self, *args, **kwargs):
+        def on_chain_start(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_chain_start(*args, **kwargs)
 
-        def on_chain_end(self, *args, **kwargs):
+        def on_chain_end(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_chain_end(*args, **kwargs)
 
-        def on_llm_start(self, *args, **kwargs):
+        def on_llm_start(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_llm_start(*args, **kwargs)
 
-        def on_chat_model_start(self, *args, **kwargs):
+        def on_chat_model_start(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_chat_model_start(*args, **kwargs)
 
-        def on_llm_end(self, *args, **kwargs):
+        def on_llm_end(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_llm_end(*args, **kwargs)
 
-        def on_tool_start(self, *args, **kwargs):
+        def on_tool_start(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_tool_start(*args, **kwargs)
 
-        def on_tool_end(self, *args, **kwargs):
+        def on_tool_end(self, *args: Any, **kwargs: Any) -> Any:
             return self.core.on_tool_end(*args, **kwargs)
 
     return TraceforkCallbackHandler()
@@ -435,7 +459,7 @@ def make_tape_backed_checkpointer(
             super().__init__()
             self.store = the_store
 
-        def get_tuple(self, config):
+        def get_tuple(self, config: Any) -> CheckpointTuple | None:
             thread_id = _cfg(config, "thread_id")
             record = self.store.get(thread_id, _cfg(config, "checkpoint_id"))
             if record is None:
@@ -461,7 +485,14 @@ def make_tape_backed_checkpointer(
                 parent_config=parent_config,
             )
 
-        def list(self, config, *, filter=None, before=None, limit=None):
+        def list(
+            self,
+            config: Any,
+            *,
+            filter: Any = None,
+            before: Any = None,
+            limit: int | None = None,
+        ) -> Iterator[CheckpointTuple]:
             thread_id = _cfg(config, "thread_id")
             before_id = _cfg(before, "checkpoint_id") if before else None
             for record in self.store.list(thread_id, before=before_id, limit=limit):
@@ -477,7 +508,9 @@ def make_tape_backed_checkpointer(
                     metadata=metadata,
                 )
 
-        def put(self, config, checkpoint, metadata, new_versions):
+        def put(
+            self, config: Any, checkpoint: Any, metadata: Any, new_versions: Any
+        ) -> dict[str, Any]:
             thread_id = _cfg(config, "thread_id")
             checkpoint_id = checkpoint["id"]
             self.store.put(
@@ -494,7 +527,7 @@ def make_tape_backed_checkpointer(
                 }
             }
 
-        def put_writes(self, config, writes, task_id, task_path=""):
+        def put_writes(self, config: Any, writes: Any, task_id: Any, task_path: str = "") -> None:
             # Intermediate channel writes are not needed for tape-backed replay
             # (the tape, not pending writes, is the source of LLM I/O truth).
             return None

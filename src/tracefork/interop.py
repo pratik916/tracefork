@@ -547,7 +547,7 @@ def locate_trace(store: TapeStore, trace_id: str) -> str | None:
     establishes for it), falling back to a full `load_tape(...).digest()`.
     """
     for run in store.list_runs():
-        run_id = run["run_id"]
+        run_id: str = run["run_id"]
         digest = store.stored_digest(run_id)
         if digest is None:
             digest = store.load_tape(run_id).digest()

@@ -44,6 +44,7 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -156,7 +157,7 @@ def _redact_content_blocks(blocks: object) -> None:
                 _redact_content_blocks(block["content"])
 
 
-def _redact_message_content(obj: dict) -> None:
+def _redact_message_content(obj: dict[str, Any]) -> None:
     """Blank `system` / `messages[].content` (request shape) and top-level
     `content` (response shape) in an Anthropic Messages-API JSON body, in
     place."""

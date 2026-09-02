@@ -47,9 +47,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from statistics import NormalDist
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
+
+if TYPE_CHECKING:
+    import anthropic
 
 from . import pricing
 from .boundary_guard import ConfinementSpec
@@ -872,7 +875,7 @@ class BlameEngine:
     @instrument("tracefork.blame.rank")
     def rank(
         tape: Tape,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         oracle: Oracle,
         *,
         perturb_factory: Callable[[int], tuple[bytes, object]],
@@ -1042,7 +1045,7 @@ class BlameEngine:
         tape: Tape,
         step_idx: int,
         perturb_factory: Callable[[int], tuple[bytes, object]],
-        agent_fn,
+        agent_fn: Callable[[anthropic.Anthropic], Any],
         oracle: Oracle,
         parent_outcome: bool | None,
         api_key: str,
@@ -1101,7 +1104,7 @@ class BlameEngine:
         tape: Tape,
         steps: tuple[int, ...],
         perturb_factory: Callable[[int], tuple[bytes, object]],
-        agent_fn,
+        agent_fn: Callable[[anthropic.Anthropic], Any],
         oracle: Oracle,
         parent_outcome: bool | None,
         api_key: str,
@@ -1178,7 +1181,7 @@ class BlameEngine:
     @instrument("tracefork.blame.shapley_rank")
     def shapley_rank(
         tape: Tape,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         oracle: Oracle,
         *,
         perturb_factory: Callable[[int], tuple[bytes, object]],

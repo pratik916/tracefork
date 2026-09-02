@@ -51,7 +51,7 @@ def _session_template_path() -> Path:
 
 def _session_to_data(
     store: TapeStore, session_id: str, *, agent_map: dict[str, Any] | None = None
-) -> dict:
+) -> dict[str, Any]:
     """Assemble the fork-board JSON: session metadata + one lane per
     ``store.session_tapes(session_id)``'s BFS-ordered run_id.
 
@@ -68,7 +68,7 @@ def _session_to_data(
     for run_id in run_ids:
         tape = store.load_tape(run_id)
         lane_data = _tape_to_data(tape)
-        replay_data: dict = {}
+        replay_data: dict[str, Any] = {}
         agent_fn = agent_map.get(run_id)
         if agent_fn is not None:
             result = ReplayVerifier(tape, agent_fn).verify()

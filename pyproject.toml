@@ -306,6 +306,50 @@ files = ["src/tracefork"]
 ignore_missing_imports = true
 no_implicit_optional = true
 warn_unused_ignores = true
+# tracefork-sis.63: `py.typed` (see `docs/stability.md`) tells every importer
+# this package's inline types are load-bearing, not decorative -- `strict` is
+# what actually holds the full ~88-module surface to that promise, instead of
+# it quietly drifting the moment someone runs plain `mypy` without
+# remembering `--strict` by hand. `uv run mypy src/tracefork`
+# (`scripts/e2e.sh`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml`)
+# is now the same check as `mypy --strict src/tracefork`.
+strict = true
+
+[[tool.mypy.overrides]]
+# tracefork-sis.63: five OPTIONAL, guarded framework adapters -- none of
+# langchain-core/langgraph, crewai, autogen-core/-ext, google-adk, or
+# openai-agents is a hard or `dev`-extra dependency (see this file's
+# `frameworks`/`crewai`/`autogen`/`adk`/`openai-agents` extras); each module
+# imports its real third-party base class ONLY inside a `require_X()`-guarded
+# factory function, so `import tracefork` and the whole offline suite work
+# with none of them installed (see each adapter's own module docstring).
+# Every method the thin real subclass defines already carries a full,
+# honest `Any`-typed signature (see e.g. `langchain.py`'s
+# `TraceforkCallbackHandler`) -- nothing here is an unannotated function this
+# codebase forgot to type. The two checks relaxed below fire ONLY because,
+# in this dev/CI environment, the base class (or CrewAI's
+# `crewai_event_bus.on(...)` decorator) itself resolves to `Any`
+# (`ignore_missing_imports`, since the package isn't installed) rather than
+# a real stubbed type:
+#   - disallow_subclassing_any: `class TraceforkXAdapter(RealBaseClass)`
+#     where `RealBaseClass` is `Any` in this environment.
+#   - disallow_untyped_decorators: only `crewai.py`'s `@event_bus.on(...)`
+#     needs this -- listed here anyway rather than in its own override block,
+#     since a no-op relaxation on the other four modules (which have no
+#     decorators to trigger it) is harmless and keeps this one exclusion
+#     list in one place.
+# Narrower than a blanket ignore: every OTHER strict check (no-untyped-def
+# elsewhere in these files, type-arg, no-any-return, ...) still applies and
+# still fails the build on a real regression.
+module = [
+    "tracefork.adapters.langchain",
+    "tracefork.adapters.crewai",
+    "tracefork.adapters.autogen",
+    "tracefork.adapters.adk",
+    "tracefork.adapters.openai_agents",
+]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
 
 [tool.coverage.run]
 # tracefork_spike excluded: retired prototype code (see the wheel packages

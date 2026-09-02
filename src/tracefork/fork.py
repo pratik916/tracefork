@@ -74,7 +74,9 @@ static method.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import anthropic
 import httpx
@@ -544,7 +546,7 @@ class ForkEngine:
     def fork(
         parent_tape: Tape,
         spec: BranchSpec,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
@@ -634,7 +636,7 @@ class ForkEngine:
     def fork_coalition(
         parent_tape: Tape,
         spec: CoalitionSpec,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
@@ -718,7 +720,7 @@ class ForkEngine:
     def rebase(
         old_branch: Branch,
         new_parent_tape: Tape,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
         post_fork_transport: httpx.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",

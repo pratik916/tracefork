@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .blame import (
     BlameEstimate,
@@ -65,6 +65,7 @@ from .observability import instrument
 from .tape import Tape
 
 if TYPE_CHECKING:
+    import anthropic
     import httpx
 
 __all__ = [
@@ -224,7 +225,7 @@ class TournamentEngine:
         *,
         step_index: int,
         variants: list[Variant],
-        agent_fn,  # Callable[[anthropic.Anthropic], Any] — the SAME agent
+        agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         oracle: Oracle,
         k: int = 10,
         budget_usd: float = 5.0,
@@ -374,7 +375,7 @@ class TournamentEngine:
         tape: Tape,
         step_index: int,
         variant: Variant,
-        agent_fn,
+        agent_fn: Callable[[anthropic.Anthropic], Any],
         oracle: Oracle,
         api_key: str,
         boundary_guard: bool,

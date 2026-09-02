@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -302,7 +303,7 @@ async def get_run(run_id: str) -> JSONResponse:
     # handling: a branch whose cited fork point has drifted since it was
     # forked renders an explicit `{"error": "fork_point_drift"}` marker
     # instead of aborting this whole response.
-    branch_details: dict[str, dict] = {}
+    branch_details: dict[str, dict[str, Any]] = {}
     for b in data["branches"]:
         bid = b["branch_id"]
         try:

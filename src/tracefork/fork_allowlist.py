@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Callable
+from typing import Any, cast
 
 from . import pricing
 from .constants import SONNET
@@ -58,7 +59,7 @@ def parse_allowlist_env(raw: str | None = None) -> dict[str, str]:
     return allowlist
 
 
-def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable:
+def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable[..., Any]:
     """Resolve `agent_name`'s `"module:fn"` import path from `allowlist`.
 
     Raises `AgentNotAllowlistedError` (naming what IS allowlisted, the same
@@ -73,7 +74,7 @@ def resolve_agent_fn(agent_name: str, allowlist: dict[str, str]) -> Callable:
         )
     module_path, _, fn_name = path.rpartition(":")
     module = importlib.import_module(module_path)
-    return getattr(module, fn_name)
+    return cast("Callable[..., Any]", getattr(module, fn_name))
 
 
 def estimate_single_fork_usd(tape: Tape, step: int, model: str | None = None) -> float:

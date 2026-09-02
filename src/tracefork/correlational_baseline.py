@@ -64,6 +64,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import anthropic
 
@@ -262,7 +263,7 @@ def run_correlational_baseline(
 
 def run_all_fault_classes_correlational(
     attribution_fn: Callable[[str], str], *, n_runs: int = 5
-) -> dict:
+) -> dict[str, Any]:
     """Run the correlational baseline for all five fault classes; return a
     report dict shaped exactly like `validate.run_all_fault_classes()`'s
     (minus `negative_control_max_flip`, which has no correlational

@@ -195,7 +195,7 @@ class StorageBackend(Protocol):
 
     def load_tape(self, run_id: str) -> Tape: ...
 
-    def list_runs(self) -> list[dict]: ...
+    def list_runs(self) -> list[dict[str, Any]]: ...
 
     def save_branch(
         self,
@@ -213,9 +213,9 @@ class StorageBackend(Protocol):
         confinement_tier: str = "",
     ) -> str: ...
 
-    def load_branch(self, branch_id: str) -> dict: ...
+    def load_branch(self, branch_id: str) -> dict[str, Any]: ...
 
-    def list_branches(self, parent_run_id: str) -> list[dict]: ...
+    def list_branches(self, parent_run_id: str) -> list[dict[str, Any]]: ...
 
     def save_blame_report(
         self, run_id: str, report: BlameReport, *, created_at: str = ""
@@ -225,11 +225,11 @@ class StorageBackend(Protocol):
         self, run_id: str, report: ShapleyReport, *, created_at: str = ""
     ) -> list[str]: ...
 
-    def causal_edges_for_run(self, run_id: str) -> list[dict]: ...
+    def causal_edges_for_run(self, run_id: str) -> list[dict[str, Any]]: ...
 
     def cited_by(self, run_id: str, step_index: int) -> list[str]: ...
 
-    def causal_closure(self, run_id: str) -> list[dict]: ...
+    def causal_closure(self, run_id: str) -> list[dict[str, Any]]: ...
 
     def close(self) -> None: ...
 
@@ -249,7 +249,7 @@ class SessionStore(Protocol):
         self, *, root_run_id: str, session_id: str | None = None, created_at: str = ""
     ) -> str: ...
 
-    def get_session(self, session_id: str) -> dict: ...
+    def get_session(self, session_id: str) -> dict[str, Any]: ...
 
     def add_spawn_edge(
         self,
@@ -269,7 +269,7 @@ class SessionStore(Protocol):
 
     def spawn_parent(self, run_id: str) -> str | None: ...
 
-    def spawn_edges_for_session(self, session_id: str) -> list[dict]: ...
+    def spawn_edges_for_session(self, session_id: str) -> list[dict[str, Any]]: ...
 
 
 _DDL = """
@@ -394,7 +394,7 @@ _INSERT_EDGE_SQL = (
 )
 
 
-def _edge_row_to_dict(row: tuple) -> dict[str, Any]:
+def _edge_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     """Map a raw ``causal_edges`` row (see ``_EDGE_COLUMNS`` order) to a dict,
     restoring the nullable INTEGER boolean columns to ``bool | None``."""
     return {
@@ -571,7 +571,7 @@ class TapeStore:
             raise KeyError(f"run_id {run_id!r} not found")
         return Tape.from_bytes(bytes(row[0]))
 
-    def list_runs(self) -> list[dict]:
+    def list_runs(self) -> list[dict[str, Any]]:
         rows = self._con.execute(
             "SELECT run_id, agent_name, created_at FROM tapes ORDER BY created_at DESC"
         ).fetchall()
@@ -696,7 +696,7 @@ class TapeStore:
                 raise
         return bid
 
-    def load_branch(self, branch_id: str) -> dict:
+    def load_branch(self, branch_id: str) -> dict[str, Any]:
         """Load ``branch_id`` and re-verify its cited fork point.
 
         This is the re-verification point for ``parent_tape_digest``: when a
@@ -745,7 +745,7 @@ class TapeStore:
             "confinement_tier": row[10],
         }
 
-    def find_branch_by_digest(self, branch_digest: str) -> dict | None:
+    def find_branch_by_digest(self, branch_digest: str) -> dict[str, Any] | None:
         """The same shape :meth:`load_branch` returns for the branch whose
         ``branch_digest`` matches, or ``None`` if no branch has that digest
         (an empty ``branch_digest`` never matches — old, pre-migration rows
@@ -806,7 +806,7 @@ class TapeStore:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def list_branches(self, parent_run_id: str) -> list[dict]:
+    def list_branches(self, parent_run_id: str) -> list[dict[str, Any]]:
         """Summary rows for every branch of ``parent_run_id`` — ``branch_id``,
         ``divergence_step``, ``mutation_desc``, ``created_at``,
         ``branch_digest``, and ``confinement_tier`` — with no ``delta_tape``
@@ -1093,7 +1093,7 @@ class TapeStore:
                 raise
         return edge_ids
 
-    def causal_edges_for_run(self, run_id: str) -> list[dict]:
+    def causal_edges_for_run(self, run_id: str) -> list[dict[str, Any]]:
         """All causal edges (blame and Shapley) saved for ``run_id``, ordered
         by ``step_index`` then ``method``."""
         rows = self._con.execute(
@@ -1113,7 +1113,7 @@ class TapeStore:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def causal_closure(self, run_id: str) -> list[dict]:
+    def causal_closure(self, run_id: str) -> list[dict[str, Any]]:
         """BFS the fork graph reachable from ``run_id``: each hop follows
         ``branches`` rows whose ``parent_run_id`` is the current frontier run
         and whose ``branch_id`` was itself later persisted as its own tape
@@ -1129,7 +1129,7 @@ class TapeStore:
         """
         visited = {run_id}
         frontier = [run_id]
-        edges: dict[str, dict] = {}
+        edges: dict[str, dict[str, Any]] = {}
         while frontier:
             current = frontier.pop(0)
             for edge in self.causal_edges_for_run(current):
@@ -1267,7 +1267,7 @@ class TapeStore:
                 raise
         return sid
 
-    def get_session(self, session_id: str) -> dict:
+    def get_session(self, session_id: str) -> dict[str, Any]:
         """Load a session's own row (``session_id``/``root_run_id``/
         ``created_at``) — not its spawn graph, see :meth:`session_tapes`.
         Raises ``KeyError`` for an unknown ``session_id``, mirroring
@@ -1404,7 +1404,7 @@ class TapeStore:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def spawn_edges_for_session(self, session_id: str) -> list[dict]:
+    def spawn_edges_for_session(self, session_id: str) -> list[dict[str, Any]]:
         """Every ``spawn_edges`` row for ``session_id`` — ``edge_id``,
         ``parent_run_id``, ``child_run_id``, ``spawn_reason``,
         ``spawn_step_index``, ``created_at`` — ordered by ``created_at``.

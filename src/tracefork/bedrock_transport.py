@@ -75,7 +75,7 @@ a documented limitation, not a silently-weakened claim.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -144,7 +144,7 @@ class _RawBody:
 
     data: bytes
 
-    def stream(self, amt: int | None = None, decode_content: bool = False):
+    def stream(self, amt: int | None = None, decode_content: bool = False) -> Iterator[bytes]:
         yield self.data
 
     def read(self, amt: int | None = None) -> bytes:

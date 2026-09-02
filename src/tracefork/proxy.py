@@ -56,6 +56,7 @@ from collections.abc import AsyncIterator
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.datastructures import Headers
 
 from .constants import PROXY_BOUNDARY
 from .matcher import IDENTITY_MATCHER, RequestMatcher
@@ -95,7 +96,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
 _MATCHER_ORIGIN = "http://tracefork-proxy"
 
 
-def _forwardable_headers(headers) -> list[tuple[str, str]]:
+def _forwardable_headers(headers: Headers) -> list[tuple[str, str]]:
     return [(k, v) for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS]
 
 

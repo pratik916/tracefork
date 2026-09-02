@@ -21,6 +21,7 @@ from __future__ import annotations
 import enum
 import importlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,7 +118,7 @@ class ReplayVerifier:
     def __init__(
         self,
         tape: Tape,
-        agent_fn,  # Callable[[anthropic.Anthropic], Any]
+        agent_fn: Callable[[anthropic.Anthropic], Any],
         *,
         api_key: str = "sk-ant-replay",
         matcher: RequestMatcher | None = None,

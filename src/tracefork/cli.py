@@ -17,7 +17,7 @@ import json
 import sqlite3
 import struct
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 import zstandard
@@ -25,9 +25,14 @@ import zstandard
 from tracefork.config import TraceforkConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from tracefork.boundary_guard import ConfinementViolationError
+    from tracefork.convergence import ConvergenceResult
+    from tracefork.diff import StepDiff
+    from tracefork.effects import Effect
+    from tracefork.locate import TapeHit
+    from tracefork.replay import VerificationResult
     from tracefork.store import TapeStore
     from tracefork.tape import Tape
 
@@ -98,7 +103,7 @@ def _err(msg: str) -> None:
     typer.echo(msg, err=True)
 
 
-def _resolve_agent(spec: str) -> Callable:
+def _resolve_agent(spec: str) -> Callable[..., Any]:
     """Resolve a `pkg.module:fn_name` agent spec into the callable it names.
 
     Turns the three ways this goes wrong for a newcomer into one actionable
@@ -120,7 +125,7 @@ def _resolve_agent(spec: str) -> Callable:
         _err(f"invalid --agent {spec!r}: module {module_path!r} not found ({exc})")
         raise typer.Exit(1) from exc
     try:
-        return getattr(module, fn_name)
+        return cast("Callable[..., Any]", getattr(module, fn_name))
     except AttributeError as exc:
         _err(f"invalid --agent {spec!r}: {module_path!r} has no attribute {fn_name!r}")
         raise typer.Exit(1) from exc
@@ -211,7 +216,7 @@ def _confinement_violation_from(exc: BaseException) -> ConfinementViolationError
     return None
 
 
-def _load_branch_or_exit(db: TapeStore, branch_id: str, store_path: str) -> dict:
+def _load_branch_or_exit(db: TapeStore, branch_id: str, store_path: str) -> dict[str, Any]:
     """Load a branch by `branch_id` from an open `TapeStore`, or print an
     actionable stderr message and exit 1 instead of a raw `KeyError`."""
     try:
@@ -685,7 +690,7 @@ def diff(
     raise typer.Exit(0 if n_changed == 0 else 1)
 
 
-def _print_diff_receipt(heading: str, step_diffs) -> None:
+def _print_diff_receipt(heading: str, step_diffs: Sequence[StepDiff]) -> None:
     """Operator-facing receipt for `diff` — one line per step, PASS when
     unchanged, FAIL (with the field-diff count) otherwise. Mirrors
     `_run_replay_check`'s PASS/FAIL-per-row style."""
@@ -743,7 +748,7 @@ def converge(
     raise typer.Exit(0 if result.stable else 1)
 
 
-def _print_convergence_receipt(heading: str, result) -> None:
+def _print_convergence_receipt(heading: str, result: ConvergenceResult) -> None:
     """Operator-facing receipt for `converge` -- one line per step, MATCH
     when both sides fingerprint identically, DIVERGED otherwise. Mirrors
     `_print_diff_receipt`'s PASS/FAIL-per-row style."""
@@ -811,7 +816,7 @@ def conflicts(
     if output is not None:
         import json as _json
 
-        def _effect_dict(e):
+        def _effect_dict(e: Effect) -> dict[str, Any]:
             return {
                 "source": e.source,
                 "index": e.index,
@@ -976,10 +981,10 @@ def report(
         else DEFAULT_BRANCH_DETAILS_CAP_BYTES
     )
 
-    branches: list[dict] | None = None
-    causal_edges: list[dict] | None = None
-    branch_details: dict[str, dict] | None = None
-    causal_closure: list[dict] | None = None
+    branches: list[dict[str, Any]] | None = None
+    causal_edges: list[dict[str, Any]] | None = None
+    branch_details: dict[str, dict[str, Any]] | None = None
+    causal_closure: list[dict[str, Any]] | None = None
     report_run_id: str | None = None
     if tape_path:
         tape = _load_tape_or_exit(tape_path)
@@ -1385,7 +1390,7 @@ def blame(
 
         mutated = make_text_response(perturbation)
 
-        def perturb_factory(step_idx: int):
+        def perturb_factory(step_idx: int) -> tuple[bytes, None]:
             # tail_transport=None → the counterfactual tail hits the real API.
             return mutated, None
 
@@ -1486,7 +1491,9 @@ def blame(
         db.close()
 
 
-def _validate_regressions(report_data: dict, old: dict, tolerance: float) -> list[str]:
+def _validate_regressions(
+    report_data: dict[str, Any], old: dict[str, Any], tolerance: float
+) -> list[str]:
     """Pure diff between a fresh `validate` run and a committed report.
 
     `ValidationRunner`/`run_all_fault_classes` are fully deterministic given a
@@ -2437,7 +2444,9 @@ def locate(
     raise typer.Exit(0 if found is not None else 1)
 
 
-def _print_locate_receipt(heading: str, hit, *, branch_id: str | None, depth: int | None) -> None:
+def _print_locate_receipt(
+    heading: str, hit: TapeHit | None, *, branch_id: str | None, depth: int | None
+) -> None:
     """Operator-facing receipt for `locate` -- PASS with the found location
     plus blob_sha256/tape_digest lines, or FAIL 'not found'. Mirrors
     `_print_diff_receipt`'s PASS/FAIL style."""
@@ -3226,7 +3235,7 @@ def session_serve(
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port, workers=1, log_level="warning")
 
 
-def _print_receipt(tape_path: Path, result, tape) -> None:
+def _print_receipt(tape_path: Path, result: VerificationResult, tape: Tape) -> None:
     from tracefork.replay import DriftDoctor
 
     status = "PASS" if result.bit_exact else "FAIL"
@@ -3247,7 +3256,7 @@ def _print_receipt(tape_path: Path, result, tape) -> None:
     typer.echo("")
 
 
-def _print_trust_lines(tape) -> None:
+def _print_trust_lines(tape: Tape) -> None:
     """Print the two trust/provenance lines (`Tape.boundary`/`content_redacted`)
     shared by the replay/verify receipt and the `report` command's terminal
     echo — a forensic-only or content-redacted tape must
