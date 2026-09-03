@@ -1,8 +1,11 @@
 """Tests for scripts/wheel_smoke.py — the packaging gate `twine check` doesn't
 cover: installing the built wheel into a clean throwaway venv (no source tree
 on the path), importing it, asserting its force-included web/*.html assets
-shipped, and running its console script. All offline, $0 (uv installs from the
-local cache via `--offline`; no network, no API key).
+shipped, and running its console script. $0, no API key — but NOT
+network-isolated: it resolves/installs the wheel's real dependencies like a
+genuine `pip install` would, which is the whole point (see
+scripts/wheel_smoke.py's module docstring for why `--offline` was tried and
+reverted).
 """
 
 from __future__ import annotations
