@@ -959,8 +959,10 @@ change, or the sentinel correctly starts failing.
 
 - **Offline and $0 is non-negotiable** for the whole test suite, the spike, `validate`,
   and the demo — no key, no network. The synthetic transports (`synthetic.py`) are the
-  seam; add to them rather than reaching for the real API. (`blame` on a real run is the
-  one budget-capped exception.)
+  seam; add to them rather than reaching for the real API. Two documented exceptions:
+  `blame` on a real run (budget-capped), and `tests/test_wheel_smoke.py` (no key, but a
+  real `pip install` of the wheel's dependencies by design — see
+  `scripts/wheel_smoke.py`'s module docstring for why `--offline` doesn't work there).
 - **The agent must read time/ids/random only through `NondetSource`** — any direct
   `datetime.now()` / `uuid` / `random` breaks the determinism boundary and the
   bit-exactness claim. `BoundaryGuard` (opt-in, default off) turns a subset of these
@@ -983,3 +985,7 @@ change, or the sentinel correctly starts failing.
 - `docs/superpowers/`, `.beads/`, `planning/` are gitignored local scaffolding (but
   `docs/demo.png` is committed). Runtime artifacts (`store.db`, `report.html`,
   `blame_*.json`, `validation_report.json`, `examples/demo_report.html`) are gitignored.
+- **`main` only moves via a merged PR — no direct commits to `main`, no local `git merge`
+  into `main` followed by a push.** Every change lands on a branch, gets pushed, and goes
+  through a pull request; CI runs on the PR (catching platform/matrix differences a local
+  run can miss) before anything reaches `main`.

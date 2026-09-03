@@ -261,9 +261,20 @@ def bind_default_client(
     when nothing has constructed an ``OpenAIChatCompletionsModel`` yet. For an
     already-constructed model instance, use ``OpenAIAgentsAdapter.bind`` instead
     (attribute-search injection, fully offline-testable).
+
+    ``set_default_openai_client`` requires a real ``openai.AsyncOpenAI`` (it reads
+    ``client.api_key`` internally) — the bare ``httpx``/``httpx2`` client
+    ``build_http_clients`` returns is not that type, so it's wrapped here before
+    the call (mirrors ``langchain.py``'s ``_inject_anthropic`` precedent). On
+    replay no real key is ever used (the transport serves recorded bytes), so a
+    placeholder is enough; record needs a genuine key and reads ``OPENAI_API_KEY``
+    the same way a bare ``openai.AsyncOpenAI()`` would (nothing else to copy a
+    real key *from* here — unlike ``OpenAIAgentsAdapter.bind``, there is no
+    pre-existing ``target`` client).
     """
     require_openai_agents()
     import agents
+    import openai
 
     # Always the openai SDK (the Agents SDK's own model wrapper) -- still
     # real-httpx-based, unlike anthropic>=1 (see build_http_clients's docstring
@@ -277,7 +288,13 @@ def bind_default_client(
         redactor=redactor,
         client_lib="httpx",
     )
-    agents.set_default_openai_client(async_client)
+    if mode == "replay":
+        sdk_async_client = openai.AsyncOpenAI(
+            api_key="sk-tracefork-replay", http_client=async_client, max_retries=0
+        )
+    else:  # pragma: no cover - record needs a live key
+        sdk_async_client = openai.AsyncOpenAI(http_client=async_client, max_retries=0)
+    agents.set_default_openai_client(sdk_async_client)
     return BindResult(
         mode=mode,
         http_client=sync_client,

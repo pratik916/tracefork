@@ -24,8 +24,17 @@ Usage:
     uv run python scripts/wheel_smoke.py                # builds its own wheel
     uv run python scripts/wheel_smoke.py --wheel dist/tracefork-*.whl
 
-Offline and $0: installs only from the local wheel file, with `--offline`
-against uv's local cache — no PyPI/network calls, no API key, anywhere.
+$0, no API key: this is a real `pip install` of the built wheel, so it DOES
+resolve/download dependencies from PyPI like a genuine install would — that is
+the thing being tested. `--offline` was tried and reverted: uv's local cache
+stores some entries as revalidatable HTTP responses, and `uv pip install
+--offline` against a wheel *file* (as opposed to `uv sync`, which reads exact
+versions straight from the lockfile) needs to enumerate available versions to
+resolve a range like `anthropic>=1.0,<2` — reproducibly failing with "not
+found in the cache" even when the exact wheel is sitting in that same cache,
+on a cold `UV_CACHE_DIR` (verified locally, matches the CI failure mode).
+Forcing this test offline bought no determinism (nothing here is a captured
+tape) and cost real reliability, so it isn't.
 """
 
 from __future__ import annotations
@@ -84,9 +93,9 @@ def _venv_console_script_path(venv_dir: Path, name: str) -> Path:
 
 
 def _install_wheel(venv_python: Path, wheel: Path, cwd: Path) -> None:
-    print("==> installing ONLY the built wheel (no editable/source install, no network)")
+    print("==> installing ONLY the built wheel (no editable/source install)")
     _run(
-        ["uv", "pip", "install", "--python", str(venv_python), "--offline", str(wheel)],
+        ["uv", "pip", "install", "--python", str(venv_python), str(wheel)],
         cwd=cwd,
     )
 
