@@ -7,75 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking
-
-- **Ported off `httpx` onto `httpx2`; dependency floors raised to
-  `anthropic>=1.0,<2` and `httpx2>=2.0,<3`.** anthropic 1.0.0 (2026-08-20)
-  moved from `httpx` to Pydantic's `httpx2` fork (see the 1.0.0 entry
-  below, where this was first identified and capped as a hard
-  incompatibility rather than removed outright). This release does the
-  port: every module that subclassed `httpx.BaseTransport`/
-  `AsyncBaseTransport`, type-hinted `httpx.Request`/`Response`, or built a
-  client via `.copy(http_client=httpx.Client(...))` (`transport.py`,
-  `recorder.py`, `fork.py`, `replay.py`, `validate.py`, `proxy.py`,
-  `interop.py`, `bedrock_transport.py`, `adapters/base.py`, and 9 more —
-  18 modules total under `src/tracefork/`, plus every test file exercising
-  them) now targets `httpx2` instead — a pure transport-library rename,
-  verified 1:1 against the real installed `httpx2` 2.12.0 (`BaseTransport`/
-  `AsyncBaseTransport`, `Request`/`Response`, `Client`/`AsyncClient`, the
-  exception hierarchy, and `HTTPTransport`'s zero-arg default constructor
-  all match `httpx`'s shape exactly). **`Tape.digest()` is unaffected by
-  construction** — `tape.py`/`store.py` never imported `httpx` and still
-  don't; the transport seam changed, not the wire bytes or the hash.
-  Verified against the committed fixture corpus (`replay --check`: 2/2)
-  and the committed validation baseline (`validate --check`: 1.00 top-1 /
-  0.00 negative-control flip, no regressions). All 1641 collected tests
-  pass (1634 passed, 7 skipped, 0 failed); `mypy --strict` and `ruff check`
-  are clean. Also closes two adversarial-review findings surfaced against
-  this port: `adapters/base.py`'s `build_http_clients()` now takes a
-  `client_lib` flavor (`"httpx2"` for an Anthropic-SDK-shaped target,
-  `"httpx"` for the still-real-httpx-based openai/google-genai/litellm ones
-  every non-Anthropic framework adapter targets — each adapter passes the
-  flavor its own target actually needs; `TraceforkTransport`/
-  `AsyncTraceforkTransport` gained a matching `response_cls` so both flavors
-  reuse the SAME capture/replay/matching/redaction logic, never a second
-  capture path); and `BoundaryGuard`/`AsyncRecorder` now pre-empt anthropic
-  1.x's async platform-resolution false positive (`AsyncRecorder(...,
-  boundary_guard=True)` previously hard-failed with a spurious
-  `BoundaryViolationError` on `Thread.start()` on its first call — see
-  `boundary_guard.py`'s module docstring for the mechanism). Fixing that
-  surfaced a second, broader false positive one layer deeper: asyncio's own
-  event-loop scheduling calls `time.monotonic()` unconditionally whenever a
-  coroutine genuinely suspends — verified to trip on ANY real async work
-  under the guard (a live network call, `asyncio.sleep`, not just platform
-  resolution), not something a thread-level pre-warm alone can fix.
-  `BoundaryGuard` now checks, dynamically on every `time.monotonic()` call,
-  whether a live event loop is running at that moment and lets the call
-  through when one is — so `AsyncRecorder(boundary_guard=True)` is usable
-  for genuine (not just instantaneous-fake-transport) async recording, and,
-  as a side effect of checking per-call rather than once at `__enter__`,
-  this also closes a `fork.py`-side gap the same finding flagged as
-  unverified (a sync `agent_fn` that spins up its own inner event loop
-  during `ForkEngine.fork`/`fork_coalition`). The sync `Recorder` path, and
-  direct-misuse detection generally, are unaffected outside a running loop.
-
-## [1.0.0] - 2026-08-25
+## [1.0.0] - 2026-09-04
 
 See [`docs/stability.md`](docs/stability.md) for what this project's SemVer promise
 covers, starting with this release.
 
-**tracefork graduates from Beta to Production/Stable.** This release ships no new
-product surface over 0.3.0 — it is a 1.0-readiness hardening pass that closes two
-real defects found during review (a draw hash-chain collision in `Tape.digest()`,
-and an unauthenticated, CSRF-reachable arbitrary-file-write path through the live
-checkpoint-tail endpoint), fixes a silent-divergence gap in the fork/blame CLI, and
-extends redaction to cover secrets read through `NondetSource` draws, not just HTTP
-bodies. Packaging metadata is re-pinned and made PEP 639-compliant. Suite: 1438
-tests collected, 1432 passed (6 skipped), `validate --check` 1.00 top-1 across all five fault
-classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all green.
+**tracefork graduates from Beta to Production/Stable.** This is the first published
+1.x release — 0.3.0 was the last version anyone outside this repo has seen — so
+everything below landed before a single user was ever on 1.0.0: the original
+1.0-readiness hardening pass (defect fixes, security, packaging), a 65-item P2/P3
+backlog sweep (exception hierarchy, tape format v7, a formally declared public API
+surface, `mypy --strict`, web UI accessibility/security/structure, OTel export
+modernization, a new framework adapter), and — the one dependency-breaking change in
+this release — a port of the record/replay transport seam onto `anthropic` SDK 1.x
+and its `httpx2` transport, which is what actually makes `pip install tracefork` work
+today. Suite: 1641 tests collected, 1634 passed (7 skipped), `validate --check` 1.00
+top-1 across all five fault classes / 0.00 negative-control flip, `replay --check`
+2/2 fixtures, `bench` 10/11 (one documented limitation — see README → Validation
+scope), `mypy --strict` and `ruff check` clean, `build`+`twine check` green, and a
+clean-venv wheel-install smoke test passing with the real published dependency
+versions resolved.
 
 ### Breaking
 
+- **Dependency floor: `anthropic>=1.0,<2` and `httpx2>=2.0,<3`** (replacing the
+  transitional `httpx>=0.27,<1` requirement this release briefly needed during
+  development). anthropic 1.0.0 (2026-08-20) moved off `httpx` onto Pydantic's
+  `httpx2` fork, which type-checks `client.copy(http_client=...)` against
+  `httpx2.Client` — `recorder.py`'s entire record seam depends on that exact idiom,
+  so the port touches every module that subclassed `httpx.BaseTransport`/
+  `AsyncBaseTransport`, type-hinted `httpx.Request`/`Response`, or built a client via
+  `.copy(http_client=httpx.Client(...))` (`transport.py`, `recorder.py`, `fork.py`,
+  `replay.py`, `validate.py`, `proxy.py`, `interop.py`, `bedrock_transport.py`,
+  `adapters/base.py`, and 9 more — 18 modules under `src/tracefork/`, plus every test
+  file exercising them) — a pure transport-library rename, verified 1:1 against the
+  real installed `httpx2` 2.12.0 (`BaseTransport`/`AsyncBaseTransport`,
+  `Request`/`Response`, `Client`/`AsyncClient`, the exception hierarchy, and
+  `HTTPTransport`'s zero-arg default constructor all match `httpx`'s shape exactly).
+  **`Tape.digest()` is unaffected by construction** — `tape.py`/`store.py` never
+  imported `httpx` and still don't; the transport seam changed, not the wire bytes or
+  the hash. Verified against the committed fixture corpus (`replay --check`: 2/2) and
+  the committed validation baseline (no regressions). Two real regressions surfaced by
+  adversarial review against the port, both fixed here: `adapters/base.py`'s
+  `build_http_clients()` now takes a `client_lib` flavor (`"httpx2"` for an
+  Anthropic-SDK-shaped target, `"httpx"` for the still-real-httpx-based
+  openai/google-genai/litellm ones every non-Anthropic framework adapter targets —
+  `TraceforkTransport`/`AsyncTraceforkTransport` gained a matching `response_cls` so
+  both flavors reuse the SAME capture/replay/matching/redaction logic, never a second
+  capture path); and `BoundaryGuard`/`AsyncRecorder` now pre-empt two async
+  false-positives anthropic 1.x introduced — a platform-resolution thread spawn on an
+  `AsyncRecorder`'s first call, and a broader one where asyncio's own event-loop
+  scheduling calls `time.monotonic()` on any real suspend (a live call, `asyncio.
+  sleep`, not just platform resolution) — `BoundaryGuard` now checks, dynamically on
+  every `time.monotonic()` call, whether a live event loop is running and lets the
+  call through when one is, so `AsyncRecorder(boundary_guard=True)` is usable for
+  genuine async recording. The sync `Recorder` path is unaffected.
 - **`Tape.digest()`'s draw hash-chain framing changed** (`tape.py`, `constants.
   DIGEST_CHAIN_VERSION` 1 → 2): a fixed-width sha256 digest now frames each
   draw's `kind`/`value` instead of an unescaped, variable-length delimiter,
@@ -84,20 +70,11 @@ classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all gr
   `draws` is non-empty** — this is the one release where a fingerprint change
   is acceptable. Tapes with no draws (no `NondetSource` calls at all) are
   byte-identical and unaffected. The versioned tape *envelope*
-  (`TAPE_FORMAT_VERSION`) is unchanged at v6 — every existing tape still
-  loads and replays with zero upcast/re-record needed; only its `digest()`
-  value may differ. If you have committed/pinned tape digests from a
-  pre-1.0.0 build, regenerate them (`tracefork replay --check` against your
-  own fixture corpus will tell you exactly which ones moved).
-- **Dependency floor raised: `anthropic>=0.109,<1`** (was `anthropic>=0.40`,
-  unbounded), **plus a new direct `httpx>=0.27,<1` requirement.** anthropic
-  1.0.0 (2026-08-20) moved off `httpx` onto Pydantic's `httpx2` fork, which
-  type-checks `client.copy(http_client=...)` against `httpx2.Client` —
-  `recorder.py`'s entire record seam depends on that exact idiom against a
-  real `httpx.Client`, so `anthropic>=1` is a hard incompatibility, not a
-  speculative cap. `httpx` was previously only an *implicit* transitive
-  dependency via anthropic; it is now declared directly since tracefork
-  itself subclasses `httpx.BaseTransport` and imports `httpx` in 17 modules.
+  (`TAPE_FORMAT_VERSION`) moved to v7 in this release (see Added below) but every
+  pre-1.0.0 tape still loads and replays with zero upcast/re-record needed; only its
+  `digest()` value may differ if it has draws. If you have committed/pinned tape
+  digests from a pre-1.0.0 build, regenerate them (`tracefork replay --check` against
+  your own fixture corpus will tell you exactly which ones moved).
 - **`GET /api/checkpoint/tail` is now default-deny (403).** Closes an
   unauthenticated, CSRF-reachable GET that took a caller-supplied filesystem
   path and, through `open_sqlite`'s `PRAGMA journal_mode=WAL` plus
@@ -131,6 +108,56 @@ classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all gr
   with the default identity matcher instead of the one the tape was actually
   recorded with. Tapes recorded with the (default) identity matcher are
   unaffected.
+- **`claude-sonnet-5` was priced at `$3.00`/`$15.00` per 1M tokens in the bundled
+  pricing snapshot** (`data/pricing.json`) — Sonnet 4.6's rate, not Sonnet 5's real
+  `$2.00`/`$10.00`. Every `claude-sonnet-5` tape's `BudgetGovernor` estimate and cost
+  profile was overpriced by 50%. `PRICING_VERSION` moved to `2026-08d`.
+
+### Added
+
+- **A formally declared public API surface.** Every module under `src/tracefork/`
+  now declares `__all__`; `docs/stability.md` names exactly what 1.x SemVer covers —
+  the `tracefork.__all__` names, the CLI contract (command/flag names, exit codes,
+  `--json`/`--output` schemas), the tape on-disk format compatibility promise, the
+  supported Python range, and the deprecation procedure — and what it explicitly does
+  not (direct `tracefork.<submodule>` imports, human-readable stdout formatting, and
+  the named test-scaffolding modules).
+- **Tape format v7** (`TAPE_FORMAT_VERSION`): `response_status`/`response_content_type`
+  are now captured and replayed per exchange instead of every replayed response
+  hard-coding `200`/`application/json` — metadata only, never fed into `digest()`, so
+  no existing tape's fingerprint changes. Every pre-v7 tape upcasts cleanly.
+- **A `TraceforkError` base class** all of the package's own exceptions now subclass,
+  so a caller can catch one type for anything tracefork itself raises.
+- **Prompt-cache token accounting** in cost estimates (`BudgetGovernor.estimate`,
+  `cost_profile.py`) — cache-read/-write tokens are now priced at their real
+  multipliers instead of being invisible to every cost estimate.
+- **A Pydantic AI framework adapter** (`adapters/pydantic_ai.py`), alongside the
+  existing LangChain/OpenAI Agents/CrewAI/AutoGen/Google ADK adapters.
+- **`--otlp-endpoint`** so `tracefork export`'s OTel GenAI output can push to a live
+  collector, not just write a file; the export itself was modernized to current
+  `provider.name`/semconv-version/tool-call-span conventions.
+- **`tracefork prune` can reclaim disk**, not just soft-archive rows.
+- **Progress output during long `blame`/`shapley`/`tournament` sweeps** instead of
+  the CLI appearing to hang.
+- **Golden fixtures for the v2 and v3 tape decoders** (`tests/fixtures/`), so the
+  read-time upcaster chain has committed regression coverage, not just the latest
+  format version.
+- The web workbench gained **keyboard-first stepping**, **WCAG AA contrast and a
+  documented `color-scheme` in both themes**, **document-semantics fixes** (landmarks,
+  heading hierarchy, roving tabindex, a skip link), a **Content-Security-Policy** on
+  all three report templates, and a **single source of truth for its design tokens**
+  (`scripts/build_tokens.py`) instead of three hand-copied blocks; blame confidence
+  intervals are now the primary visual mark, not a secondary annotation. Fixed an
+  attribute-breakout XSS in `web/session_report.html`.
+- `tracefork bench` now reports its 10/11 competing-fault result as a plain fixture
+  tally, not a Wilson confidence interval — a CI implies a sampling process that
+  doesn't exist over 11 fixed, hand-authored cases.
+- The Shapley confidence interval now uses a Student-t quantile.
+- The async replay ordered-release gate now raises on an unsatisfiable wait instead
+  of hanging forever; `POST /api/run/{id}/fork` now enforces a spend cap and no
+  longer blocks the event loop.
+- A CI job per optional framework-adapter extra, so all six adapters' own test tiers
+  actually run, not just the ones installed by default.
 
 ### Changed
 
@@ -164,17 +191,19 @@ classes, `replay --check` 2/2 fixtures, `bench` and `build`+`twine check` all gr
 
 ### Upgrading from 0.3.x
 
-- **Every existing tape still loads and replays.** The versioned envelope
-  (`TAPE_FORMAT_VERSION`, still v6) didn't change — nothing needs re-recording
-  to be *readable*.
+- **Every existing tape still loads and replays.** The versioned envelope moved to
+  v7 in this release (adding two optional, metadata-only fields) but every 0.3.x
+  tape upcasts cleanly — nothing needs re-recording to be *readable*.
 - **A tape's `digest()` may have changed.** It changed if, and only if, that
   tape has non-empty `draws` (i.e. its recording used `NondetSource` — clock,
   uuid, random, env, or file draws). Re-verify/regenerate any pinned digest
   with `tracefork replay --check <your-fixture-dir>`; a tape with no draws is
   untouched.
-- **Pin `anthropic<1` if you haven't already.** `anthropic>=1.0` will now be
-  rejected at resolve time (`uv sync`/`pip install`) rather than silently
-  installing and breaking `Recorder` at import/record time.
+- **`anthropic` moves to `>=1.0,<2`** (from 0.3.x's unbounded `>=0.40`) and
+  `httpx` is replaced by a direct `httpx2>=2.0,<3` dependency — `anthropic<1` is
+  no longer installable alongside tracefork. If you construct your own
+  `anthropic.Anthropic`/`AsyncAnthropic` with a custom `http_client=`, pass an
+  `httpx2.Client`/`AsyncClient`, not `httpx`'s.
 - **If you use `tracefork serve`'s live checkpoint tail**, add
   `--allow-checkpoint-dir <dir>` — the endpoint now 403s by default.
 - **If you record through a non-identity matcher** (Gemini/Bedrock/redacting
