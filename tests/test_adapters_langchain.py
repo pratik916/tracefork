@@ -4,7 +4,7 @@ The framework-facing thin wrappers (``BaseCallbackHandler`` /
 ``BaseCheckpointSaver`` subclasses) need the real libraries and are covered by
 ``pytest.importorskip`` blocks that skip cleanly when absent. Everything that
 must work with NO framework installed — the injection into a chat client, the
-replay flow through the bound httpx transport, the neutral callback core, the
+replay flow through the bound httpx2 transport, the neutral callback core, the
 event dispatch, the checkpoint store, and the availability guards — is driven
 here with synthetic objects and the ``anthropic`` SDK (a hard dependency).
 """
@@ -92,7 +92,7 @@ def test_bind_injects_anthropic_client_with_real_sdk():
     result = adapter.bind(model, tape, mode="replay", patch_uuid=False)
     try:
         assert set(result.injected_fields) == {"_client", "_async_client"}
-        # bind seeded a real anthropic client whose httpx transport is tracefork's.
+        # bind seeded a real anthropic client whose httpx2 transport is tracefork's.
         assert isinstance(model._client, anthropic.Anthropic)
         assert isinstance(model._async_client, anthropic.AsyncAnthropic)
         assert model._client._client is result.http_client

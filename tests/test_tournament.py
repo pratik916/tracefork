@@ -11,7 +11,7 @@ top variant against every runner-up.
 from __future__ import annotations
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -53,7 +53,7 @@ def _record_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _final_answer_agent(client)
@@ -155,11 +155,11 @@ def test_budget_governor_estimate_raises_before_any_trial_runs():
     calls = 0
     real_response = FAIL_RESP
 
-    class _CountingTransport(httpx.BaseTransport):
-        def handle_request(self, request: httpx.Request) -> httpx.Response:
+    class _CountingTransport(httpx2.BaseTransport):
+        def handle_request(self, request: httpx2.Request) -> httpx2.Response:
             nonlocal calls
             calls += 1
-            return httpx.Response(200, content=real_response, request=request)
+            return httpx2.Response(200, content=real_response, request=request)
 
     variants = [
         Variant(name="a", response=FAIL_RESP, tail_transport=_CountingTransport()),
@@ -220,7 +220,7 @@ def _record_three_turn_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _three_turn_agent(client)

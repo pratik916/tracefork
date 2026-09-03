@@ -1,7 +1,7 @@
-"""Recording/replay httpx transports — sync and async, streaming SSE capable.
+"""Recording/replay httpx2 transports — sync and async, streaming SSE capable.
 
 Record mode: forward to the inner transport, buffer the full response body
-(works for both streaming SSE and non-streaming JSON — httpx buffers both
+(works for both streaming SSE and non-streaming JSON — httpx2 buffers both
 identically via .read()/.aread()), append to the tape, return the response.
 
 Replay mode: for each request, fingerprint-assert it matches the tape record via
@@ -50,8 +50,9 @@ import asyncio
 import random
 from collections import deque
 from collections.abc import Callable
+from typing import Any
 
-import httpx
+import httpx2
 
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .nondet import DivergenceError
@@ -66,18 +67,40 @@ __all__ = [
 ]
 
 
-class TraceforkTransport(httpx.BaseTransport):
-    """Sync recording/replay transport."""
+class TraceforkTransport(httpx2.BaseTransport):
+    """Sync recording/replay transport.
+
+    ``response_cls`` (default ``httpx2.Response``) is an escape hatch for
+    ``adapters/base.py``'s ``build_http_clients()``: a framework adapter whose
+    *target* SDK is openai/google-genai-shaped (not the Anthropic SDK this
+    port targets) still requires a genuine ``httpx.Client``/``AsyncClient`` —
+    those SDKs' own ``.copy(http_client=...)`` isinstance-checks the argument
+    against real ``httpx.Client`` specifically (verified against the
+    installed ``openai`` 2.x — see ``adapters/base.py``), and a real
+    ``httpx.Client`` in turn asserts ``isinstance(response.stream,
+    httpx.SyncByteStream)`` on every response its transport returns (verified
+    empirically — httpx2's own ``SyncByteStream`` fails that assertion, even
+    though the two libraries are API-identical forks). Passing
+    ``response_cls=httpx.Response`` makes this SAME capture/replay/matching
+    logic construct real ``httpx.Response`` objects instead — one canonical
+    algorithm, two library-flavored outputs, never a second capture path.
+    Every other line of this class (matching, redaction, tape storage) is
+    already flavor-agnostic: ``request``/``inner`` are read here only via
+    duck-typed attribute access (`.content`/`.url`/`.headers`/
+    `.handle_request()`/`.read()`), never an isinstance check. Omitting
+    ``response_cls`` is byte-identical to before this parameter existed.
+    """
 
     def __init__(
         self,
         mode: str,
         tape: Tape,
-        inner: httpx.BaseTransport | None = None,
+        inner: Any | None = None,
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         on_exchange: Callable[[bytes, bytes], None] | None = None,
+        response_cls: Any = httpx2.Response,
     ) -> None:
         assert mode in ("record", "replay", "new_episodes")
         if mode in ("record", "new_episodes") and inner is None:
@@ -93,6 +116,9 @@ class TraceforkTransport(httpx.BaseTransport):
         # after `tape.append_exchange`, in the record branch only. `None` is
         # byte-identical to before this hook existed.
         self.on_exchange = on_exchange
+        # See the class docstring — defaults to httpx2.Response, byte-identical
+        # to before this parameter existed.
+        self._response_cls = response_cls
         self._i = 0
         self.matched = 0
         # new_episodes-only: trailing requests recorded past the tape's
@@ -100,7 +126,7 @@ class TraceforkTransport(httpx.BaseTransport):
         # "record"/"replay".
         self.new_episodes_recorded = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: Any) -> Any:
         if self.mode == "record":
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
@@ -116,7 +142,7 @@ class TraceforkTransport(httpx.BaseTransport):
             )
             if self.on_exchange is not None:
                 self.on_exchange(stored_req, stored_resp)
-            return httpx.Response(
+            return self._response_cls(
                 inner_resp.status_code,
                 headers={"content-type": resp_content_type},
                 content=resp_body,
@@ -137,7 +163,7 @@ class TraceforkTransport(httpx.BaseTransport):
                     )
                 self._i += 1
                 self.matched += 1
-                return httpx.Response(
+                return self._response_cls(
                     self.tape.exchange_status(self._i - 1),
                     headers={"content-type": self.tape.exchange_content_type(self._i - 1)},
                     content=rec_resp,
@@ -161,7 +187,7 @@ class TraceforkTransport(httpx.BaseTransport):
                 self.on_exchange(stored_req, stored_resp)
             self._i += 1
             self.new_episodes_recorded += 1
-            return httpx.Response(
+            return self._response_cls(
                 inner_resp.status_code,
                 headers={"content-type": resp_content_type},
                 content=resp_body,
@@ -186,7 +212,7 @@ class TraceforkTransport(httpx.BaseTransport):
         rec_content_type = self.tape.exchange_content_type(self._i)
         self._i += 1
         self.matched += 1
-        return httpx.Response(
+        return self._response_cls(
             rec_status,
             headers={"content-type": rec_content_type},
             content=rec_resp,
@@ -208,7 +234,7 @@ class TraceforkTransport(httpx.BaseTransport):
 DEFAULT_ORDERED_RELEASE_TIMEOUT_S = 5.0
 
 
-class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
+class AsyncTraceforkTransport(httpx2.AsyncBaseTransport):
     """Async recording/replay transport with deterministic concurrent-completion
     ordering.
 
@@ -219,19 +245,25 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
     releasing them in that recorded order. ``release_order`` (opt-in) overrides
     the replay release order with a caller-supplied permutation of the recorded
     completion order — the chaos-scheduling hook (see ``chaos_release_order``).
+
+    ``response_cls`` is the same escape hatch documented on ``TraceforkTransport``
+    — defaults to ``httpx2.Response``, byte-identical to before this parameter
+    existed; ``adapters/base.py`` passes ``httpx.Response`` for a target whose
+    own SDK requires a genuine ``httpx.AsyncClient``.
     """
 
     def __init__(
         self,
         mode: str,
         tape: Tape,
-        inner: httpx.AsyncBaseTransport | None = None,
+        inner: Any | None = None,
         *,
         matcher: RequestMatcher | None = None,
         redactor: Redactor | None = None,
         release_order: list[int] | None = None,
         on_exchange: Callable[[bytes, bytes], None] | None = None,
         ordered_release_timeout: float = DEFAULT_ORDERED_RELEASE_TIMEOUT_S,
+        response_cls: Any = httpx2.Response,
     ) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
@@ -246,6 +278,9 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         # never the ordered-release/chaos machinery. `None` is byte-identical
         # to before this hook existed.
         self.on_exchange = on_exchange
+        # See TraceforkTransport's class docstring — defaults to httpx2.Response,
+        # byte-identical to before this parameter existed.
+        self._response_cls = response_cls
         self._release_order_param = release_order
         # Bounds each individual `self._cond.wait()` below (see
         # `DEFAULT_ORDERED_RELEASE_TIMEOUT_S`) so a reordered/diverged live
@@ -274,12 +309,12 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         self._release_pos = 0
         self._cond: asyncio.Condition | None = None
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: Any) -> Any:
         if self.mode == "record":
             return await self._record(request)
         return await self._replay(request)
 
-    async def _record(self, request: httpx.Request) -> httpx.Response:
+    async def _record(self, request: Any) -> Any:
         # Episode bookkeeping (see __init__). Runs atomically up to the await.
         if self._inflight == 0:
             self._episode_indices = []
@@ -325,7 +360,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
         ):
             self.tape.async_batches.append(list(self._episode_indices))
 
-        return httpx.Response(
+        return self._response_cls(
             inner_resp.status_code,
             headers={"content-type": resp_content_type},
             content=resp_body,
@@ -350,7 +385,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
             self._release_order = order
         self._replay_ready = True
 
-    async def _replay(self, request: httpx.Request) -> httpx.Response:
+    async def _replay(self, request: Any) -> Any:
         if not self._replay_ready:
             self._prepare_replay()
         if self._cond is None:  # bind to the running loop on first use
@@ -397,7 +432,7 @@ class AsyncTraceforkTransport(httpx.AsyncBaseTransport):
             self.matched += 1
             self._cond.notify_all()
 
-        return httpx.Response(
+        return self._response_cls(
             rec_status,
             headers={"content-type": rec_content_type},
             content=rec_resp,

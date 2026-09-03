@@ -2,7 +2,7 @@
 
 import asyncio
 
-import httpx
+import httpx2
 import pytest
 
 from tracefork.nondet import DivergenceError
@@ -12,25 +12,25 @@ from tracefork.transport import AsyncTraceforkTransport, TraceforkTransport
 # --- helpers ---
 
 
-def _fake_inner_response(content: bytes) -> httpx.Response:
-    return httpx.Response(200, headers={"content-type": "application/json"}, content=content)
+def _fake_inner_response(content: bytes) -> httpx2.Response:
+    return httpx2.Response(200, headers={"content-type": "application/json"}, content=content)
 
 
 def _fake_inner_response_with_status(
     status: int, content_type: str, content: bytes
-) -> httpx.Response:
-    return httpx.Response(status, headers={"content-type": content_type}, content=content)
+) -> httpx2.Response:
+    return httpx2.Response(status, headers={"content-type": content_type}, content=content)
 
 
-class _SyncInner(httpx.BaseTransport):
+class _SyncInner(httpx2.BaseTransport):
     def __init__(self, responses: list[bytes]):
         self._responses = iter(responses)
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         return _fake_inner_response(next(self._responses))
 
 
-class _SyncInnerStatus(httpx.BaseTransport):
+class _SyncInnerStatus(httpx2.BaseTransport):
     """Like `_SyncInner`, but each response carries an explicit
     (status, content_type, body) triple -- for exercising non-200/non-json
     record/replay fidelity."""
@@ -38,30 +38,30 @@ class _SyncInnerStatus(httpx.BaseTransport):
     def __init__(self, responses: list[tuple[int, str, bytes]]):
         self._responses = iter(responses)
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         status, content_type, content = next(self._responses)
         return _fake_inner_response_with_status(status, content_type, content)
 
 
-class _AsyncInner(httpx.AsyncBaseTransport):
+class _AsyncInner(httpx2.AsyncBaseTransport):
     def __init__(self, responses: list[bytes]):
         self._responses = iter(responses)
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         return _fake_inner_response(next(self._responses))
 
 
-class _AsyncInnerStatus(httpx.AsyncBaseTransport):
+class _AsyncInnerStatus(httpx2.AsyncBaseTransport):
     def __init__(self, responses: list[tuple[int, str, bytes]]):
         self._responses = iter(responses)
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         status, content_type, content = next(self._responses)
         return _fake_inner_response_with_status(status, content_type, content)
 
 
-def _make_request(body: bytes) -> httpx.Request:
-    return httpx.Request("POST", "https://api.anthropic.com/v1/messages", content=body)
+def _make_request(body: bytes) -> httpx2.Request:
+    return httpx2.Request("POST", "https://api.anthropic.com/v1/messages", content=body)
 
 
 # --- sync transport ---
@@ -128,15 +128,15 @@ def test_sync_record_captures_status_and_content_type():
     assert tape.response_content_type == ["text/plain"]
 
 
-class _SyncInnerNoContentTypeHeader(httpx.BaseTransport):
+class _SyncInnerNoContentTypeHeader(httpx2.BaseTransport):
     """An inner transport whose response carries NO content-type header at
     all (not even an empty one) -- exercises the pre-existing
     `.get("content-type", "application/json")` fallback, unchanged by this
     item, now feeding `tape.response_content_type` instead of only the
     returned live response."""
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"{}")
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=b"{}")
 
 
 def test_sync_record_still_defaults_to_json_when_inner_omits_content_type_header():

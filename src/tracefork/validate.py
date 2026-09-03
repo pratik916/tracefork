@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import anthropic
-import httpx
+import httpx2
 
 from .blame import BlameEngine, StringMatchOracle
 from .faults import FAULT_MARKER_BYTES, FaultClass, FaultInjector
@@ -95,7 +95,7 @@ def _record_clean_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     synthetic_agent(client)

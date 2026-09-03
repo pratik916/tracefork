@@ -266,8 +266,17 @@ class AutoGenAdapter(BaseFrameworkAdapter):
         if mode == "record":  # pragma: no cover - needs real SDK
             inner, inner_async = _underlying_transports(target)
 
+        # Always the openai SDK (autogen-ext's OpenAIChatCompletionClient) --
+        # still real-httpx-based, unlike anthropic>=1 (see build_http_clients's
+        # docstring and pyproject.toml's CAP <1 note).
         sync_client, async_client, sync_t, async_t = build_http_clients(
-            tape, mode, inner=inner, async_inner=inner_async, matcher=matcher, redactor=redactor
+            tape,
+            mode,
+            inner=inner,
+            async_inner=inner_async,
+            matcher=matcher,
+            redactor=redactor,
+            client_lib="httpx",
         )
         injected = _inject(target, sync_client, async_client)
 

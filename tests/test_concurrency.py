@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import make_text_response
@@ -33,23 +33,23 @@ from tracefork.transport import (
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _req(body: bytes) -> httpx.Request:
-    return httpx.Request("POST", "https://api.anthropic.com/v1/messages", content=body)
+def _req(body: bytes) -> httpx2.Request:
+    return httpx2.Request("POST", "https://api.anthropic.com/v1/messages", content=body)
 
 
-class _SyncInner(httpx.BaseTransport):
+class _SyncInner(httpx2.BaseTransport):
     def __init__(self, responses: dict[bytes, bytes]) -> None:
         self._responses = responses
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=self._responses[request.content],
         )
 
 
-class _DelayedAsyncInner(httpx.AsyncBaseTransport):
+class _DelayedAsyncInner(httpx2.AsyncBaseTransport):
     """Completes each request after a fixed delay, so completion order is driven
     by the delays rather than the send order — the fan-out nondeterminism."""
 
@@ -57,9 +57,9 @@ class _DelayedAsyncInner(httpx.AsyncBaseTransport):
         self._delays = delays
         self._responses = responses
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         await asyncio.sleep(self._delays[request.content])
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=self._responses[request.content],
@@ -273,18 +273,18 @@ def test_release_order_must_be_a_permutation():
 # ── end-to-end through the real AsyncAnthropic SDK ───────────────────────────
 
 
-class _DelayedAnthropicInner(httpx.AsyncBaseTransport):
+class _DelayedAnthropicInner(httpx2.AsyncBaseTransport):
     """Serves valid Anthropic wire responses, keyed on a marker in the request
     body, with per-marker delays so 'beta' completes before 'alpha'."""
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         if b"alpha" in request.content:
             await asyncio.sleep(0.04)
             body = make_text_response("respA")
         else:
             await asyncio.sleep(0.01)
             body = make_text_response("respB")
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 async def _gather_agent(client: anthropic.AsyncAnthropic) -> list[str]:
@@ -300,7 +300,7 @@ async def _gather_agent(client: anthropic.AsyncAnthropic) -> list[str]:
 async def test_async_recorder_gather_replays_bit_exact_via_sdk():
     rec_client = anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=_DelayedAnthropicInner()),
+        http_client=httpx2.AsyncClient(transport=_DelayedAnthropicInner()),
         max_retries=0,
     )
     async with AsyncRecorder(rec_client, agent_name="gather") as rec:
@@ -315,7 +315,7 @@ async def test_async_recorder_gather_replays_bit_exact_via_sdk():
     replay_transport = AsyncTraceforkTransport("replay", tape)
     replay_client = anthropic.AsyncAnthropic(
         api_key="sk-ant-replay",
-        http_client=httpx.AsyncClient(transport=replay_transport),
+        http_client=httpx2.AsyncClient(transport=replay_transport),
         max_retries=0,
     )
     replayed = await _gather_agent(replay_client)

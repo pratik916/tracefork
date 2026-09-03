@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 
 import anthropic
-import httpx
+import httpx2
 from typer.testing import CliRunner
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -24,7 +24,7 @@ def _record_tape() -> Tape:
     tape = Tape()
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     client.messages.create(
         model="claude-sonnet-4-6", max_tokens=100, messages=[{"role": "user", "content": "hello"}]
@@ -73,7 +73,7 @@ def test_session_board_cli_with_agent_map_embeds_real_replay_receipt(tmp_path):
     tape = Tape()
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     single_turn_agent(client)
     store.save_tape(tape, run_id="root")

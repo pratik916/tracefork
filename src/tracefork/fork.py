@@ -79,7 +79,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import anthropic
-import httpx
+import httpx2
 
 from .boundary_guard import BoundaryGuard, ConfinementSpec
 from .constants import (
@@ -197,7 +197,7 @@ def compute_confinement_tier(boundary_guard: bool, confinement: ConfinementSpec 
     return CONFINEMENT_TIER_NONE
 
 
-class ForkTransport(httpx.BaseTransport):
+class ForkTransport(httpx2.BaseTransport):
     """Three-phase transport: prefix-replay → mutation-inject → tail-record.
 
     `inner` is only consulted for the tail (requests after the divergence
@@ -211,7 +211,7 @@ class ForkTransport(httpx.BaseTransport):
         divergence_step: int,
         mutated_response: bytes,
         delta_tape: Tape,
-        inner: httpx.BaseTransport,
+        inner: httpx2.BaseTransport,
         matcher: RequestMatcher | None = None,
     ) -> None:
         self.parent = parent_tape
@@ -226,7 +226,7 @@ class ForkTransport(httpx.BaseTransport):
         self.prefix_replayed = 0
         self.tail_recorded = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         i = self._i
         self._i += 1
 
@@ -264,7 +264,7 @@ class ForkTransport(httpx.BaseTransport):
         stored_req = self.matcher.stored_request(request)
         self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
-        return httpx.Response(
+        return httpx2.Response(
             inner_resp.status_code,
             headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
             content=resp_body,
@@ -272,8 +272,8 @@ class ForkTransport(httpx.BaseTransport):
         )
 
 
-def _json_response(body: bytes, request: httpx.Request) -> httpx.Response:
-    return httpx.Response(
+def _json_response(body: bytes, request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(
         200,
         headers={"content-type": "application/json"},
         content=body,
@@ -329,7 +329,7 @@ class CoalitionSpec:
         )
 
 
-class CoalitionForkTransport(httpx.BaseTransport):
+class CoalitionForkTransport(httpx2.BaseTransport):
     """N-phase transport generalizing `ForkTransport` to a coalition of steps.
 
     Requests before the coalition's first (lowest-index) intervention are
@@ -348,7 +348,7 @@ class CoalitionForkTransport(httpx.BaseTransport):
         parent_tape: Tape,
         spec: CoalitionSpec,
         delta_tape: Tape,
-        inner: httpx.BaseTransport,
+        inner: httpx2.BaseTransport,
         matcher: RequestMatcher | None = None,
     ) -> None:
         self.parent = parent_tape
@@ -365,7 +365,7 @@ class CoalitionForkTransport(httpx.BaseTransport):
         self.tail_recorded = 0
         self.interventions_applied = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         i = self._i
         self._i += 1
 
@@ -414,7 +414,7 @@ class CoalitionForkTransport(httpx.BaseTransport):
         stored_req = self.matcher.stored_request(request)
         self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
-        return httpx.Response(
+        return httpx2.Response(
             inner_resp.status_code,
             headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
             content=resp_body,
@@ -422,7 +422,7 @@ class CoalitionForkTransport(httpx.BaseTransport):
         )
 
 
-class RebaseTransport(httpx.BaseTransport):
+class RebaseTransport(httpx2.BaseTransport):
     """Rebases `old_branch` onto `new_parent_tape`: replay-the-unchanged-
     prefix-from-the-new-parent, re-force-the-old-interventions,
     reuse-or-re-record-the-tail.
@@ -450,7 +450,7 @@ class RebaseTransport(httpx.BaseTransport):
         old_branch: Branch,
         new_parent_tape: Tape,
         delta_tape: Tape,
-        inner: httpx.BaseTransport,
+        inner: httpx2.BaseTransport,
         matcher: RequestMatcher | None = None,
     ) -> None:
         self.old_branch = old_branch
@@ -489,7 +489,7 @@ class RebaseTransport(httpx.BaseTransport):
         self.tail_reused = 0
         self.tail_recorded = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         i = self._i
         self._i += 1
 
@@ -530,7 +530,7 @@ class RebaseTransport(httpx.BaseTransport):
         resp_body = inner_resp.read()
         self.delta.append_exchange(stored_req, resp_body)
         self.tail_recorded += 1
-        return httpx.Response(
+        return httpx2.Response(
             inner_resp.status_code,
             headers={"content-type": inner_resp.headers.get("content-type", "application/json")},
             content=resp_body,
@@ -548,7 +548,7 @@ class ForkEngine:
         spec: BranchSpec,
         agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
-        post_fork_transport: httpx.BaseTransport | None = None,
+        post_fork_transport: httpx2.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
@@ -594,14 +594,14 @@ class ForkEngine:
             boundary=parent_tape.boundary,
             agent_name=parent_tape.agent_name,
         )
-        inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
+        inner = post_fork_transport if post_fork_transport is not None else httpx2.HTTPTransport()
         fork_transport = ForkTransport(
             parent_tape, step, spec.mutated_response, delta_tape, inner, matcher=matcher
         )
 
         client = anthropic.Anthropic(
             api_key=api_key,
-            http_client=httpx.Client(transport=fork_transport),
+            http_client=httpx2.Client(transport=fork_transport),
             max_retries=0,
         )
         if confinement is not None:
@@ -638,7 +638,7 @@ class ForkEngine:
         spec: CoalitionSpec,
         agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
-        post_fork_transport: httpx.BaseTransport | None = None,
+        post_fork_transport: httpx2.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
         confinement: ConfinementSpec | None = None,
@@ -678,14 +678,14 @@ class ForkEngine:
             boundary=parent_tape.boundary,
             agent_name=parent_tape.agent_name,
         )
-        inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
+        inner = post_fork_transport if post_fork_transport is not None else httpx2.HTTPTransport()
         fork_transport = CoalitionForkTransport(
             parent_tape, spec, delta_tape, inner, matcher=matcher
         )
 
         client = anthropic.Anthropic(
             api_key=api_key,
-            http_client=httpx.Client(transport=fork_transport),
+            http_client=httpx2.Client(transport=fork_transport),
             max_retries=0,
         )
         if confinement is not None:
@@ -722,7 +722,7 @@ class ForkEngine:
         new_parent_tape: Tape,
         agent_fn: Callable[[anthropic.Anthropic], Any],  # the SAME agent
         *,
-        post_fork_transport: httpx.BaseTransport | None = None,
+        post_fork_transport: httpx2.BaseTransport | None = None,
         api_key: str = "sk-ant-fork",
         boundary_guard: bool = False,
         matcher: RequestMatcher | None = None,
@@ -769,14 +769,14 @@ class ForkEngine:
             boundary=new_parent_tape.boundary,
             agent_name=new_parent_tape.agent_name,
         )
-        inner = post_fork_transport if post_fork_transport is not None else httpx.HTTPTransport()
+        inner = post_fork_transport if post_fork_transport is not None else httpx2.HTTPTransport()
         rebase_transport = RebaseTransport(
             old_branch, new_parent_tape, delta_tape, inner, matcher=matcher
         )
 
         client = anthropic.Anthropic(
             api_key=api_key,
-            http_client=httpx.Client(transport=rebase_transport),
+            http_client=httpx2.Client(transport=rebase_transport),
             max_retries=0,
         )
         if boundary_guard:

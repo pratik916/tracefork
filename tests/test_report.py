@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.constants import BOUNDARY_V1, OTEL_INGESTED_BOUNDARY, PROXY_BOUNDARY
@@ -28,7 +28,7 @@ def _make_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     client.messages.create(
@@ -88,7 +88,7 @@ def test_report_escapes_script_breakout():
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     client.messages.create(
@@ -640,7 +640,7 @@ def _make_tape_n(n: int):
     tape = Tape(agent_name="test_agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     messages: list[dict] = []
     for i in range(n):

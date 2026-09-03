@@ -4,7 +4,7 @@ Shows the actual integration shape: wrap a real `anthropic.Anthropic` client wit
 run your agent through it once, save the tape, and replay it later for a bit-exact, $0 receipt.
 
 To stay offline/$0 the way the rest of this repo's examples are, `run_agent`'s client is backed
-by a hand-written `httpx.MockTransport` that returns one canned, wire-correct Anthropic Messages
+by a hand-written `httpx2.MockTransport` that returns one canned, wire-correct Anthropic Messages
 API response instead of a real network call. That's a stand-in for the label on this file, not
 tracefork machinery: swap `build_fake_client()` for a real `anthropic.Anthropic()` (reading
 `ANTHROPIC_API_KEY` from the environment, no `http_client=` override) and everything below —
@@ -12,7 +12,7 @@ tracefork machinery: swap `build_fake_client()` for a real `anthropic.Anthropic(
 your own agent looks like. No `tracefork.synthetic`/`tracefork.wire` test-scaffolding imports
 here on purpose, unlike `examples/demo_report.py` — this file is meant to double as copy-paste
 starting material for a real integration, so every import below is either the top-level
-`tracefork` package or a real dependency (`anthropic`, `httpx`) a real integration would need
+`tracefork` package or a real dependency (`anthropic`, `httpx2`) a real integration would need
 too.
 
 Usage: `uv run python examples/record_your_agent.py` — offline, $0, no `ANTHROPIC_API_KEY`.
@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 
 from tracefork import Recorder, ReplayVerifier, Tape
 
@@ -46,10 +46,10 @@ def run_agent(client: anthropic.Anthropic) -> str:
     return block.text
 
 
-def _fake_response(_request: httpx.Request) -> httpx.Response:
+def _fake_response(_request: httpx2.Request) -> httpx2.Response:
     """One canned, wire-correct Anthropic Messages API response body — see this module's
     docstring: this is the offline-demo stand-in, not part of the tracefork API surface."""
-    return httpx.Response(
+    return httpx2.Response(
         200,
         json={
             "id": "msg_demo",
@@ -77,7 +77,7 @@ def build_fake_client() -> anthropic.Anthropic:
     docstring for what to swap in instead for a real recording."""
     return anthropic.Anthropic(
         api_key="sk-demo-not-a-real-key",
-        http_client=httpx.Client(transport=httpx.MockTransport(_fake_response)),
+        http_client=httpx2.Client(transport=httpx2.MockTransport(_fake_response)),
     )
 
 

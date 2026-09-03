@@ -11,7 +11,7 @@ import threading
 import uuid
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -60,7 +60,7 @@ def _build_two_turn_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _conversation_agent(client)
@@ -262,7 +262,7 @@ def _build_three_turn_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _three_turn_agent(client)
@@ -505,7 +505,7 @@ def test_rebase_falls_through_to_live_re_recording_when_old_tail_no_longer_match
     new_parent_transport = TraceforkTransport("record", new_parent_tape, fake_new_parent)
     new_parent_client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=new_parent_transport),
+        http_client=httpx2.Client(transport=new_parent_transport),
         max_retries=0,
     )
     _three_turn_agent(new_parent_client)
@@ -699,7 +699,7 @@ def _record_rotating_key_tape(resp: bytes) -> Tape:
     transport = TraceforkTransport("record", tape, fake, matcher=redacting_matcher())
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _agent_with_rotating_idempotency_key(client)

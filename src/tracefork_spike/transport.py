@@ -1,4 +1,4 @@
-"""The recording/replay httpx transport — the model-I/O capture seam.
+"""The recording/replay httpx2 transport — the model-I/O capture seam.
 
 Record mode: forward each request to an inner transport, capture the request body
 and the full response body into the tape, and return the response unchanged.
@@ -12,14 +12,14 @@ silent network call.
 
 from __future__ import annotations
 
-import httpx
+import httpx2
 
 from .nondet import DivergenceError
 from .tape import Tape, sha256_hex
 
 
-class TraceforkTransport(httpx.BaseTransport):
-    def __init__(self, mode: str, tape: Tape, inner: httpx.BaseTransport | None = None) -> None:
+class TraceforkTransport(httpx2.BaseTransport):
+    def __init__(self, mode: str, tape: Tape, inner: httpx2.BaseTransport | None = None) -> None:
         assert mode in ("record", "replay")
         if mode == "record" and inner is None:
             raise ValueError("record mode requires an inner transport")
@@ -29,14 +29,14 @@ class TraceforkTransport(httpx.BaseTransport):
         self._i = 0
         self.matched = 0  # number of replay request-hashes that matched the tape
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         body = request.content
 
         if self.mode == "record":
             inner_resp = self.inner.handle_request(request)  # type: ignore[union-attr]
             resp_body = inner_resp.read()
             self.tape.append_exchange(body, resp_body)
-            return httpx.Response(
+            return httpx2.Response(
                 inner_resp.status_code,
                 headers={"content-type": "application/json"},
                 content=resp_body,
@@ -57,7 +57,7 @@ class TraceforkTransport(httpx.BaseTransport):
             )
         self._i += 1
         self.matched += 1
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=rec_resp,

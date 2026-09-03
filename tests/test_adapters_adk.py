@@ -4,7 +4,7 @@ The framework-facing thin wrapper (``BasePlugin`` subclass) needs the real
 ``google-adk`` package and is covered by a ``pytest.importorskip`` block that
 skips cleanly when absent. Everything that must work with NO framework
 installed — the candidate-path injection into a duck-typed google-genai
-``BaseApiClient``, the replay flow through the bound httpx transport, the
+``BaseApiClient``, the replay flow through the bound httpx2 transport, the
 neutral event core, the event dispatch, and the availability guards — is
 driven here with synthetic objects (``bind`` never imports ``google.adk`` or
 ``google.genai`` at all; it is duck-typed).

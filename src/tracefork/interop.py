@@ -56,7 +56,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-import httpx
+import httpx2
 
 from .blame import BlameReport, CIMethod, FlipRateResult, benjamini_hochberg
 from .constants import GENAI_SEMCONV_VERSION, OTEL_INGESTED_BOUNDARY
@@ -477,7 +477,7 @@ class OtlpExportError(TraceforkError):
     the collector, or a transport-level failure (connection refused, DNS,
     timeout) — both surfaced as one exception type so `cli.py`'s `export`
     command can catch just this one and print an actionable stderr line
-    instead of a raw traceback into `httpx`'s internals."""
+    instead of a raw traceback into `httpx2`'s internals."""
 
 
 def push_otlp_trace(
@@ -485,8 +485,8 @@ def push_otlp_trace(
     endpoint: str,
     *,
     timeout: float = 10.0,
-    transport: httpx.BaseTransport | None = None,
-) -> httpx.Response:
+    transport: httpx2.BaseTransport | None = None,
+) -> httpx2.Response:
     """POST `trace` (as produced by `build_otel_trace`) to a live OTLP
     collector's HTTP+JSON trace-export endpoint.
 
@@ -495,30 +495,30 @@ def push_otlp_trace(
     `ExportTraceServiceRequest` JSON encoding (camelCase field names,
     hex-encoded trace/span ids, a top-level `resourceSpans` array — see
     https://opentelemetry.io/docs/specs/otlp/#otlphttp), so this is a plain
-    `httpx` POST of that same dict to `{endpoint}/v1/traces` (the spec's
+    `httpx2` POST of that same dict to `{endpoint}/v1/traces` (the spec's
     documented default trace path) with `Content-Type: application/json` —
     the exact request any real collector (the OTel Collector, Jaeger,
     vendor backends) already accepts. `endpoint`'s trailing slash, if any,
     is stripped before appending the path.
 
     `transport` (default `None`, real network) lets a caller — this
-    module's own tests — inject an `httpx.MockTransport`/`ASGITransport`
+    module's own tests — inject an `httpx2.MockTransport`/`ASGITransport`
     for a fully offline round trip against a local fake collector, the same
     injectable-transport idiom `transport.py`/`proxy.py` already establish
     throughout this codebase.
 
-    Raises `OtlpExportError` (never a raw `httpx` exception) on either a
+    Raises `OtlpExportError` (never a raw `httpx2` exception) on either a
     non-2xx response or a transport-level failure — see that class's
-    docstring. Returns the raw `httpx.Response` on success (status 2xx) so a
+    docstring. Returns the raw `httpx2.Response` on success (status 2xx) so a
     caller can inspect a `partialSuccess` body if it wants to.
     """
     url = f"{endpoint.rstrip('/')}/v1/traces"
     try:
-        with httpx.Client(transport=transport, timeout=timeout) as client:
+        with httpx2.Client(transport=transport, timeout=timeout) as client:
             response = client.post(
                 url, json=dict(trace), headers={"Content-Type": "application/json"}
             )
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         raise OtlpExportError(f"could not reach OTLP collector at {url!r}: {exc}") from exc
     if not (200 <= response.status_code < 300):
         raise OtlpExportError(

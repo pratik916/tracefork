@@ -16,7 +16,7 @@ diagnostic layer on top, without touching the proof itself:
   bytes, is what keeps a tolerated normalization from reading as divergence.
 
 Nothing here changes what `transport.py` hashes or raises; this is purely a
-read-time diagnostic built from a tape and a live `httpx.Request`.
+read-time diagnostic built from a tape and a live `httpx2.Request`.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import httpx
+    import httpx2
 
     from .matcher import RequestMatcher
     from .tape import Tape
@@ -143,7 +143,7 @@ class DivergenceDiagnostic:
 def diagnose(
     tape: Tape,
     step_index: int,
-    live_request: httpx.Request,
+    live_request: httpx2.Request,
     matcher: RequestMatcher | None = None,
 ) -> DivergenceDiagnostic | None:
     """Build a `DivergenceDiagnostic` for a replay divergence at `step_index`.

@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import anthropic
-import httpx
+import httpx2
 
 from .blame import BlameEngine, ShapleyReport, StringMatchOracle
 from .faults import FAULT_MARKER_BYTES
@@ -118,7 +118,7 @@ _BRANCH_BASE_DELAY = 0.02
 _BRANCH_DELAY_STEP = 0.01
 
 
-class _ConcurrentBranchFiller(httpx.AsyncBaseTransport):
+class _ConcurrentBranchFiller(httpx2.AsyncBaseTransport):
     """Serves the clean NEUTRAL/SUCCESS filler for `build_multi_branch_tape`'s
     recording, keyed by call-ENTRY order (0..n_total-1) rather than a fixed
     list, since `n_branches` calls are in flight at once and only entry order
@@ -133,13 +133,13 @@ class _ConcurrentBranchFiller(httpx.AsyncBaseTransport):
         self._n_total = _total_turns(n_branches)
         self._n = 0
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         pos = self._n
         self._n += 1
         if 1 <= pos <= self._n_branches:
             await asyncio.sleep(_BRANCH_BASE_DELAY + (pos - 1) * _BRANCH_DELAY_STEP)
         body = SUCCESS_RESP if pos == self._n_total - 1 else NEUTRAL_RESP
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 def _echo_text(msg: Any) -> str:
@@ -264,7 +264,7 @@ async def _build_multi_branch_tape_async(n_branches: int) -> Tape:
     transport = AsyncTraceforkTransport("record", tape, _ConcurrentBranchFiller(n_branches))
     client = anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=transport),
+        http_client=httpx2.AsyncClient(transport=transport),
         max_retries=0,
     )
     await _record_multi_branch_agent(client, n_branches)
@@ -283,7 +283,7 @@ def build_multi_branch_tape(n_branches: int = 3) -> Tape:
 # ── perturbation: exactly one guilty sibling, everyone else inert ──────────
 
 
-class _SingleCauseTail(httpx.BaseTransport):
+class _SingleCauseTail(httpx2.BaseTransport):
     """Serves the rest of the multi-branch agent's turns, adjudicating
     FAIL-vs-benign from a SINGLE-CAUSE rule -- FAIL iff the incoming request's
     own (already-cumulative) body contains `FAULT_MARKER_BYTES` -- simpler
@@ -296,7 +296,7 @@ class _SingleCauseTail(httpx.BaseTransport):
         self._remaining = remaining_turns
         self._seen = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         self._seen += 1
         is_last = self._seen >= self._remaining
         if FAULT_MARKER_BYTES in request.content:
@@ -305,7 +305,7 @@ class _SingleCauseTail(httpx.BaseTransport):
             body = SUCCESS_RESP
         else:
             body = NEUTRAL_RESP
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 def make_single_branch_perturb_factory(

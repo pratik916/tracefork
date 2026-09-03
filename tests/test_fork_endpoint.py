@@ -4,7 +4,7 @@ gated by fork_allowlist.py's opt-in-only allowlist plus an explicit
 confirm:true cost confirmation.
 
 $0-safe: the allowlisted agent is forked at the tape's LAST exchange index,
-whose empty TAIL means ForkTransport never dispatches to its inner httpx
+whose empty TAIL means ForkTransport never dispatches to its inner httpx2
 transport (the same $0 property tournament.py's docstring documents) --
 proven directly by asserting the persisted branch's delta_tape holds only
 the single mutation-injected exchange (no counterfactual continuation was
@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -43,7 +43,7 @@ def _record_tape() -> Tape:
     tape = Tape(agent_name="fork_ui_agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     run_agent(client)
     return tape
@@ -188,7 +188,7 @@ def test_estimate_single_fork_usd_scales_with_remaining_tail_only():
     tape = Tape(agent_name="multi")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     messages: list[dict] = []
     for i in range(3):

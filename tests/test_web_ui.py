@@ -40,7 +40,7 @@ import subprocess
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -322,7 +322,7 @@ def test_every_js_dereferenced_key_is_present_in_tape_to_data_output():
     tape = Tape(agent_name="a")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     client.messages.create(
         model="claude-sonnet-4-6", max_tokens=10, messages=[{"role": "user", "content": "hi"}]

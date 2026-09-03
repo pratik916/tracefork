@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2
 
 from .matcher import IDENTITY_MATCHER, RequestMatcher
 from .tape import sha256_hex
@@ -257,7 +257,7 @@ class RedactingMatcher:
         self._redactor = redactor
         self.name = name
 
-    def _transform(self, request: httpx.Request) -> bytes:
+    def _transform(self, request: httpx2.Request) -> bytes:
         data = self._inner.stored_request(request)
         data = _redact_canonical_headers(data, self._redactor.redact_headers)
         for fn in self._redactor.request_filters:
@@ -265,10 +265,10 @@ class RedactingMatcher:
             data = REDACTED if result is None else result
         return data
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         return self._transform(request)
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         return sha256_hex(self._transform(request))
 
     def stored_fingerprint(self, stored: bytes) -> str:
@@ -316,9 +316,9 @@ class Redactor:
 
     def apply_request(self, req_body: bytes) -> bytes:
         """Run `request_filters` over a raw request body about to be stored — the
-        symmetric counterpart to `apply_response`. The LLM (httpx) path folds
+        symmetric counterpart to `apply_response`. The LLM (httpx2) path folds
         request redaction into the matcher seam (`RedactingMatcher`); the tool
-        seam (`tools.py`) has no httpx request/matcher, so it applies request
+        seam (`tools.py`) has no httpx2 request/matcher, so it applies request
         redaction directly through this method to both the stored frame and the
         replay-time frame, keeping the divergence fingerprint consistent. A third
         seam applies it the same way: `nondet.py`'s `get_env`/`read_file` draws

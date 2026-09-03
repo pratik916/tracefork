@@ -49,7 +49,7 @@ from enum import Enum, StrEnum
 from statistics import NormalDist
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-import httpx
+import httpx2
 
 if TYPE_CHECKING:
     import anthropic
@@ -1070,7 +1070,7 @@ class BlameEngine:
         own `matcher` doc for why this must not stay raw-sha256-only.
         """
         mutated_resp, tail_transport_obj = perturb_factory(step_idx)
-        tail_transport = cast("httpx.BaseTransport | None", tail_transport_obj)
+        tail_transport = cast("httpx2.BaseTransport | None", tail_transport_obj)
         spec = BranchSpec(divergence_step=step_idx, mutated_response=mutated_resp)
         try:
             branch = ForkEngine.fork(
@@ -1142,7 +1142,7 @@ class BlameEngine:
             try:
                 per_step = {s: perturb_factory(s) for s in ordered}
                 interventions = tuple(StepIntervention(s, per_step[s][0]) for s in ordered)
-                tail_transport = cast("httpx.BaseTransport | None", per_step[top_step][1])
+                tail_transport = cast("httpx2.BaseTransport | None", per_step[top_step][1])
                 spec = CoalitionSpec(interventions=interventions)
                 try:
                     branch = ForkEngine.fork_coalition(

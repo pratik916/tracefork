@@ -7,7 +7,7 @@ no API keys.
 """
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.boundary_guard import ConfinementSpec
@@ -53,7 +53,7 @@ def _build_two_turn_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _conversation_agent(client)

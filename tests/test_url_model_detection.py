@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import struct
 
-import httpx
+import httpx2
 import zstandard as zstd
 
 from tracefork import blame as blame_mod
@@ -183,12 +183,12 @@ def test_bedrock_detect_model_none_url_unchanged():
 # ── transport.py: real captured URL lands in tape.request_urls ─────────────
 
 
-class _SyncInner(httpx.BaseTransport):
+class _SyncInner(httpx2.BaseTransport):
     def __init__(self, responses: list[bytes]) -> None:
         self._responses = iter(responses)
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200, headers={"content-type": "application/json"}, content=next(self._responses)
         )
 
@@ -198,7 +198,7 @@ def test_transport_record_mode_captures_request_url():
     inner = _SyncInner([b"resp-1"])
     t = TraceforkTransport("record", tape, inner)
     url = "https://api.anthropic.com/v1/messages"
-    request = httpx.Request("POST", url, content=b"req-1")
+    request = httpx2.Request("POST", url, content=b"req-1")
     t.handle_request(request)
     assert tape.request_urls[-1] == str(request.url)
     assert tape.request_urls[-1] == url

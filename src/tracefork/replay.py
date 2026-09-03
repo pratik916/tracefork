@@ -24,10 +24,10 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anthropic
-import httpx
+import httpx2
 
 from .certificate import ReplayCertificate
 from .divergence import DivergenceDiagnostic, diagnose, diagnostic_to_dict
@@ -94,8 +94,8 @@ class VerificationResult:
     certificate: ReplayCertificate | None = None
 
 
-class _LastRequestTransport(httpx.BaseTransport):
-    """Captures the most recent live `httpx.Request` before delegating to
+class _LastRequestTransport(httpx2.BaseTransport):
+    """Captures the most recent live `httpx2.Request` before delegating to
     `inner`, so a `DivergenceError` raised from inside `handle_request` can
     still be paired with the request that triggered it — `TraceforkTransport`
     itself doesn't retain that request after raising it. Purely observational:
@@ -105,11 +105,15 @@ class _LastRequestTransport(httpx.BaseTransport):
 
     def __init__(self, inner: TraceforkTransport) -> None:
         self._inner = inner
-        self.last_request: httpx.Request | None = None
+        self.last_request: httpx2.Request | None = None
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         self.last_request = request
-        return self._inner.handle_request(request)
+        # `TraceforkTransport.handle_request` is typed `Any` (it can also
+        # return a real `httpx.Response` — see its docstring), but this class
+        # is only ever constructed here wrapping the default-flavored
+        # (httpx2) transport, so the cast is accurate, not just convenient.
+        return cast("httpx2.Response", self._inner.handle_request(request))
 
 
 class ReplayVerifier:
@@ -135,7 +139,7 @@ class ReplayVerifier:
         transport = _LastRequestTransport(inner)
         client = anthropic.Anthropic(
             api_key=self._api_key,
-            http_client=httpx.Client(transport=transport),
+            http_client=httpx2.Client(transport=transport),
             max_retries=0,
         )
 
@@ -205,7 +209,7 @@ class ReplayVerifier:
             )
 
     def _diagnose(
-        self, step_index: int, live_request: httpx.Request | None
+        self, step_index: int, live_request: httpx2.Request | None
     ) -> DivergenceDiagnostic | None:
         """Best-effort structured diff for the divergence at `step_index`.
         `None` when there's no live request captured (defensive only — every

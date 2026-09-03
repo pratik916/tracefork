@@ -3,8 +3,8 @@
 The framework-facing thin wrapper (``BaseEventListener`` subclass) needs the
 real ``crewai`` package and is covered by a ``pytest.importorskip`` block that
 skips cleanly when absent. Everything that must work with NO framework
-installed — the injection into the litellm httpx chokepoint, the replay flow
-through the bound httpx transport, the neutral event core, the event dispatch,
+installed — the injection into the litellm httpx2 chokepoint, the replay flow
+through the bound httpx2 transport, the neutral event core, the event dispatch,
 and the availability guards — is driven here with synthetic objects (``bind``
 never imports ``litellm`` or ``crewai`` at all; it is duck-typed).
 """
@@ -29,13 +29,13 @@ from tracefork.transport import TraceforkTransport
 
 
 def _fake_litellm_module():
-    """Mimics the ``litellm`` module's documented custom-httpx-client surface:
+    """Mimics the ``litellm`` module's documented custom-httpx2-client surface:
     ``completion``/``acompletion`` (used only as a "this looks like litellm"
     signal) plus freely assignable ``client_session``/``aclient_session``."""
     return types.SimpleNamespace(completion=lambda **kw: None, acompletion=lambda **kw: None)
 
 
-# ── bind: injection into the litellm httpx chokepoint ───────────────────────────
+# ── bind: injection into the litellm httpx2 chokepoint ───────────────────────────
 
 
 def test_bind_injects_client_session_attrs():

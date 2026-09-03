@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 from importlib import metadata
 
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -126,12 +126,12 @@ def test_format_basis_drift_warning_multiline_string_on_drift():
     assert "git_sha" in warning
 
 
-def _sync_client(fake: ScriptedFakeLLM) -> httpx.Client:
+def _sync_client(fake: ScriptedFakeLLM) -> httpx2.Client:
     import anthropic
 
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=fake),
+        http_client=httpx2.Client(transport=fake),
         max_retries=0,
     )
 

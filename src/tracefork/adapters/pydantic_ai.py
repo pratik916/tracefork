@@ -159,6 +159,22 @@ def _resolve_holder(target: Any, path: tuple[str, ...]) -> Any:
     return obj
 
 
+def _client_family(current: Any) -> str:
+    """ "anthropic" for an ``anthropic.AsyncAnthropic``-shaped client (found under
+    ``AnthropicProvider``), "openai" for everything else (the default and
+    majority case -- ``OpenAIProvider`` and any OpenAI-compatible provider
+    built on the ``openai`` SDK).
+
+    Verified against the real, installed ``pydantic-ai`` 2.x:
+    ``OpenAIProvider``'s ``client``/``_client`` is an ``openai.AsyncOpenAI``
+    (module ``"openai"``); ``AnthropicProvider``'s is an
+    ``anthropic.AsyncAnthropic`` (module ``"anthropic"``) -- the module name
+    is a reliable, cheap discriminator without importing either SDK here.
+    """
+    module = (type(current).__module__ or "").lower()
+    return "anthropic" if "anthropic" in module else "openai"
+
+
 def _find_client_attr(target: Any) -> tuple[Any, tuple[str, ...], str] | None:
     """Find the first (holder, path, attr_name) holding a client-shaped value.
 
@@ -258,12 +274,31 @@ class PydanticAIAdapter(BaseFrameworkAdapter):
         ``ReplayNondet``-backed uuid patch (``patch_uuid=True``) makes
         framework-generated ids match the tape.
         """
+        # Determine the found client's own SDK family BEFORE building the
+        # client tracefork will inject: AnthropicProvider's client is the
+        # anthropic SDK (anthropic>=1 requires a real httpx2.AsyncClient — see
+        # pyproject.toml's CAP <1 note); OpenAIProvider's (and any not-found
+        # case, harmlessly — nothing gets injected then) is the openai SDK,
+        # still real-httpx-based. Handing either the wrong flavor reintroduces
+        # the exact `.copy(http_client=...)` TypeError this dispatch exists to
+        # prevent — see `build_http_clients`'s docstring.
+        found = _find_client_attr(target)
+        family = "openai"
+        if found is not None:
+            found_holder, _found_path, found_name = found
+            family = _client_family(getattr(found_holder, found_name))
+
         inner_async = None
         if mode == "record":  # pragma: no cover - needs real package
             _inner, inner_async = _underlying_transports(target)
 
         sync_client, async_client, sync_t, async_t = build_http_clients(
-            tape, mode, async_inner=inner_async, matcher=matcher, redactor=redactor
+            tape,
+            mode,
+            async_inner=inner_async,
+            matcher=matcher,
+            redactor=redactor,
+            client_lib="httpx2" if family == "anthropic" else "httpx",
         )
         injected = _inject(target, async_client)
 

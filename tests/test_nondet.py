@@ -7,7 +7,7 @@ from __future__ import annotations
 import random
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -36,10 +36,10 @@ def _toy_agent(client: anthropic.Anthropic, nondet) -> str:
     return resp.content[0].text
 
 
-def _client(transport: httpx.BaseTransport) -> anthropic.Anthropic:
+def _client(transport: httpx2.BaseTransport) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
 

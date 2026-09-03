@@ -11,7 +11,7 @@ Two guarantees are load-bearing here (mirrors `test_matcher.py`'s framing):
    content change alongside it still is.
 """
 
-import httpx
+import httpx2
 
 from tracefork.divergence import (
     MISSING,
@@ -82,8 +82,8 @@ def test_diff_request_bytes_non_json_falls_back_to_base64():
 # ── diagnose() ───────────────────────────────────────────────────────────────
 
 
-def _req(body: bytes, *, url: str = "https://api.anthropic.com/v1/messages") -> httpx.Request:
-    return httpx.Request("POST", url, content=body)
+def _req(body: bytes, *, url: str = "https://api.anthropic.com/v1/messages") -> httpx2.Request:
+    return httpx2.Request("POST", url, content=body)
 
 
 def test_diagnose_identity_matcher_real_divergence():

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.fixtures import single_turn_agent
@@ -24,7 +24,7 @@ def _record(agent_fn, responses: list[bytes]) -> Tape:
     tape = Tape()
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     agent_fn(client)
     return tape

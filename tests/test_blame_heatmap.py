@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 from typer.testing import CliRunner
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -67,7 +67,7 @@ def _make_tape() -> Tape:
     tape = Tape(agent_name="test_agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     client.messages.create(
         model="claude-sonnet-4-6", max_tokens=100, messages=[{"role": "user", "content": "Hello"}]

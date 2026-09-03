@@ -4,7 +4,7 @@ The framework-facing thin wrapper (``TracingProcessor`` subclass) needs the
 real ``agents`` package and is covered by a ``pytest.importorskip`` block that
 skips cleanly when absent. Everything that must work with NO framework
 installed — the injection into a model wrapper, the replay flow through the
-bound httpx transport, the neutral tracing core, the event dispatch, and the
+bound httpx2 transport, the neutral tracing core, the event dispatch, and the
 availability guards — is driven here with synthetic objects.
 """
 

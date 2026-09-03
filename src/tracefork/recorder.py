@@ -38,10 +38,14 @@ from collections.abc import Callable
 from typing import Any
 
 import anthropic
-import httpx
+import httpx2
 
 from .basis import basis_to_provenance_keys, current_basis
-from .boundary_guard import BoundaryGuard
+from .boundary_guard import (
+    BoundaryGuard,
+    warm_anthropic_async_client_platform,
+    warm_anthropic_async_platform_resolution,
+)
 from .checkpoint import CheckpointWriter
 from .config import TraceforkConfig
 from .matcher import IDENTITY_MATCHER, RequestMatcher
@@ -173,7 +177,7 @@ class Recorder:
         if redactor is not None:
             self._tape.content_redacted = redactor.content_redacted
 
-        # Extract the original httpx transport to use as the recording inner transport.
+        # Extract the original httpx2 transport to use as the recording inner transport.
         # This preserves ScriptedFakeLLM in tests and HTTPTransport in production.
         orig_inner = self._orig_client._client._transport
         effective_matcher = redactor.matcher(self._matcher) if redactor else self._matcher
@@ -197,7 +201,7 @@ class Recorder:
         # headers/query and timeout — only the transport and retries are swapped, so
         # a proxied or custom-base_url client still records faithfully.
         self._wrapped_client = self._orig_client.copy(
-            http_client=httpx.Client(transport=transport),
+            http_client=httpx2.Client(transport=transport),
             max_retries=0,
         )
 
@@ -341,7 +345,7 @@ class AsyncRecorder:
         # `.copy()` preserves base_url, auth_token, default headers/query and timeout
         # (see the sync Recorder) — only the transport and retries are swapped.
         self._wrapped_client = self._orig_client.copy(
-            http_client=httpx.AsyncClient(transport=transport),
+            http_client=httpx2.AsyncClient(transport=transport),
             max_retries=0,
         )
 
@@ -358,6 +362,17 @@ class AsyncRecorder:
         if guard_enabled is None:
             guard_enabled = self._config.boundary_guard if self._config is not None else False
         if guard_enabled:
+            # Pre-empt anthropic 1.x's async platform-resolution false
+            # positive BEFORE the guard patches Thread.start()/time.monotonic
+            # — see boundary_guard.py's module docstring ("threading.Thread.
+            # start") and these two functions' own docstrings. The primary
+            # fix resolves self._platform directly on the actual wrapped
+            # client instance (self._wrapped_client is only just built,
+            # above); the secondary one is a narrower executor-level
+            # fallback. This is the only point in this method both are
+            # reachable and the guard has not yet activated.
+            warm_anthropic_async_client_platform(self._wrapped_client)
+            await warm_anthropic_async_platform_resolution()
             self._guard = BoundaryGuard()
             self._guard.__enter__()
 
