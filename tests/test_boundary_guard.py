@@ -13,11 +13,11 @@ import time
 from unittest import mock
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
-from tests.fakes import ScriptedFakeLLM, make_text_response
-from tracefork import Recorder
+from tests.fakes import AsyncScriptedFakeLLM, ScriptedFakeLLM, make_text_response
+from tracefork import AsyncRecorder, Recorder
 from tracefork.boundary_guard import (
     BoundaryGuard,
     BoundaryViolationError,
@@ -32,7 +32,15 @@ TEXT_RESP = make_text_response("Done.")
 def _sync_client(fake: ScriptedFakeLLM) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=fake),
+        http_client=httpx2.Client(transport=fake),
+        max_retries=0,
+    )
+
+
+def _async_client(fake: AsyncScriptedFakeLLM) -> anthropic.AsyncAnthropic:
+    return anthropic.AsyncAnthropic(
+        api_key="sk-ant-fake",
+        http_client=httpx2.AsyncClient(transport=fake),
         max_retries=0,
     )
 
@@ -104,7 +112,7 @@ def test_guard_restores_originals_after_exception():
 
 def test_guard_active_during_real_recorder_session_no_false_positive():
     """The Anthropic SDK's own `platform_headers()` helper shells out
-    (uncached) to derive an `X-Stainless-OS` header, and httpx's cookie-jar
+    (uncached) to derive an `X-Stainless-OS` header, and httpx2's cookie-jar
     machinery would call time.time() per response (out of the guard's scope
     for exactly this reason). BoundaryGuard.__enter__ pre-warms the SDK's
     platform-header cache so a normal recording session doesn't trip the
@@ -118,6 +126,42 @@ def test_guard_active_during_real_recorder_session_no_false_positive():
             messages=[{"role": "user", "content": "hi"}],
         )
         rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi again"}],
+        )
+    assert len(rec.tape.exchanges) == 2
+
+
+async def test_guard_active_during_real_async_recorder_session_no_false_positive():
+    """Async counterpart of the sync test above.
+
+    anthropic 1.x's `AsyncAPIClient.request()` resolves `self._platform`
+    (consumed by the SAME `platform_headers()` helper the sync client also
+    calls) via `await asyncify(get_platform)()` on the first request when
+    `self._platform is None` — see `anthropic._utils._sync.asyncify`/
+    `to_thread`, which routes through `asyncio.to_thread` ->
+    `loop.run_in_executor(None, ...)` -> a real `ThreadPoolExecutor` that
+    calls `threading.Thread(...).start()` to spin up its worker. That is a
+    genuine, real thread spawn done entirely by the SDK's own internal
+    housekeeping, not by the agent — `BoundaryGuard.__enter__`'s pre-warm
+    (which only primes the module-level `platform_headers()` lru_cache
+    keyed on `platform=None`, not the async client's own per-instance
+    `self._platform` attribute) does nothing to prevent the SDK from still
+    taking this thread-offload path on its first async request. If this
+    test fails with a `BoundaryViolationError` naming `Thread.start`, that
+    confirms `AsyncRecorder(..., boundary_guard=True)` false-positives on
+    its first real call, exactly the false-positive the pre-warm exists to
+    prevent."""
+    fake = AsyncScriptedFakeLLM([TEXT_RESP, TEXT_RESP])
+    client = _async_client(fake)
+    async with AsyncRecorder(client, boundary_guard=True) as rec:
+        await rec.client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        await rec.client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=100,
             messages=[{"role": "user", "content": "hi again"}],

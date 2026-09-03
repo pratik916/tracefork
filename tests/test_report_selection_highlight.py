@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.report import generate_report
@@ -35,7 +35,7 @@ def _make_tape(n_exchanges: int) -> Tape:
     tape = Tape(agent_name="test_agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     messages: list[dict] = []
     for i in range(n_exchanges):

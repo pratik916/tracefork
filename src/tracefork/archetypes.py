@@ -86,7 +86,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import anthropic
-import httpx
+import httpx2
 
 from .blame import BlameEngine, ShapleyReport, StringMatchOracle
 from .synthetic import ScriptedFakeLLM
@@ -141,7 +141,7 @@ def _mutated_response_for(role: str) -> bytes:
     return make_text_response(f"{role} fault marker fired {_marker_bytes(role).decode()}")
 
 
-class _ArchetypeTail(httpx.BaseTransport):
+class _ArchetypeTail(httpx2.BaseTransport):
     """Generalizes `competing_faults.RuleBasedTail`: serves the rest of a
     `make_linear_agent` agent's turns by adjudicating FAIL-vs-benign from an
     INJECTED `fails` predicate applied to each incoming request's own
@@ -156,7 +156,7 @@ class _ArchetypeTail(httpx.BaseTransport):
         self._fails = fails
         self._seen = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         self._seen += 1
         is_last = self._seen >= self._remaining
         body = (
@@ -164,7 +164,7 @@ class _ArchetypeTail(httpx.BaseTransport):
             if self._fails(request.content)
             else (SUCCESS_RESP if is_last else NEUTRAL_RESP)
         )
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 def _echo_text(msg: Any) -> str:
@@ -257,7 +257,7 @@ def _build_clean_tape(n_turns: int, agent_name: str) -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     make_linear_agent(n_turns)(client)

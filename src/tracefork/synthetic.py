@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
+import httpx2
 
 __all__ = [
     "ScriptedFakeLLM",
@@ -45,7 +45,7 @@ __all__ = [
 ]
 
 
-class ScriptedFakeLLM(httpx.BaseTransport):
+class ScriptedFakeLLM(httpx2.BaseTransport):
     """Returns scripted Anthropic wire-format responses in sequence.
 
     Pass a list of response bytes (from make_text_response / make_tool_use_response).
@@ -60,7 +60,7 @@ class ScriptedFakeLLM(httpx.BaseTransport):
         self._i = 0
         self.requests_received: list[bytes] = []
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         self.requests_received.append(request.content)
         if self._i >= len(self._responses):
             raise self.ScriptExhausted(
@@ -68,14 +68,14 @@ class ScriptedFakeLLM(httpx.BaseTransport):
             )
         resp = self._responses[self._i]
         self._i += 1
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=resp,
         )
 
 
-class AsyncScriptedFakeLLM(httpx.AsyncBaseTransport):
+class AsyncScriptedFakeLLM(httpx2.AsyncBaseTransport):
     """Async variant of ScriptedFakeLLM."""
 
     class ScriptExhausted(RuntimeError):
@@ -86,7 +86,7 @@ class AsyncScriptedFakeLLM(httpx.AsyncBaseTransport):
         self._i = 0
         self.requests_received: list[bytes] = []
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         self.requests_received.append(request.content)
         if self._i >= len(self._responses):
             raise self.ScriptExhausted(
@@ -94,14 +94,14 @@ class AsyncScriptedFakeLLM(httpx.AsyncBaseTransport):
             )
         resp = self._responses[self._i]
         self._i += 1
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=resp,
         )
 
 
-class AsyncStreamingFakeLLM(httpx.AsyncBaseTransport):
+class AsyncStreamingFakeLLM(httpx2.AsyncBaseTransport):
     """Streams a scripted response as multiple chunks per request.
 
     `chunked_responses` is a list of chunk-lists, one entry per request; each
@@ -126,7 +126,7 @@ class AsyncStreamingFakeLLM(httpx.AsyncBaseTransport):
         self._i = 0
         self.requests_received: list[bytes] = []
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         self.requests_received.append(request.content)
         if self._i >= len(self._responses):
             raise self.ScriptExhausted(
@@ -139,14 +139,14 @@ class AsyncStreamingFakeLLM(httpx.AsyncBaseTransport):
             for chunk in chunks:
                 yield chunk
 
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": self._content_type},
             content=_stream(),
         )
 
 
-class FaultAwareFakeLLM(httpx.BaseTransport):
+class FaultAwareFakeLLM(httpx2.BaseTransport):
     """Returns different response scripts based on a fault marker in the request.
 
     If `fault_marker` (bytes) appears anywhere in the request body, serve
@@ -167,19 +167,19 @@ class FaultAwareFakeLLM(httpx.BaseTransport):
         self._normal_i = 0
         self._fault_i = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         if self._marker in request.content:
             resp = self._fault[self._fault_i % len(self._fault)]
             self._fault_i += 1
         else:
             resp = self._normal[self._normal_i % len(self._normal)]
             self._normal_i += 1
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=resp)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=resp)
 
 
 # ── Bedrock (botocore-shaped) fakes ─────────────────────────────────────────
 #
-# botocore never touches httpx (see bedrock_transport.py's module docstring),
+# botocore never touches httpx2 (see bedrock_transport.py's module docstring),
 # so the fakes above don't apply to it. These mirror the two botocore
 # interfaces bedrock_transport.py depends on -- a prepared request
 # (`.method`/`.url`/`.headers`/`.body`) and an event emitter
@@ -234,7 +234,7 @@ def first_non_none_response(responses: list[tuple[Any, Any]], default: Any = Non
 
 class ScriptedBedrockSender:
     """Offline `sender` for `BedrockTransport("record", ...)`: cycles a fixed
-    list of response bytes, analogous to `ScriptedFakeLLM` for the httpx seam.
+    list of response bytes, analogous to `ScriptedFakeLLM` for the httpx2 seam.
     Raises `ScriptExhausted` if more requests arrive than the script has
     responses."""
 
@@ -245,9 +245,9 @@ class ScriptedBedrockSender:
         self._responses = list(responses)
         self._status_code = status_code
         self._i = 0
-        self.requests_received: list[httpx.Request] = []
+        self.requests_received: list[httpx2.Request] = []
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests_received.append(request)
         if self._i >= len(self._responses):
             raise self.ScriptExhausted(
@@ -255,6 +255,6 @@ class ScriptedBedrockSender:
             )
         body = self._responses[self._i]
         self._i += 1
-        return httpx.Response(
+        return httpx2.Response(
             self._status_code, headers={"content-type": "application/json"}, content=body
         )

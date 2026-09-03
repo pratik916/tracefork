@@ -1,5 +1,5 @@
 """Localhost base-URL record/replay proxy — for clients tracefork's in-process
-httpx seam can't reach: curl, Node, Go, or any Python code you don't control.
+httpx2 seam can't reach: curl, Node, Go, or any Python code you don't control.
 
 **Shape**: the client points its ``base_url``/endpoint at
 ``http://127.0.0.1:<port>`` instead of the provider directly. Record mode
@@ -37,7 +37,7 @@ matcher, i.e. raw ``sha256`` of the request body — byte-for-byte the same
 contract as the in-process transport).
 
 **Streaming (SSE).** Record mode tees the upstream response chunk-by-chunk
-*while forwarding* it (``httpx``'s ``stream=True`` + ``aiter_bytes()``, wired
+*while forwarding* it (``httpx2``'s ``stream=True`` + ``aiter_bytes()``, wired
 into a ``StreamingResponse``) rather than buffering the whole body before the
 client sees the first byte, so a real streaming exchange is captured
 correctly without adding latency. The tape itself only ever stores body
@@ -53,7 +53,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import AsyncIterator
 
-import httpx
+import httpx2
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import Headers
@@ -85,7 +85,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
-# A fixed placeholder origin used only to build the `httpx.Request` object the
+# A fixed placeholder origin used only to build the `httpx2.Request` object the
 # matcher fingerprints a request against — never dialed. It keeps the matcher's
 # view of "the request" (method, path, query, headers, body) independent of
 # whatever literal host:port the client happened to connect to (e.g. the ASGI
@@ -107,9 +107,9 @@ def _path_and_query(request: Request) -> str:
     return path
 
 
-def _matcher_request_view(request: Request, body: bytes) -> httpx.Request:
-    """The `httpx.Request` the matcher fingerprints — see `_MATCHER_ORIGIN`."""
-    return httpx.Request(
+def _matcher_request_view(request: Request, body: bytes) -> httpx2.Request:
+    """The `httpx2.Request` the matcher fingerprints — see `_MATCHER_ORIGIN`."""
+    return httpx2.Request(
         request.method,
         _MATCHER_ORIGIN + _path_and_query(request),
         headers=_forwardable_headers(request.headers),
@@ -146,12 +146,12 @@ class RecordProxy:
         upstream_base_url: str,
         *,
         matcher: RequestMatcher | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         self.tape = tape
         self.tape.boundary = PROXY_BOUNDARY
         self.matcher: RequestMatcher = matcher or IDENTITY_MATCHER
-        self._client = httpx.AsyncClient(base_url=upstream_base_url, transport=transport)
+        self._client = httpx2.AsyncClient(base_url=upstream_base_url, transport=transport)
 
     async def handle(self, request: Request) -> Response:
         body = await request.body()
@@ -248,7 +248,7 @@ def build_record_app(
     upstream_base_url: str,
     *,
     matcher: RequestMatcher | None = None,
-    transport: httpx.AsyncBaseTransport | None = None,
+    transport: httpx2.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     """A FastAPI ASGI app implementing the record-mode proxy over `tape`.
 

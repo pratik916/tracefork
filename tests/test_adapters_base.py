@@ -1,7 +1,7 @@
 """Framework adapter base seam — offline, no framework installed.
 
 Exercises the framework-neutral half of the adapter protocol: the ``Step`` /
-``StepDAG`` overlay, the run-tree normalizer, the shared httpx-client builder
+``StepDAG`` overlay, the run-tree normalizer, the shared httpx2-client builder
 (reusing ``transport.py``), the replay uuid patch, and the registry. Nothing
 here imports langchain/langgraph — this is the logic that must work with no
 framework present at all.
@@ -9,7 +9,7 @@ framework present at all.
 
 import uuid
 
-import httpx
+import httpx2
 import pytest
 
 from tracefork.adapters.base import (
@@ -150,8 +150,8 @@ def test_from_run_tree_none_is_empty():
 def test_build_http_clients_replay_needs_no_inner():
     tape = Tape()
     sync_c, async_c, sync_t, async_t = build_http_clients(tape, "replay")
-    assert isinstance(sync_c, httpx.Client)
-    assert isinstance(async_c, httpx.AsyncClient)
+    assert isinstance(sync_c, httpx2.Client)
+    assert isinstance(async_c, httpx2.AsyncClient)
     assert isinstance(sync_t, TraceforkTransport)
     assert sync_t.mode == "replay"
     assert async_t.mode == "replay"

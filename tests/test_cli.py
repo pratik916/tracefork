@@ -359,7 +359,7 @@ def test_export_otlp_endpoint_requires_otel_not_openinference(tmp_path):
 
 def test_export_otlp_endpoint_unreachable_collector_is_clean_nonzero_exit(tmp_path):
     """A connection failure must exit 1 with a clean stderr line -- never a
-    raw httpx traceback."""
+    raw httpx2 traceback."""
     db = tmp_path / "store.db"
     store = TapeStore(str(db))
     run_id = store.save_tape(_record_clean_tape(), run_id="testrun")
@@ -817,7 +817,7 @@ def test_blame_closes_tapestore_even_on_early_budget_exit(tmp_path, monkeypatch)
 
 
 def test_fork_prints_confinement_diagnostic_not_a_raw_sdk_traceback(tmp_path):
-    """The Anthropic SDK wraps any exception its httpx transport raises in
+    """The Anthropic SDK wraps any exception its httpx2 transport raises in
     `APIConnectionError` (the same wrapping `nondet.find_divergence`
     documents and unwraps for `DivergenceError`) -- so a `ConfinementViolationError`
     raised by the guarded `socket.connect` during the tail-record call was
@@ -866,7 +866,7 @@ def test_fork_closes_tapestore_when_the_tail_record_call_is_confined_offline(tmp
     so this stays fully offline/$0 like the rest of the suite.
 
     Note: the SDK wraps the resulting `ConfinementViolationError` in an
-    `httpx`/`anthropic` `APIConnectionError` (the same wrapping
+    `httpx2`/`anthropic` `APIConnectionError` (the same wrapping
     `nondet.find_divergence` already has to unwrap for `DivergenceError` —
     see that function's docstring), so `fork`'s own
     `except ConfinementViolationError` clause does not actually catch it

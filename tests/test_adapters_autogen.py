@@ -4,7 +4,7 @@ The framework-facing thin wrapper (``InterventionHandler`` subclass) needs the
 real ``autogen_core`` package and is covered by a ``pytest.importorskip`` block
 that skips cleanly when absent. Everything that must work with NO framework
 installed — the injection into a model client, the replay flow through the
-bound httpx transport, the neutral intervention core, the event dispatch, and
+bound httpx2 transport, the neutral intervention core, the event dispatch, and
 the availability guards — is driven here with synthetic objects.
 """
 

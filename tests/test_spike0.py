@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from tracefork_spike.agent import make_client, run_agent
@@ -98,7 +98,7 @@ def test_fake_endpoint_emits_real_anthropic_wire_format():
     """Sanity: the fake speaks Anthropic wire format well enough that the real SDK
     parses it into a tool_use Message."""
     transport = FakeAnthropicTransport()
-    req = httpx.Request(
+    req = httpx2.Request(
         "POST",
         "https://api.anthropic.com/v1/messages",
         content=json.dumps(

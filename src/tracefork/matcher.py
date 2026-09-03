@@ -40,7 +40,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import httpx
+import httpx2
 
 from .plugins import MATCHER_GROUP, Registry
 from .tape import sha256_hex
@@ -87,11 +87,11 @@ class RequestMatcher(Protocol):
         frozen dataclasses, e.g. ``CanonicalizingMatcher``)."""
         ...
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         """The request bytes to persist in the tape for this exchange."""
         ...
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         """A hashable identity of a live (record- or replay-time) request."""
         ...
 
@@ -110,10 +110,10 @@ class IdentityMatcher:
 
     name = "identity"
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         return request.content
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         return sha256_hex(request.content)
 
     def stored_fingerprint(self, stored: bytes) -> str:
@@ -135,10 +135,10 @@ class AdapterMatcher:
         self._adapter = adapter
         self.name = f"adapter:{adapter.name}"
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         return request.content
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         return self._adapter.canonicalize_request(request.content)
 
     def stored_fingerprint(self, stored: bytes) -> str:
@@ -191,7 +191,7 @@ class CanonicalizingMatcher:
     match_url: bool = True
     name: str = "canonical"
 
-    def _canonical_url(self, request: httpx.Request) -> dict[str, Any]:
+    def _canonical_url(self, request: httpx2.Request) -> dict[str, Any]:
         url = request.url
         drop = {k.lower() for k in self.volatile_query_keys}
         kept = sorted((k, v) for k, v in url.params.multi_items() if k.lower() not in drop)
@@ -202,7 +202,7 @@ class CanonicalizingMatcher:
             "query": kept,
         }
 
-    def _canonical_headers(self, request: httpx.Request) -> dict[str, str]:
+    def _canonical_headers(self, request: httpx2.Request) -> dict[str, str]:
         volatile = {h.lower() for h in self.volatile_headers}
         out: dict[str, str] = {}
         for name in self.match_headers:
@@ -214,7 +214,7 @@ class CanonicalizingMatcher:
                 out[key] = value
         return out
 
-    def _canonical(self, request: httpx.Request) -> bytes:
+    def _canonical(self, request: httpx2.Request) -> bytes:
         obj: dict[str, Any] = {
             "method": request.method.upper(),
             "body": _canonical_body(request.content, self.volatile_body_fields),
@@ -225,10 +225,10 @@ class CanonicalizingMatcher:
             obj["headers"] = self._canonical_headers(request)
         return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         return self._canonical(request)
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         return sha256_hex(self._canonical(request))
 
     def stored_fingerprint(self, stored: bytes) -> str:

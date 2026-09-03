@@ -29,7 +29,7 @@ Offline, $0, no framework installed — reuses ``ScriptedFakeLLM``/
 from __future__ import annotations
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -90,7 +90,7 @@ def _build_two_turn_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _agent(client)
@@ -139,7 +139,7 @@ def test_adapter_replay_pass_through_and_fork_blame_parity(
 
     # (a) the adapter's bind(mode="replay") serves byte-identical responses to
     # a bare TraceforkTransport replay of the SAME tape, for every exchange.
-    bare_client = httpx.Client(transport=TraceforkTransport("replay", tape))
+    bare_client = httpx2.Client(transport=TraceforkTransport("replay", tape))
     adapter = adapter_cls()
     bind_result = adapter.bind(object(), tape, mode="replay", patch_uuid=False)
     try:

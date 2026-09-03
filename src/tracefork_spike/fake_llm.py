@@ -1,4 +1,4 @@
-"""A fake Anthropic endpoint as an httpx transport.
+"""A fake Anthropic endpoint as an httpx2 transport.
 
 This stands in for the real /v1/messages API so the spike needs no key and no
 network ($0, offline, CI-safe). It emits real Anthropic *wire-format* JSON so the
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
+import httpx2
 
 from .tape import sha256_hex
 
@@ -33,10 +33,10 @@ def _has_tool_result(payload: dict) -> bool:
     return False
 
 
-class FakeAnthropicTransport(httpx.BaseTransport):
+class FakeAnthropicTransport(httpx2.BaseTransport):
     """Deterministic given the request bytes (ids derived from the request hash)."""
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(request.content)
         model = payload.get("model", "claude-opus-4-8")
         rid = "msg_" + sha256_hex(request.content)[:20]
@@ -81,7 +81,7 @@ class FakeAnthropicTransport(httpx.BaseTransport):
                 "usage": {"input_tokens": 96, "output_tokens": 18},
             }
 
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "application/json"},
             content=json.dumps(message).encode(),

@@ -22,7 +22,7 @@ import json
 import threading
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 
@@ -109,7 +109,7 @@ def _record_e2e_tape() -> Tape:
     tape = Tape(agent_name="e2e-booking-agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     _e2e_agent(client)
     return tape
@@ -201,9 +201,9 @@ def _nondet_agent(client: anthropic.Anthropic, nondet) -> str:
     return resp.content[0].text
 
 
-def _anthropic_client(transport: httpx.BaseTransport) -> anthropic.Anthropic:
+def _anthropic_client(transport: httpx2.BaseTransport) -> anthropic.Anthropic:
     return anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
 
 
@@ -247,19 +247,19 @@ def test_negative_control_drifting_nondet_forces_divergence_through_the_store(tm
 # ══════════════════════════════════════════════════════════════════════════
 
 
-class _DelayedAnthropicInner(httpx.AsyncBaseTransport):
+class _DelayedAnthropicInner(httpx2.AsyncBaseTransport):
     """Serves valid Anthropic wire responses with per-request delays, so
     completion order is driven by the delays — the fan-out nondeterminism
     `AsyncTraceforkTransport` must capture and re-impose on replay."""
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         if b"alpha" in request.content:
             await asyncio.sleep(0.03)
             body = make_text_response("respA")
         else:
             await asyncio.sleep(0.01)
             body = make_text_response("respB")
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 async def _gather_agent(client: anthropic.AsyncAnthropic) -> list[str]:
@@ -278,7 +278,7 @@ async def test_concurrency_determinism_gather_replays_bit_exact_through_the_stor
     and replayed bit-exact in the recorded completion order."""
     rec_client = anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=_DelayedAnthropicInner()),
+        http_client=httpx2.AsyncClient(transport=_DelayedAnthropicInner()),
         max_retries=0,
     )
     async with AsyncRecorder(rec_client, agent_name="e2e-gather") as rec:
@@ -299,7 +299,7 @@ async def test_concurrency_determinism_gather_replays_bit_exact_through_the_stor
     replay_transport = AsyncTraceforkTransport("replay", loaded)
     replay_client = anthropic.AsyncAnthropic(
         api_key="sk-ant-replay",
-        http_client=httpx.AsyncClient(transport=replay_transport),
+        http_client=httpx2.AsyncClient(transport=replay_transport),
         max_retries=0,
     )
     replayed = await _gather_agent(replay_client)
@@ -325,7 +325,7 @@ def test_llm_and_tool_exchanges_share_one_tape_and_both_replay_bit_exact(tmp_pat
         "record", tape, ScriptedFakeLLM([make_text_response("looked it up")])
     )
     llm_client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=llm_transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=llm_transport), max_retries=0
     )
     llm_client.messages.create(
         model=SONNET, max_tokens=100, messages=[{"role": "user", "content": "weather?"}]
@@ -391,7 +391,7 @@ def test_redaction_end_to_end_scrubbed_tape_persists_and_replays(tmp_path, monke
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-e2e-secret-value")
     fake = ScriptedFakeLLM([make_text_response("your key sk-ant-e2e-secret-value is invalid")])
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=fake), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=fake), max_retries=0
     )
     redactor = safe_defaults()
 
@@ -503,7 +503,7 @@ def test_boundary_guard_catches_seeded_violation_and_clean_runs_still_replay():
 
     fake = ScriptedFakeLLM([make_text_response("hi")])
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=fake), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=fake), max_retries=0
     )
     with pytest.raises(BoundaryViolationError), Recorder(client, boundary_guard=True) as rec:
         _violating_agent(rec.client)
@@ -516,7 +516,7 @@ def test_boundary_guard_catches_seeded_violation_and_clean_runs_still_replay():
 
     fake2 = ScriptedFakeLLM([make_text_response("hi")])
     client2 = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=fake2), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=fake2), max_retries=0
     )
     with Recorder(client2, boundary_guard=True) as rec2:
         out = _clean_agent(rec2.client)
@@ -537,7 +537,7 @@ def test_divergence_diagnostics_identify_the_changed_field_on_a_recorded_tape():
     recorded_body = tape.exchanges[0][0]
     live_body = recorded_body.replace(b"book a flight to Kyoto", b"cancel my flight")
     assert live_body != recorded_body
-    live = httpx.Request("POST", "https://api.anthropic.com/v1/messages", content=live_body)
+    live = httpx2.Request("POST", "https://api.anthropic.com/v1/messages", content=live_body)
 
     diag = diagnose(tape, 0, live)
     assert diag is not None
@@ -548,14 +548,14 @@ def test_divergence_diagnostics_identify_the_changed_field_on_a_recorded_tape():
 # ── 4g. Base-URL record/replay proxy via an ASGI test client ───────────────
 
 
-def _asgi_client(app: FastAPI) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://proxy-under-test")
+def _asgi_client(app: FastAPI) -> httpx2.AsyncClient:
+    transport = httpx2.ASGITransport(app=app)
+    return httpx2.AsyncClient(transport=transport, base_url="http://proxy-under-test")
 
 
 async def test_base_url_proxy_record_replay_round_trip_is_bit_exact():
     """The localhost MITM-style proxy (for non-Python clients) driven
-    entirely in-process via `httpx.ASGITransport` — no real socket, no real
+    entirely in-process via `httpx2.ASGITransport` — no real socket, no real
     upstream (a fake `AsyncScriptedFakeLLM` stands in for it)."""
     tape = Tape()
     upstream = AsyncScriptedFakeLLM([b'{"id":"resp-1"}'])
@@ -630,7 +630,7 @@ def test_openai_gemini_wire_level_fault_pipeline_documented_scope(provider):
         assert norm is not None
 
 
-# ── Bedrock: record → persist → replay bit-exact (separate, non-httpx seam) ─
+# ── Bedrock: record → persist → replay bit-exact (separate, non-httpx2 seam) ─
 
 _BEDROCK_INVOKE_URL = (
     "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-sonnet-4-6/invoke"
@@ -667,14 +667,14 @@ def _bedrock_prepared(
 
 
 def test_bedrock_record_replay_pipeline_persists_and_bit_exact_replays(tmp_path):
-    """Bedrock's InvokeModel seam is a SEPARATE, non-httpx transport
+    """Bedrock's InvokeModel seam is a SEPARATE, non-httpx2 transport
     (`BedrockTransport`, botocore `before-send`-hook shaped), but it reuses
     `tape.py` completely unchanged: record → to_bytes/from_bytes (AND
     `TapeStore`) → replay bit-exact, tolerating a freshly re-signed SigV4
     request.
 
     SCOPE, documented not hidden: unlike the Anthropic pipeline in section 1,
-    `ForkEngine`/`BlameEngine` build their own `httpx.Client`/
+    `ForkEngine`/`BlameEngine` build their own `httpx2.Client`/
     `anthropic.Anthropic` and never drive Bedrock's botocore `before-send`
     seam — this bead does not claim fork/blame against a Bedrock tape (see
     `bedrock_transport.py`'s module docstring; no existing test in this repo

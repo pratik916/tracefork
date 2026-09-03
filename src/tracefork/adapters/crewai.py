@@ -307,8 +307,19 @@ class CrewAIAdapter(BaseFrameworkAdapter):
             inner = getattr(getattr(target, "client_session", None), "_transport", None)
             inner_async = getattr(getattr(target, "aclient_session", None), "_transport", None)
 
+        # litellm.client_session/aclient_session are documented (see this
+        # method's own docstring above) as real httpx.Client/AsyncClient --
+        # never anthropic's httpx2 fork (litellm hard-depends on real httpx
+        # itself; see build_http_clients's docstring and pyproject.toml's
+        # CAP <1 note).
         sync_client, async_client, sync_t, async_t = build_http_clients(
-            tape, mode, inner=inner, async_inner=inner_async, matcher=matcher, redactor=redactor
+            tape,
+            mode,
+            inner=inner,
+            async_inner=inner_async,
+            matcher=matcher,
+            redactor=redactor,
+            client_lib="httpx",
         )
 
         injected: list[str] = []

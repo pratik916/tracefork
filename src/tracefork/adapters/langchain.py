@@ -639,8 +639,20 @@ class LangChainAdapter(BaseFrameworkAdapter):
         if mode == "record":
             inner, inner_async = _underlying_transports(target, family)
 
+        # ChatAnthropic's own client is the anthropic SDK (anthropic>=1 requires
+        # a real httpx2.Client — see pyproject.toml's CAP <1 note); ChatOpenAI's
+        # (and "unknown"'s, harmlessly — nothing gets injected for it below) is
+        # the openai SDK, still real-httpx-based. Handing either the WRONG
+        # flavor reintroduces the exact `.copy(http_client=...)` TypeError this
+        # parameter exists to prevent — see `build_http_clients`'s docstring.
         sync_client, async_client, sync_t, async_t = build_http_clients(
-            tape, mode, inner=inner, async_inner=inner_async, matcher=matcher, redactor=redactor
+            tape,
+            mode,
+            inner=inner,
+            async_inner=inner_async,
+            matcher=matcher,
+            redactor=redactor,
+            client_lib="httpx2" if family == "anthropic" else "httpx",
         )
 
         if family == "openai":

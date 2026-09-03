@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-import httpx
+import httpx2
 
 #: Header dropped from the canonical form — a stand-in for whatever
 #: per-call volatile material a real third-party matcher would need to
@@ -29,7 +29,7 @@ import httpx
 _VOLATILE_HEADER = "x-request-nonce"
 
 
-def _canonical(request: httpx.Request) -> bytes:
+def _canonical(request: httpx2.Request) -> bytes:
     """Canonical bytes for ``request``: sorted headers (minus the volatile
     nonce) followed by the raw body. This *is* what gets persisted on the
     tape, so the recorded and replayed sides always hash identically."""
@@ -57,10 +57,10 @@ class NonceStrippingMatcher:
 
     name = "example_nonce_stripping"
 
-    def stored_request(self, request: httpx.Request) -> bytes:
+    def stored_request(self, request: httpx2.Request) -> bytes:
         return _canonical(request)
 
-    def live_fingerprint(self, request: httpx.Request) -> str:
+    def live_fingerprint(self, request: httpx2.Request) -> str:
         return hashlib.sha256(_canonical(request)).hexdigest()
 
     def stored_fingerprint(self, stored: bytes) -> str:

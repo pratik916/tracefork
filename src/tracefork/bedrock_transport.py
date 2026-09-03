@@ -1,7 +1,7 @@
 """AWS Bedrock record/replay seam: hooks botocore's ``before-send`` short-circuit.
 
 Bedrock is the outlier provider: ``boto3``/``botocore`` issue requests through
-their own connection pool, never through httpx, so ``transport.py``'s httpx
+their own connection pool, never through httpx2, so ``transport.py``'s httpx2
 seam cannot see them — this module is a **second, parallel seam** for
 botocore, built without touching ``transport.py``/``tape.py``/``fork.py``/
 ``blame.py`` at all.
@@ -47,17 +47,17 @@ requires.
 **Bit-exactness.** Request "sameness" is proven through the SAME
 ``CanonicalizingMatcher`` seam ``matcher.py`` already ships
 (``bedrock_matcher()``, additive, pre-existing) by adapting the botocore
-prepared request into an ``httpx.Request`` VIEW — never sent over httpx, pure
+prepared request into an ``httpx2.Request`` VIEW — never sent over httpx2, pure
 data — so ``bedrock_matcher()``'s existing SigV4-header-stripping logic runs
 completely unmodified (see ``matcher.py``'s docstring: it already names
-``x-amz-date`` as an anticipated volatile header). ``httpx`` is a hard
-tracefork dependency already (transitively via ``anthropic``), so this adds no
-new dependency.
+``x-amz-date`` as an anticipated volatile header). ``httpx2`` is tracefork's
+own direct dependency (see ``pyproject.toml`` — not merely transitive via
+``anthropic``, which also requires it), so this adds no new dependency.
 
 **Replay contract** mirrors ``TraceforkTransport``'s exactly (positional walk
 through ``tape.exchanges``, ``DivergenceError`` on an unrecorded request or a
 fingerprint mismatch, ``fully_consumed()``) — just retargeted at the botocore
-layer instead of httpx.
+layer instead of httpx2.
 
 **SCOPE — streaming is NOT proven end-to-end through botocore.** This
 transport CAN record/replay any bytes botocore hands it, including a raw
@@ -79,7 +79,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2
 
 from .matcher import RequestMatcher, bedrock_matcher
 from .nondet import DivergenceError
@@ -119,15 +119,15 @@ def _coerce_body_bytes(body: Any) -> bytes:
     return data if isinstance(data, bytes) else bytes(data)
 
 
-def prepared_request_to_httpx(request: Any) -> httpx.Request:
+def prepared_request_to_httpx(request: Any) -> httpx2.Request:
     """View a botocore-shaped prepared request (``.method``/``.url``/
-    ``.headers``/``.body``) as an ``httpx.Request`` — purely a data holder,
-    never sent over httpx — so ``bedrock_matcher()`` (``matcher.py``, a
+    ``.headers``/``.body``) as an ``httpx2.Request`` — purely a data holder,
+    never sent over httpx2 — so ``bedrock_matcher()`` (``matcher.py``, a
     ``CanonicalizingMatcher`` that already strips SigV4 signing headers) can
     fingerprint it with **zero new canonicalization logic**. Works
     identically against a real ``botocore.awsrequest.AWSPreparedRequest`` or
     the offline ``synthetic.FakeAWSPreparedRequest`` (duck typing)."""
-    return httpx.Request(
+    return httpx2.Request(
         method=request.method,
         url=request.url,
         headers=dict(request.headers),
@@ -191,17 +191,19 @@ def _make_response(url: str, status_code: int, headers: dict[str, str], body: by
     return AWSResponse(url, status_code, headers, _RawBody(body))
 
 
-def default_sender(client: httpx.Client | None = None) -> Callable[[httpx.Request], httpx.Response]:
+def default_sender(
+    client: httpx2.Client | None = None,
+) -> Callable[[httpx2.Request], httpx2.Response]:
     """A ``sender`` for real Bedrock record-mode: POSTs the already
-    SigV4-signed prepared request via a plain ``httpx.Client``, bypassing
+    SigV4-signed prepared request via a plain ``httpx2.Client``, bypassing
     botocore's own ``_send``/connection pool entirely. This is the ONE real
     network call this seam ever makes in record mode — mirroring
     ``TraceforkTransport``'s ``inner`` transport parameter, just implemented
-    with httpx directly instead of forwarding to botocore's own sender (which
+    with httpx2 directly instead of forwarding to botocore's own sender (which
     has no equivalent short-circuit-and-tee point after signing)."""
-    owned = client or httpx.Client()
+    owned = client or httpx2.Client()
 
-    def _send(request: httpx.Request) -> httpx.Response:
+    def _send(request: httpx2.Request) -> httpx2.Response:
         return owned.send(request)
 
     return _send
@@ -232,7 +234,7 @@ class BedrockTransport:
         tape: Tape,
         *,
         matcher: RequestMatcher | None = None,
-        sender: Callable[[httpx.Request], httpx.Response] | None = None,
+        sender: Callable[[httpx2.Request], httpx2.Response] | None = None,
     ) -> None:
         if mode not in ("record", "replay"):
             raise ValueError(f"mode must be 'record' or 'replay', got {mode!r}")
@@ -270,7 +272,7 @@ class BedrockTransport:
             return self._record(httpx_req)
         return self._replay(httpx_req)
 
-    def _record(self, httpx_req: httpx.Request) -> Any:
+    def _record(self, httpx_req: httpx2.Request) -> Any:
         assert self._sender is not None  # enforced in __init__
         response = self._sender(httpx_req)
         body = response.content
@@ -283,7 +285,7 @@ class BedrockTransport:
             body=body,
         )
 
-    def _replay(self, httpx_req: httpx.Request) -> Any:
+    def _replay(self, httpx_req: httpx2.Request) -> Any:
         if self._i >= len(self.tape.exchanges):
             raise DivergenceError(
                 f"replay made unrecorded Bedrock request #{self._i} "

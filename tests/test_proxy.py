@@ -1,6 +1,6 @@
 """proxy.py tests — localhost base-URL record/replay proxy.
 
-Everything here drives the FastAPI apps in-process via `httpx.ASGITransport`
+Everything here drives the FastAPI apps in-process via `httpx2.ASGITransport`
 (both as the *client* side hitting the proxy, and — for record mode — as the
 injected fake *upstream* the proxy forwards to via `synthetic.py`'s
 `AsyncScriptedFakeLLM`/`AsyncStreamingFakeLLM`). No real network, no key.
@@ -8,7 +8,7 @@ injected fake *upstream* the proxy forwards to via `synthetic.py`'s
 
 import json
 
-import httpx
+import httpx2
 from fastapi import FastAPI
 from typer.testing import CliRunner
 
@@ -23,9 +23,9 @@ from .fakes import AsyncScriptedFakeLLM, AsyncStreamingFakeLLM
 runner = CliRunner()
 
 
-def _client_for(app: FastAPI) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://proxy-under-test")
+def _client_for(app: FastAPI) -> httpx2.AsyncClient:
+    transport = httpx2.ASGITransport(app=app)
+    return httpx2.AsyncClient(transport=transport, base_url="http://proxy-under-test")
 
 
 # ── record -> replay round trip ──────────────────────────────────────────────

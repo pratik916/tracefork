@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 import anthropic
-import httpx
+import httpx2
 
 from .nondet import NondetSource, find_divergence
 
@@ -34,10 +34,10 @@ TOOLS = [
 ]
 
 
-def make_client(transport: httpx.BaseTransport) -> anthropic.Anthropic:
+def make_client(transport: httpx2.BaseTransport) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-offline-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
 

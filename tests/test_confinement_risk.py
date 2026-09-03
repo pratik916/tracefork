@@ -5,7 +5,7 @@ All offline, zero API spend.
 """
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.blame import BlameEngine, BudgetGovernor, ConfinementRisk, StringMatchOracle
@@ -45,7 +45,7 @@ def _record_booking(resp1: bytes, resp2: bytes) -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _booking_agent(client)

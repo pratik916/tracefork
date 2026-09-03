@@ -7,7 +7,7 @@ install required for the export/ingest path (see `interop.py`'s docstring).
 import json
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
@@ -54,7 +54,7 @@ def _build_two_turn_tape() -> Tape:
     tape = Tape(agent_name="interop-test-agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     client.messages.create(
         model=SONNET, max_tokens=100, messages=[{"role": "user", "content": "turn1"}]
@@ -250,19 +250,19 @@ def test_push_otlp_trace_posts_the_exact_trace_body_to_v1_traces():
     """tracefork-sis.60: `push_otlp_trace` POSTs the trace dict verbatim (no
     re-encoding) to `{endpoint}/v1/traces` with `Content-Type:
     application/json` -- proven against a local fake collector
-    (`httpx.MockTransport`), fully offline."""
+    (`httpx2.MockTransport`), fully offline."""
     tape = _build_two_turn_tape()
     trace = build_otel_trace(tape)
     received: dict = {}
 
-    def fake_collector(request: httpx.Request) -> httpx.Response:
+    def fake_collector(request: httpx2.Request) -> httpx2.Response:
         received["url"] = str(request.url)
         received["content_type"] = request.headers.get("content-type")
         received["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"partialSuccess": {}})
+        return httpx2.Response(200, json={"partialSuccess": {}})
 
     response = push_otlp_trace(
-        trace, "http://collector.example:4318", transport=httpx.MockTransport(fake_collector)
+        trace, "http://collector.example:4318", transport=httpx2.MockTransport(fake_collector)
     )
 
     assert response.status_code == 200
@@ -275,42 +275,42 @@ def test_push_otlp_trace_posts_the_exact_trace_body_to_v1_traces():
 def test_push_otlp_trace_strips_a_trailing_slash_from_endpoint():
     received: dict = {}
 
-    def fake_collector(request: httpx.Request) -> httpx.Response:
+    def fake_collector(request: httpx2.Request) -> httpx2.Response:
         received["url"] = str(request.url)
-        return httpx.Response(200, json={})
+        return httpx2.Response(200, json={})
 
     push_otlp_trace(
         {"resourceSpans": []},
         "http://collector.example:4318/",
-        transport=httpx.MockTransport(fake_collector),
+        transport=httpx2.MockTransport(fake_collector),
     )
     assert received["url"] == "http://collector.example:4318/v1/traces"
 
 
 def test_push_otlp_trace_raises_otlp_export_error_on_non_2xx_response():
-    def fake_collector(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="collector on fire")
+    def fake_collector(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(500, text="collector on fire")
 
     with pytest.raises(OtlpExportError, match="500"):
         push_otlp_trace(
             {"resourceSpans": []},
             "http://collector.example:4318",
-            transport=httpx.MockTransport(fake_collector),
+            transport=httpx2.MockTransport(fake_collector),
         )
 
 
 def test_push_otlp_trace_wraps_a_transport_level_failure_as_otlp_export_error():
-    """A connection failure must never surface as a raw `httpx` exception --
+    """A connection failure must never surface as a raw `httpx2` exception --
     only `OtlpExportError`, so `cli.py` can catch exactly one type."""
 
-    def fake_collector(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
+    def fake_collector(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused", request=request)
 
     with pytest.raises(OtlpExportError, match="could not reach"):
         push_otlp_trace(
             {"resourceSpans": []},
             "http://collector.example:4318",
-            transport=httpx.MockTransport(fake_collector),
+            transport=httpx2.MockTransport(fake_collector),
         )
 
 

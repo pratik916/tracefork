@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
+import httpx2
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -66,7 +66,7 @@ _header_name = st.sampled_from(
         "user-agent",
     ]
 )
-# Printable-ASCII, no control chars -- httpx.Request rejects raw header values
+# Printable-ASCII, no control chars -- httpx2.Request rejects raw header values
 # containing them (e.g. CR/LF), so this keeps every generated example valid.
 _header_value = st.text(
     alphabet=st.characters(min_codepoint=0x20, max_codepoint=0x7E), min_size=1, max_size=16
@@ -81,9 +81,9 @@ _CANONICALIZING_MATCHERS: list[RequestMatcher] = [
 ]
 
 
-def _request(body_obj: object, headers: dict[str, str]) -> httpx.Request:
+def _request(body_obj: object, headers: dict[str, str]) -> httpx2.Request:
     body = json.dumps(body_obj).encode()
-    return httpx.Request(
+    return httpx2.Request(
         "POST",
         "https://api.anthropic.com/v1/messages?key=SECRET",
         headers={**headers, "content-type": "application/json"},
@@ -100,7 +100,7 @@ def test_identity_matcher_fingerprint_roundtrip_over_arbitrary_json_bodies(
     live_fingerprint(R)` for any JSON-serializable request body — the general
     form of the fixed-input identity checks in `test_matcher.py`."""
     body = json.dumps(body_obj).encode()
-    request = httpx.Request(
+    request = httpx2.Request(
         "POST",
         "https://api.anthropic.com/v1/messages",
         headers={"content-type": "application/json"},

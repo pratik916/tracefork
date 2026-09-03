@@ -23,7 +23,7 @@ import base64
 import json
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import ScriptedFakeLLM, make_text_response
 from tracefork.matcher import CanonicalizingMatcher, IdentityMatcher
@@ -50,23 +50,23 @@ def _req(
     *,
     url: str = "https://api.anthropic.com/v1/messages",
     headers: dict[str, str] | None = None,
-) -> httpx.Request:
-    return httpx.Request("POST", url, headers=headers or {}, content=body)
+) -> httpx2.Request:
+    return httpx2.Request("POST", url, headers=headers or {}, content=body)
 
 
-class _SyncInner(httpx.BaseTransport):
+class _SyncInner(httpx2.BaseTransport):
     def __init__(self, responses: list[bytes]):
         self._responses = iter(responses)
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200, headers={"content-type": "application/json"}, content=next(self._responses)
         )
 
 
 def _sync_client(fake: ScriptedFakeLLM) -> anthropic.Anthropic:
     return anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=fake), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=fake), max_retries=0
     )
 
 

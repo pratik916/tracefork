@@ -3,7 +3,7 @@
 import json
 
 import anthropic
-import httpx
+import httpx2
 
 from tests.fakes import (
     FaultAwareFakeLLM,
@@ -30,7 +30,7 @@ def _record_tool_use_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     client.messages.create(
@@ -85,7 +85,7 @@ def test_all_injected_faults_are_valid_json_with_marker():
 def _client(transport: TraceforkTransport) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
 

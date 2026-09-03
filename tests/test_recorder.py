@@ -5,7 +5,7 @@ import json
 import uuid as _uuid
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import (
@@ -24,7 +24,7 @@ TEXT_RESP = make_text_response("Done — flight booked.")
 def _sync_client(fake: ScriptedFakeLLM) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=fake),
+        http_client=httpx2.Client(transport=fake),
         max_retries=0,
     )
 
@@ -32,7 +32,7 @@ def _sync_client(fake: ScriptedFakeLLM) -> anthropic.Anthropic:
 def _async_client(fake: AsyncScriptedFakeLLM) -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=fake),
+        http_client=httpx2.AsyncClient(transport=fake),
         max_retries=0,
     )
 

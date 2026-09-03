@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 
 from tracefork.fixtures import single_turn_agent, two_turn_agent
 from tracefork.synthetic import ScriptedFakeLLM
@@ -36,7 +36,7 @@ def _record(agent_fn, responses: list[bytes], agent_name: str) -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     agent_fn(client)

@@ -2,7 +2,7 @@
 and overlay a framework-neutral **step-DAG** (annotation only).
 
 Design invariant (see the repo ``CLAUDE.md`` and the feature research): the
-byte seam stays at the httpx transport (``transport.py``). A framework's
+byte seam stays at the httpx2 transport (``transport.py``). A framework's
 tracing/callback API is **observer-only** here — it feeds a structure/annotation
 layer (``Step`` / ``StepDAG``), never a second capture path. An adapter's real
 job is ``bind()``: point the framework's underlying LLM client at tracefork's
@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-import httpx
+import httpx2
 
 from ..matcher import RequestMatcher
 from ..nondet import NondetSource, ReplayNondet
@@ -216,17 +216,20 @@ def _node_to_step(node: Any, parent_id: str | None) -> Step:
 class BindResult:
     """What ``FrameworkAdapter.bind`` injected — returned for inspection/teardown.
 
-    ``http_client`` / ``http_async_client`` are the httpx clients (wrapping a
-    ``TraceforkTransport``) that were routed into the framework's LLM client;
-    ``nondet`` is the ``NondetSource`` the caller should hand the framework for
-    its own clock/id draws (replay mode installs a ``ReplayNondet`` from the
-    tape). ``injected_fields`` names what ``bind`` mutated, and ``notes`` records
+    ``http_client`` / ``http_async_client`` are the clients (wrapping a
+    ``TraceforkTransport``) that were routed into the framework's LLM client —
+    ``httpx2.Client``/``AsyncClient`` for an Anthropic-SDK-shaped target, or real
+    ``httpx.Client``/``AsyncClient`` for an openai/google-genai/litellm-shaped one
+    (see ``build_http_clients``'s ``client_lib`` parameter); ``nondet`` is the
+    ``NondetSource`` the caller should hand the framework for its own clock/id
+    draws (replay mode installs a ``ReplayNondet`` from the tape).
+    ``injected_fields`` names what ``bind`` mutated, and ``notes`` records
     anything the adapter could not fully wire (honest, not silent).
     """
 
     mode: str
-    http_client: httpx.Client | None = None
-    http_async_client: httpx.AsyncClient | None = None
+    http_client: Any | None = None
+    http_async_client: Any | None = None
     transport: TraceforkTransport | None = None
     async_transport: AsyncTraceforkTransport | None = None
     nondet: NondetSource | None = None
@@ -238,27 +241,69 @@ def build_http_clients(
     tape: Tape,
     mode: str,
     *,
-    inner: httpx.BaseTransport | None = None,
-    async_inner: httpx.AsyncBaseTransport | None = None,
+    inner: Any | None = None,
+    async_inner: Any | None = None,
     matcher: RequestMatcher | None = None,
     redactor: Redactor | None = None,
-) -> tuple[httpx.Client, httpx.AsyncClient, TraceforkTransport, AsyncTraceforkTransport]:
-    """Build the sync+async httpx clients an adapter injects into a framework.
+    client_lib: str = "httpx2",
+) -> tuple[Any, Any, TraceforkTransport, AsyncTraceforkTransport]:
+    """Build the sync+async http clients an adapter injects into a framework.
 
     This is the one place adapters reuse the existing capture seam: each client
-    wraps a ``TraceforkTransport`` in exactly the mode/matcher/redactor contract
-    ``transport.py`` already owns. ``replay`` mode needs no inner transport (an
-    unrecorded request is a hard error, per ``transport.py``); ``record`` mode
-    requires the framework client's current transport as ``inner`` so live calls
-    still reach the network.
+    wraps a ``TraceforkTransport``/``AsyncTraceforkTransport`` in exactly the
+    mode/matcher/redactor contract ``transport.py`` already owns. ``replay`` mode
+    needs no inner transport (an unrecorded request is a hard error, per
+    ``transport.py``); ``record`` mode requires the framework client's current
+    transport as ``inner`` so live calls still reach the network.
+
+    ``client_lib`` picks which transport library the returned clients are built
+    from — ``"httpx2"`` (default, unchanged from before this parameter existed)
+    for a target whose own SDK is Anthropic's (``anthropic>=1`` requires a real
+    ``httpx2.Client`` — see the ``CAP <1`` note in ``pyproject.toml``), or
+    ``"httpx"`` for a target whose own SDK is still real-httpx-based (openai,
+    google-genai, litellm — every non-Anthropic adapter in this package).
+    **Every caller must pass the flavor its OWN target actually needs** — mixing
+    them up reintroduces exactly the bug this parameter exists to fix: openai's
+    ``.copy(http_client=...)`` isinstance-checks its argument against real
+    ``httpx.Client`` specifically and raises ``TypeError`` on an ``httpx2.Client``
+    (verified against the installed ``openai`` 2.x), the same failure class the
+    ``CAP <1`` note documents on the Anthropic side. Passing ``"httpx"`` needs
+    real ``httpx`` importable; when it genuinely is not (never true for a REAL
+    openai/google-genai/litellm client, since each hard-depends on ``httpx``
+    itself — only ever true for a permissive test double that does not care
+    which flavor it receives), this transparently falls back to the ``"httpx2"``
+    clients rather than raising, so the offline adapter test suite (no framework
+    extra installed) is unaffected.
+
+    Both flavors reuse ``transport.py``'s SAME capture/replay/matching/redaction
+    logic unchanged — ``TraceforkTransport``/``AsyncTraceforkTransport`` accept a
+    ``response_cls`` for exactly this (see their docstrings); this is one
+    canonical byte seam with two library-flavored outputs, never a second
+    capture path.
     """
-    sync_transport = TraceforkTransport(mode, tape, inner, matcher=matcher, redactor=redactor)
+    if client_lib not in ("httpx2", "httpx"):
+        raise ValueError(f"client_lib must be 'httpx2' or 'httpx', got {client_lib!r}")
+
+    client_module: Any = httpx2
+    response_cls: Any = httpx2.Response
+    if client_lib == "httpx":
+        try:
+            import httpx as _httpx
+        except ImportError:
+            _httpx = None  # see docstring: only reachable with no real SDK in play
+        if _httpx is not None:
+            client_module = _httpx
+            response_cls = _httpx.Response
+
+    sync_transport = TraceforkTransport(
+        mode, tape, inner, matcher=matcher, redactor=redactor, response_cls=response_cls
+    )
     async_transport = AsyncTraceforkTransport(
-        mode, tape, async_inner, matcher=matcher, redactor=redactor
+        mode, tape, async_inner, matcher=matcher, redactor=redactor, response_cls=response_cls
     )
     return (
-        httpx.Client(transport=sync_transport),
-        httpx.AsyncClient(transport=async_transport),
+        client_module.Client(transport=sync_transport),
+        client_module.AsyncClient(transport=async_transport),
         sync_transport,
         async_transport,
     )
@@ -302,7 +347,7 @@ class UuidPatch:
 class FrameworkAdapter(Protocol):
     """Bind a framework's LLM client to tracefork, and annotate its run.
 
-    Three responsibilities, matching the design (byte seam at httpx, callbacks as
+    Three responsibilities, matching the design (byte seam at httpx2, callbacks as
     annotation):
 
     * ``bind`` — route the framework's underlying LLM client through

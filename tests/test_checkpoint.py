@@ -6,7 +6,7 @@ Scope (see checkpoint.py's module docstring): exchanges only, not draws/nondet
 
 import os
 
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import AsyncScriptedFakeLLM, ScriptedFakeLLM, make_text_response
@@ -78,12 +78,12 @@ def test_recover_checkpoint_missing_file_raises(tmp_path):
         recover_checkpoint(path)
 
 
-def _sync_client(fake: ScriptedFakeLLM) -> "httpx.Client":
+def _sync_client(fake: ScriptedFakeLLM) -> "httpx2.Client":
     import anthropic
 
     return anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=fake),
+        http_client=httpx2.Client(transport=fake),
         max_retries=0,
     )
 
@@ -129,12 +129,12 @@ def test_recorder_without_checkpoint_path_is_unaffected(tmp_path):
     assert len(rec.tape.exchanges) == 1
 
 
-def _async_client(fake: AsyncScriptedFakeLLM) -> "httpx.AsyncClient":
+def _async_client(fake: AsyncScriptedFakeLLM) -> "httpx2.AsyncClient":
     import anthropic
 
     return anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=fake),
+        http_client=httpx2.AsyncClient(transport=fake),
         max_retries=0,
     )
 

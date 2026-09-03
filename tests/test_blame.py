@@ -6,7 +6,7 @@ import threading
 import uuid
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import FaultAwareFakeLLM, ScriptedFakeLLM, make_text_response
@@ -110,7 +110,7 @@ def _record_booking(resp1: bytes, resp2: bytes) -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _booking_agent(client)
@@ -403,10 +403,10 @@ def test_bh_qvalues_are_monotone_in_pvalue_order():
 # ── three-valued (UNDEFINED) accounting ───────────────────────────────────────
 
 
-class _RaisingTransport(httpx.BaseTransport):
+class _RaisingTransport(httpx2.BaseTransport):
     """A tail transport that errors on use — turns a fork into an errored trial."""
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         raise RuntimeError("tail transport unavailable")
 
 
@@ -1074,22 +1074,22 @@ def _record_and_conjunction() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _and_conjunction_agent(client)
     return tape
 
 
-class _AndConjunctionTail(httpx.BaseTransport):
+class _AndConjunctionTail(httpx2.BaseTransport):
     """The one failure rule: FAIL iff BOTH markers are present anywhere in the
     (already-cumulative) request body — a genuine AND, never anything else."""
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         body = request.content
         fails = _AND_GATE_MARKER in body and _AND_PAYLOAD_MARKER in body
         content = FAIL_RESP if fails else SUCCESS_RESP
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=content)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=content)
 
 
 def _and_conjunction_perturb_factory(step_idx: int) -> tuple[bytes, object]:
@@ -1182,7 +1182,7 @@ def _record_single_step_redacting_tape(resp: bytes) -> Tape:
     transport = TraceforkTransport("record", tape, fake, matcher=redacting_matcher())
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     _single_step_agent_rotating_key(client)

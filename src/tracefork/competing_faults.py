@@ -102,7 +102,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import anthropic
-import httpx
+import httpx2
 
 from .blame import BlameEngine, ShapleyReport, StringMatchOracle
 from .synthetic import ScriptedFakeLLM
@@ -206,7 +206,7 @@ def mutated_response_for(role: StepRole) -> bytes:
     return make_text_response(_MARKER_TEXT[role])
 
 
-class RuleBasedTail(httpx.BaseTransport):
+class RuleBasedTail(httpx2.BaseTransport):
     """Serves the rest of `competing_fault_agent`'s turns by adjudicating
     FAIL-vs-benign from `_fails` applied to each incoming request's own
     (already-cumulative) body -- so the SAME one failure rule governs every
@@ -219,11 +219,11 @@ class RuleBasedTail(httpx.BaseTransport):
         self._remaining = remaining_turns
         self._seen = 0
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
         self._seen += 1
         is_last = self._seen >= self._remaining
         body = FAIL_RESP if _fails(request.content) else (SUCCESS_RESP if is_last else NEUTRAL_RESP)
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 def make_perturb_factory(active: frozenset[StepRole]) -> Callable[[int], tuple[bytes, Any]]:
@@ -280,7 +280,7 @@ def build_competing_fault_tape() -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     competing_fault_agent(client)
@@ -324,7 +324,7 @@ def run_shapley(active: frozenset[StepRole], *, k: int = 3, m_samples: int = 2) 
 _CONCURRENT_DELAYS: dict[int, float] = {3: 0.02, 4: 0.05}
 
 
-class _ConcurrentNeutralFiller(httpx.AsyncBaseTransport):
+class _ConcurrentNeutralFiller(httpx2.AsyncBaseTransport):
     """Serves the SAME clean NEUTRAL/SUCCESS filler as `build_competing_fault_
     tape`'s scripted script, keyed by CALL-ENTRY order (0..N_TURNS-1) rather
     than a fixed list, since two calls (the GATE/PAYLOAD pair) are in flight
@@ -338,14 +338,14 @@ class _ConcurrentNeutralFiller(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self._n = 0
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         pos = self._n
         self._n += 1
         delay = _CONCURRENT_DELAYS.get(pos)
         if delay:
             await asyncio.sleep(delay)
         body = SUCCESS_RESP if pos == N_TURNS - 1 else NEUTRAL_RESP
-        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=body)
 
 
 def _initial_messages() -> list[dict[str, Any]]:
@@ -466,7 +466,7 @@ async def _build_concurrent_gate_payload_tape_async() -> Tape:
     transport = AsyncTraceforkTransport("record", tape, _ConcurrentNeutralFiller())
     client = anthropic.AsyncAnthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.AsyncClient(transport=transport),
+        http_client=httpx2.AsyncClient(transport=transport),
         max_retries=0,
     )
     await _concurrent_record_agent(client)

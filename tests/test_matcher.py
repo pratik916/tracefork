@@ -13,7 +13,7 @@ Two guarantees are load-bearing here:
 Offline, zero API keys. Equality is asserted on exact bytes/strings, never floats.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from tracefork.matcher import (
@@ -40,26 +40,26 @@ def _req(
     url: str = "https://api.anthropic.com/v1/messages",
     headers: dict[str, str] | None = None,
     method: str = "POST",
-) -> httpx.Request:
-    return httpx.Request(method, url, headers=headers or {}, content=body)
+) -> httpx2.Request:
+    return httpx2.Request(method, url, headers=headers or {}, content=body)
 
 
-class _SyncInner(httpx.BaseTransport):
+class _SyncInner(httpx2.BaseTransport):
     def __init__(self, responses: list[bytes]):
         self._responses = iter(responses)
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200, headers={"content-type": "application/json"}, content=next(self._responses)
         )
 
 
-class _AsyncInner(httpx.AsyncBaseTransport):
+class _AsyncInner(httpx2.AsyncBaseTransport):
     def __init__(self, responses: list[bytes]):
         self._responses = iter(responses)
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200, headers={"content-type": "application/json"}, content=next(self._responses)
         )
 

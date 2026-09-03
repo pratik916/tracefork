@@ -66,7 +66,7 @@ from .tape import Tape
 
 if TYPE_CHECKING:
     import anthropic
-    import httpx
+    import httpx2
 
 __all__ = [
     "BudgetExceededError",
@@ -90,7 +90,7 @@ class Variant:
 
     name: str
     response: bytes
-    tail_transport: httpx.BaseTransport | None = None
+    tail_transport: httpx2.BaseTransport | None = None
     mutation_desc: str = ""
 
 

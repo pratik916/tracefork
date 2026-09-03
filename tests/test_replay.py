@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from tests.fakes import ScriptedFakeLLM, make_text_response, make_tool_use_response
@@ -32,7 +32,7 @@ def _record_tape(responses: list[bytes]) -> Tape:
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=transport),
+        http_client=httpx2.Client(transport=transport),
         max_retries=0,
     )
     client.messages.create(
@@ -114,7 +114,7 @@ def test_verifier_matched_count():
     rec_transport = TraceforkTransport("record", tape, fake_rec)
     client = anthropic.Anthropic(
         api_key="sk-ant-fake",
-        http_client=httpx.Client(transport=rec_transport),
+        http_client=httpx2.Client(transport=rec_transport),
         max_retries=0,
     )
 

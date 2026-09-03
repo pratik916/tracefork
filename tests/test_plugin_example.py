@@ -21,7 +21,7 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from tracefork.matcher import MATCHER_REGISTRY
@@ -40,8 +40,8 @@ def _example_on_path():
         sys.modules.pop("plugin_example.matcher", None)
 
 
-def _request(**headers: str) -> httpx.Request:
-    return httpx.Request(
+def _request(**headers: str) -> httpx2.Request:
+    return httpx2.Request(
         "POST", "https://api.example.com/v1/chat", content=b'{"x":1}', headers=headers
     )
 

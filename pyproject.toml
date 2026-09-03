@@ -4,24 +4,30 @@ version = "1.0.0"
 description = "Time-travel debugger for AI agents: bit-exact record/replay, fork any step, causal blame with confidence intervals."
 requires-python = ">=3.12"
 dependencies = [
-    # CAP <1: anthropic 1.0.0 (2026-08-20) moved to Pydantic's httpx2 fork
-    # (Requires-Dist: httpx2<3,>=2.0.0, no httpx at all) and its
+    # anthropic 1.0.0 (2026-08-20) moved from httpx to Pydantic's httpx2 fork
+    # (Requires-Dist: httpx2<3,>=2.0.0 -- no httpx at all), so its
     # `client.copy(http_client=...)` seam (recorder.py's exact idiom) now
-    # type-checks the arg against httpx2.Client, raising TypeError on a real
-    # httpx.Client — tracefork's whole record seam depends on that idiom, so
-    # this is a hard incompatibility, not a speculative Schreiner-style
-    # private-internals hedge. Floor >=0.109 is exactly the version uv.lock
-    # already pins and the full test suite already exercises, so raising it
-    # carries no new incompatibility risk. Do NOT remove this cap without
-    # first porting recorder.py/transport.py/etc. off `httpx.BaseTransport`
-    # to whatever httpx2 exposes. TODO(caps): anthropic-1.x/httpx2 port.
-    "anthropic>=0.109,<1",
+    # type-checks the arg against httpx2.Client
+    # (anthropic/_base_client.py's SyncAPIClient/AsyncAPIClient __init__),
+    # raising TypeError on a real httpx.Client. Ported: recorder.py/
+    # transport.py/fork.py/etc. now subclass httpx2.BaseTransport/
+    # AsyncBaseTransport and build httpx2.Client/AsyncClient at every
+    # `.copy(http_client=...)` site, matching anthropic 1.x's contract.
+    # Verified against real anthropic 1.0.0 and 1.3.0 + httpx2 2.12.0 (the
+    # `>=2.0` floor rests on anthropic's own declared
+    # `Requires-Dist: httpx2<3,>=2.0.0`, not an independent test at 2.0.0
+    # itself). Floor >=1.0 is exactly the version this port targets and the
+    # full test suite now exercises. This is a permanent transport-library
+    # dependency, not a hint cap -- anthropic>=1 will never accept an
+    # httpx.Client again.
+    "anthropic>=1.0,<2",
     # Direct dependency, not just anthropic's transitive: tracefork subclasses
-    # httpx.BaseTransport directly (transport.py) and imports httpx in 17
-    # modules under src/tracefork/. Never declaring this let `pip install
-    # tracefork` silently rely on anthropic's own httpx pin -- which broke
-    # the moment anthropic 1.0.0 dropped httpx for httpx2 (see the cap above).
-    "httpx>=0.27,<1",
+    # httpx2.BaseTransport directly (transport.py) and imports httpx2 in 18
+    # modules under src/tracefork/. Never declaring this would let `pip
+    # install tracefork` silently rely on anthropic's own httpx2 pin -- the
+    # same gap that let the original httpx->httpx2 break go unnoticed at the
+    # dependency-declaration level until anthropic 1.0.0 shipped it.
+    "httpx2>=2.0,<3",
     "zstandard>=0.22",
     "typer>=0.12",
     "fastapi>=0.115",

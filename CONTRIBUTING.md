@@ -19,7 +19,7 @@ plus the dev toolchain (`pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`, `mypy`
 All of the following are offline and **$0** — no `ANTHROPIC_API_KEY`, no network:
 
 ```bash
-uv run pytest -q                        # full offline suite (1640 tests, $0, no key)
+uv run pytest -q                        # full offline suite (1641 tests, $0, no key)
 uv run tracefork validate               # self-validation: blame vs injected, known faults
 uv run tracefork validate --check       # regression-gate vs experiments/validation_report_committed.json
 uv run ruff check .                     # lint

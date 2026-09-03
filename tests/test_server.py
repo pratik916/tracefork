@@ -41,7 +41,7 @@ import base64
 import time
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -330,7 +330,7 @@ def _seed_multi_step_tape(tmp_path):
 def _seed_last_step_fork_tape(tmp_path):
     """A real, one-exchange tape recorded via the allowlisted
     `fork_ui_agent`. Forking its only (== last) exchange is `$0`-safe: an
-    empty tail means `ForkTransport` never dispatches to its inner httpx
+    empty tail means `ForkTransport` never dispatches to its inner httpx2
     transport (see `test_fork_endpoint.py`'s module docstring) — needed here
     because these tests actually execute the fork rather than rejecting it
     before it runs."""
@@ -338,7 +338,7 @@ def _seed_last_step_fork_tape(tmp_path):
     tape = Tape(agent_name="fork_ui_agent")
     transport = TraceforkTransport("record", tape, fake)
     client = anthropic.Anthropic(
-        api_key="sk-ant-fake", http_client=httpx.Client(transport=transport), max_retries=0
+        api_key="sk-ant-fake", http_client=httpx2.Client(transport=transport), max_retries=0
     )
     fork_ui_run_agent(client)
     db = tmp_path / "store.db"
@@ -420,8 +420,8 @@ async def test_fork_runs_off_the_event_loop_so_concurrent_requests_are_not_block
 
     monkeypatch.setattr("tracefork.server.ForkEngine.fork", staticmethod(slow_fork))
 
-    transport = httpx.ASGITransport(app=fastapi_app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+    transport = httpx2.ASGITransport(app=fastapi_app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as async_client:
         fork_task = asyncio.create_task(
             async_client.post(
                 f"/api/run/{run_id}/fork",

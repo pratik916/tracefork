@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **Ported off `httpx` onto `httpx2`; dependency floors raised to
+  `anthropic>=1.0,<2` and `httpx2>=2.0,<3`.** anthropic 1.0.0 (2026-08-20)
+  moved from `httpx` to Pydantic's `httpx2` fork (see the 1.0.0 entry
+  below, where this was first identified and capped as a hard
+  incompatibility rather than removed outright). This release does the
+  port: every module that subclassed `httpx.BaseTransport`/
+  `AsyncBaseTransport`, type-hinted `httpx.Request`/`Response`, or built a
+  client via `.copy(http_client=httpx.Client(...))` (`transport.py`,
+  `recorder.py`, `fork.py`, `replay.py`, `validate.py`, `proxy.py`,
+  `interop.py`, `bedrock_transport.py`, `adapters/base.py`, and 9 more —
+  18 modules total under `src/tracefork/`, plus every test file exercising
+  them) now targets `httpx2` instead — a pure transport-library rename,
+  verified 1:1 against the real installed `httpx2` 2.12.0 (`BaseTransport`/
+  `AsyncBaseTransport`, `Request`/`Response`, `Client`/`AsyncClient`, the
+  exception hierarchy, and `HTTPTransport`'s zero-arg default constructor
+  all match `httpx`'s shape exactly). **`Tape.digest()` is unaffected by
+  construction** — `tape.py`/`store.py` never imported `httpx` and still
+  don't; the transport seam changed, not the wire bytes or the hash.
+  Verified against the committed fixture corpus (`replay --check`: 2/2)
+  and the committed validation baseline (`validate --check`: 1.00 top-1 /
+  0.00 negative-control flip, no regressions). All 1641 collected tests
+  pass (1634 passed, 7 skipped, 0 failed); `mypy --strict` and `ruff check`
+  are clean. Also closes two adversarial-review findings surfaced against
+  this port: `adapters/base.py`'s `build_http_clients()` now takes a
+  `client_lib` flavor (`"httpx2"` for an Anthropic-SDK-shaped target,
+  `"httpx"` for the still-real-httpx-based openai/google-genai/litellm ones
+  every non-Anthropic framework adapter targets — each adapter passes the
+  flavor its own target actually needs; `TraceforkTransport`/
+  `AsyncTraceforkTransport` gained a matching `response_cls` so both flavors
+  reuse the SAME capture/replay/matching/redaction logic, never a second
+  capture path); and `BoundaryGuard`/`AsyncRecorder` now pre-empt anthropic
+  1.x's async platform-resolution false positive (`AsyncRecorder(...,
+  boundary_guard=True)` previously hard-failed with a spurious
+  `BoundaryViolationError` on `Thread.start()` on its first call — see
+  `boundary_guard.py`'s module docstring for the mechanism). Fixing that
+  surfaced a second, broader false positive one layer deeper: asyncio's own
+  event-loop scheduling calls `time.monotonic()` unconditionally whenever a
+  coroutine genuinely suspends — verified to trip on ANY real async work
+  under the guard (a live network call, `asyncio.sleep`, not just platform
+  resolution), not something a thread-level pre-warm alone can fix.
+  `BoundaryGuard` now checks, dynamically on every `time.monotonic()` call,
+  whether a live event loop is running at that moment and lets the call
+  through when one is — so `AsyncRecorder(boundary_guard=True)` is usable
+  for genuine (not just instantaneous-fake-transport) async recording, and,
+  as a side effect of checking per-call rather than once at `__enter__`,
+  this also closes a `fork.py`-side gap the same finding flagged as
+  unverified (a sync `agent_fn` that spins up its own inner event loop
+  during `ForkEngine.fork`/`fork_coalition`). The sync `Recorder` path, and
+  direct-misuse detection generally, are unaffected outside a running loop.
+
 ## [1.0.0] - 2026-08-25
 
 See [`docs/stability.md`](docs/stability.md) for what this project's SemVer promise
