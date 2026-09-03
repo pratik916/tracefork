@@ -11,7 +11,7 @@ makes it fail loudly, at record time, instead.
 **Scope (don't overstate).** This is a best-effort diagnostic, not a sandbox:
     * `threading.Thread.start` and `subprocess.Popen.__init__` are patched to
       hard-error unconditionally — nothing in tracefork's own recording path
-      spawns either (verified empirically against the Anthropic SDK + httpx
+      spawns either (verified empirically against the Anthropic SDK + httpx2
       using tracefork's synthetic/recording transports).
     * `random.random` is patched to hard-error — the module-level entry point
       is a plain reassignable function (unlike `datetime.datetime.now`, see
@@ -37,7 +37,7 @@ makes it fail loudly, at record time, instead.
       `Recorder` doesn't patch it (`recorder.py`'s module docstring): it's a
       classmethod on an immutable C type, and swapping `datetime.datetime`
       for a subclass breaks the Anthropic SDK's lazy pydantic schema builder.
-    * `time.time()` is deliberately **not** patched: httpx's cookie-jar
+    * `time.time()` is deliberately **not** patched: httpx2's cookie-jar
       machinery (`http.cookiejar.extract_cookies`, invoked on every response,
       even when no cookies are set) calls `time.time()` unconditionally, so
       guarding it would fail on every single recorded exchange regardless of
