@@ -20,7 +20,7 @@ dependencies = [
     # full test suite now exercises. This is a permanent transport-library
     # dependency, not a hint cap -- anthropic>=1 will never accept an
     # httpx.Client again.
-    "anthropic>=1.0,<2",
+    "anthropic>=1.0,<3",
     # Direct dependency, not just anthropic's transitive: tracefork subclasses
     # httpx2.BaseTransport directly (transport.py) and imports httpx2 in 18
     # modules under src/tracefork/. Never declaring this would let `pip
