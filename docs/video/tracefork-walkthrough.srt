@@ -1,0 +1,363 @@
+1
+00:00:00,702 --> 00:00:03,397
+This is a technical walkthrough of tracefork.
+
+2
+00:00:03,437 --> 00:00:06,868
+First, what it does today, running locally on this machine.
+
+3
+00:00:06,908 --> 00:00:10,561
+Then, using mock UI, what it could become as a product.
+
+4
+00:00:10,963 --> 00:00:18,587
+tracefork is a Python library that hooks one
+place: the HTTP transport inside the Anthropic SDK.
+
+5
+00:00:18,627 --> 00:00:23,831
+In record mode, every request and response
+is copied, byte for byte, into a tape.
+
+6
+00:00:23,871 --> 00:00:32,499
+The tape is content-addressed. Payloads are stored as sha256
+blobs, and an ordered event log chains them into one digest.
+
+7
+00:00:32,539 --> 00:00:37,865
+Agents also read hidden inputs, like
+the clock, UUIDs and random numbers.
+
+8
+00:00:37,905 --> 00:00:43,214
+Those go through a NondetSource, which logs
+every draw so it can be served back later.
+
+9
+00:00:43,615 --> 00:00:47,235
+In replay mode, the transport has no network behind it.
+
+10
+00:00:47,275 --> 00:00:53,858
+Recorded responses are served back, and every request
+the agent sends is hashed and checked against the tape.
+
+11
+00:00:53,898 --> 00:01:00,984
+If every request matches, the replay is proven
+identical. It costs nothing, and needs no API key.
+
+12
+00:01:01,024 --> 00:01:07,542
+If anything drifts, replay fails loudly, and a
+negative control checks that drift really is detected.
+
+13
+00:01:07,944 --> 00:01:11,000
+Here is the original spike, run on this machine.
+
+14
+00:01:11,040 --> 00:01:17,467
+Two requests. Both hashes matched, the fingerprints
+are identical, and there were zero network calls.
+
+15
+00:01:17,507 --> 00:01:23,618
+The last check is the negative control: given
+fresh nondeterminism, the drift was detected.
+
+16
+00:01:24,020 --> 00:01:28,540
+Forking builds on replay. You pick a
+step, and swap in a different response.
+
+17
+00:01:28,580 --> 00:01:32,647
+The prefix before that step replays for free, and is still hash-checked.
+
+18
+00:01:32,687 --> 00:01:41,099
+The swapped response is injected, and only the tail after it is
+recorded fresh. That tail is the only part that can cost money.
+
+19
+00:01:41,139 --> 00:01:48,708
+Each branch gets a digest of its parent, its delta, and
+the step it changed, so branches form a Merkle-style tree.
+
+20
+00:01:49,110 --> 00:01:57,160
+Blame is many forks. For each step, tracefork perturbs the
+response k times, reruns the agent, and grades the outcome.
+
+21
+00:01:57,200 --> 00:02:01,101
+A step's flip rate is how often perturbing it changes the outcome.
+
+22
+00:02:01,141 --> 00:02:05,901
+Each rate gets a Wilson score interval,
+because twenty trials is not certainty.
+
+23
+00:02:05,941 --> 00:02:10,077
+Flip rate alone can't tell a root cause from a downstream echo of it.
+
+24
+00:02:10,117 --> 00:02:15,081
+So a temporal Shapley mode labels each
+step as necessary, sufficient, or both.
+
+25
+00:02:15,483 --> 00:02:20,492
+Now the UI. This is tracefork serve,
+running locally against a seeded store.
+
+26
+00:02:20,532 --> 00:02:26,172
+There's one run: a seven-exchange synthetic
+agent, with faults planted at known steps.
+
+27
+00:02:26,575 --> 00:02:33,185
+The timeline is on the left, the exact request and
+response in the middle, and the analysis rail on the right.
+
+28
+00:02:33,225 --> 00:02:41,486
+Blame ranks steps zero and one at a hundred percent
+flip rate, with a 95 percent interval from 0.84 to 1.
+
+29
+00:02:41,526 --> 00:02:43,411
+Every other step sits at zero.
+
+30
+00:02:43,451 --> 00:02:46,415
+The badges on the timeline add the Shapley result.
+
+31
+00:02:46,455 --> 00:02:53,490
+Step zero is necessary and sufficient. Step one is
+only sufficient. It's an echo, not the root cause.
+
+32
+00:02:53,892 --> 00:02:58,908
+Selecting an exchange shows the raw request
+and response bytes that were recorded.
+
+33
+00:02:58,948 --> 00:03:04,773
+The Forks tab shows the fork tree: three branches,
+each with its divergence step and digest.
+
+34
+00:03:04,813 --> 00:03:07,990
+And the Cost tab totals tokens and dollars by model.
+
+35
+00:03:08,391 --> 00:03:14,647
+Forking from the UI is gated. The server only
+forks agents that an operator has allowlisted.
+
+36
+00:03:14,687 --> 00:03:19,292
+I'll fork the final exchange, and change
+the answer from success to failure.
+
+37
+00:03:19,567 --> 00:03:24,761
+Forking the last step leaves an empty tail,
+so the estimate is exactly zero dollars.
+
+38
+00:03:24,801 --> 00:03:28,602
+Confirm, and the server runs a real fork and saves the branch.
+
+39
+00:03:28,642 --> 00:03:31,375
+It shows up in the fork tree as a fourth branch.
+
+40
+00:03:31,778 --> 00:03:37,172
+How do you know blame is right? tracefork tests
+itself against faults with known root causes.
+
+41
+00:03:37,212 --> 00:03:45,360
+validate plants five kinds of fault. Blame ranks the planted
+step first every time, and the negative control stays at zero.
+
+42
+00:03:45,400 --> 00:03:50,941
+bench plants competing causes on one longer
+tape. Ten of eleven resolve as planted.
+
+43
+00:03:50,981 --> 00:03:57,376
+The one miss is a documented limit of single-ordering
+Shapley, and bench prints it, instead of hiding it.
+
+44
+00:03:57,778 --> 00:04:02,336
+So that's today: a solid core, packaged as a local developer tool.
+
+45
+00:04:02,376 --> 00:04:07,978
+It runs in one process, keeps tapes in
+SQLite, and you instrument the agent yourself.
+
+46
+00:04:08,018 --> 00:04:15,431
+There's no hosted ingest, no team view, and no
+alerting. Evals exist only as internal self-validation.
+
+47
+00:04:15,471 --> 00:04:22,629
+And bit-exact replay assumes a boundary: one process,
+with time and randomness read through NondetSource.
+
+48
+00:04:23,031 --> 00:04:27,137
+Now, what it could grow into: the same engine, inside a platform.
+
+49
+00:04:27,177 --> 00:04:32,637
+An SDK captures runs at the same HTTP
+seam, and ships them asynchronously.
+
+50
+00:04:32,637 --> 00:04:36,990
+It fails open, and redacts secrets before anything leaves.
+
+51
+00:04:37,030 --> 00:04:41,276
+A thin ingestion API writes everything to a durable queue.
+
+52
+00:04:41,316 --> 00:04:48,420
+Stream processors split each run into metadata, analytics
+rows, and content-addressed tapes in object storage.
+
+53
+00:04:48,460 --> 00:04:57,828
+Next to that, a sandboxed worker pool runs evals, replays and forks
+on demand. Most of that is free, because prefixes replay from tape.
+
+54
+00:04:58,231 --> 00:05:00,626
+Everything from here on is mock UI.
+
+55
+00:05:00,666 --> 00:05:03,135
+The entry point looks familiar: issues.
+
+56
+00:05:03,175 --> 00:05:09,938
+Failing runs are grouped by fingerprint: the failing step,
+the tool, and the error class, instead of a stack trace.
+
+57
+00:05:09,978 --> 00:05:17,244
+And failures aren't only exceptions. A low eval score, a
+guardrail block, or a thumbs-down can open an issue too.
+
+58
+00:05:17,645 --> 00:05:24,739
+Opening an issue shows a representative run as a span
+waterfall, with tokens, latency and cost per step.
+
+59
+00:05:24,779 --> 00:05:29,550
+Replay re-runs it from the tape, at zero
+cost, and the hash check is visible.
+
+60
+00:05:29,590 --> 00:05:36,737
+Blame points to step three. The order lookup returned a
+stale record, and the model reasoned correctly over bad data.
+
+61
+00:05:37,139 --> 00:05:42,949
+Now test a fix without touching production:
+fork step three, with a corrected tool result.
+
+62
+00:05:42,989 --> 00:05:46,710
+The prefix replays for free, and only the tail re-executes.
+
+63
+00:05:46,750 --> 00:05:51,330
+The forked run ends with a correct refund message, and the eval passes.
+
+64
+00:05:51,731 --> 00:05:58,047
+One click turns the failing run into an eval case:
+the input, the expected behavior, and a scorer.
+
+65
+00:05:58,087 --> 00:06:03,674
+Datasets built from real production failures
+are the most useful test set a team can have.
+
+66
+00:06:03,714 --> 00:06:09,502
+On every pull request that changes a prompt
+or a model, the dataset runs as a CI gate.
+
+67
+00:06:09,542 --> 00:06:16,159
+Scores come with confidence intervals, so a two-point
+dip on forty cases isn't flagged as a regression.
+
+68
+00:06:16,562 --> 00:06:20,471
+In production, a sample of live traffic is scored continuously.
+
+69
+00:06:20,511 --> 00:06:27,442
+Cheap heuristics run on everything, an LLM judge
+runs on a sample, and user feedback is folded in.
+
+70
+00:06:27,482 --> 00:06:35,115
+When a provider silently updates a model, the pass rate drops
+below the SLO, and the alert links to the affected runs.
+
+71
+00:06:35,517 --> 00:06:37,171
+Put together, it's a loop.
+
+72
+00:06:37,211 --> 00:06:44,421
+Capture runs, group failures, blame the step, curate the
+case, gate on evals, fork to verify the fix, and ship.
+
+73
+00:06:44,461 --> 00:06:47,163
+Every pass through the loop adds to the dataset.
+
+74
+00:06:47,563 --> 00:06:52,233
+A sensible build order: a hosted
+observe product first, to get installed.
+
+75
+00:06:52,273 --> 00:06:56,375
+Then causal debugging in the UI, the part other tools don't have.
+
+76
+00:06:56,415 --> 00:07:03,127
+Then evals, then the closed loop, and finally
+enterprise: self-hosting, sandboxing and integrations.
+
+77
+00:07:03,530 --> 00:07:09,815
+Today, tracefork is the hard part: faithful,
+hash-verified, zero-cost replay and forking.
+
+78
+00:07:09,855 --> 00:07:12,505
+The product is the platform built around it.
